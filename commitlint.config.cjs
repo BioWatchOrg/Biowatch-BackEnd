@@ -14,6 +14,7 @@ module.exports = {
     ],
     'type-empty': [2, 'never'],
     'scope-empty': [2, 'always'],
+    'subject-case': [0],
     'subject-empty': [2, 'never'],
   },
 };
