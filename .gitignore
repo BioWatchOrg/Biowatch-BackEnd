@@ -205,3 +205,51 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+#Frontend
+node_modules/
+dist/
+build/
+coverage/
+
+#Si Vite
+.vite/
+
+#Si Next
+.next/
+
+#On manipule des données geospaciales on ne veux pas quelles terminent dans git 
+data/
+*.tif
+*.tiff
+*.jp2
+*.hdf
+*.nc
+*.geojson
+*.gpkg
+*.shp
+*.dbf
+*.prj
+*.cpg
+*.zip
+
+
+#Pour éviter de pousser des modèles lourds
+models/
+*.pt
+*.pth
+*.onnx
+*.h5
+*.ckpt
+
+#Docker (si volumes locaux)
+docker-data/
+*.tar
+
+#Logs génériques (hors Django)
+logs/
+*.out
+
+
+
+
