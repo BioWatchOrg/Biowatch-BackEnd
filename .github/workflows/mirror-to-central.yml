@@ -4,7 +4,13 @@ on:
   push:
     branches:
       - main
-      - dev
+
+concurrency:
+  group: mirror-central
+  cancel-in-progress: false
+
+permissions:
+  contents: read
 
 jobs:
   mirror:
@@ -14,8 +20,6 @@ jobs:
     steps:
       - name: Checkout backend repo
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Configure git identity
         run: |
@@ -23,9 +27,12 @@ jobs:
           git config --global user.name  "BioWatch Mirror Bot"
 
       - name: Clone central repo
+        env:
+          MIRROR_TOKEN: ${{ secrets.BIOWATCH_MIRROR_TOKEN }}
         run: |
           git clone \
-            https://x-access-token:${{ secrets.BIOWATCH_MIRROR_TOKEN }}@github.com/BioWatchOrg/biowatch.git \
+            -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$MIRROR_TOKEN" | base64)" \
+            https://github.com/BioWatchOrg/biowatch.git \
             /tmp/biowatch-central
 
       - name: Copy source files into backend/
@@ -44,5 +51,7 @@ jobs:
           else
             COMMIT_MSG="mirror(backend): sync from ${{ github.repository }}@${{ github.sha }}"
             git commit -m "$COMMIT_MSG"
+            # garde-fou contre les runs concurrents
+            git pull --rebase origin main
             git push origin main
           fi
