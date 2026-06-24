@@ -3,7 +3,10 @@ CREATE TABLE zones_hex (
     resolution INT NOT NULL,
     geom GEOMETRY(POLYGON, 4326) NOT NULL,
     centroid GEOMETRY(POINT, 4326),
-    bbox GEOMETRY(POLYGON, 4326)
+    bbox GEOMETRY(POLYGON, 4326),
+
+    CONSTRAINT uq_zones_hex_zone_resolution
+        UNIQUE (zone_id, resolution)
 );
 
 CREATE INDEX idx_zones_hex_geom

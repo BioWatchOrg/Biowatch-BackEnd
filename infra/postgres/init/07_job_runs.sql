@@ -21,6 +21,10 @@ CREATE TABLE job_run_zone_errors (
         FOREIGN KEY (run_id)
         REFERENCES job_runs(run_id),
 
+    CONSTRAINT fk_job_run_zone_errors_zone
+        FOREIGN KEY (zone_id)
+        REFERENCES zones_hex(zone_id),
+
     CONSTRAINT uq_job_run_zone_error
         UNIQUE (
             run_id,
@@ -39,3 +43,12 @@ ON job_run_zone_errors (run_id);
 
 CREATE INDEX idx_job_run_zone_errors_zone_id
 ON job_run_zone_errors (zone_id);
+
+-- stress_score_by_zone est créé avant job_runs (06 < 07) : on pose la FK
+ALTER TABLE stress_score_by_zone
+    ADD CONSTRAINT fk_stress_score_run
+        FOREIGN KEY (run_id)
+        REFERENCES job_runs(run_id);
+
+CREATE INDEX idx_stress_score_run_id
+ON stress_score_by_zone (run_id);

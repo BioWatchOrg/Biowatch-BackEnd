@@ -10,7 +10,7 @@ CREATE TABLE stress_score_by_zone (
     score_protection FLOAT,
 
     score_method TEXT NOT NULL,
-    run_id TEXT,
+    run_id UUID,
     computed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     CONSTRAINT fk_stress_score_zone
