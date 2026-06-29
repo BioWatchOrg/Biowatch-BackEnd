@@ -19,7 +19,7 @@ CREATE TABLE job_run_zone_errors (
 
     CONSTRAINT fk_job_run_zone_errors_run
         FOREIGN KEY (run_id)
-        REFERENCES job_runs(run_id),
+        REFERENCES job_runs(run_id) ON DELETE CASCADE,
 
     CONSTRAINT fk_job_run_zone_errors_zone
         FOREIGN KEY (zone_id)
