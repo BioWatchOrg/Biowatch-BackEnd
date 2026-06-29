@@ -3,7 +3,7 @@ CREATE TABLE job_runs (
     job_name TEXT NOT NULL,
     scope TEXT NOT NULL,
     bucket_id TEXT,
-    status TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('running','success','failed','partial')),
     started_at TIMESTAMPTZ NOT NULL,
     ended_at TIMESTAMPTZ,
     idempotency_key TEXT NOT NULL UNIQUE,
@@ -19,7 +19,7 @@ CREATE TABLE job_run_zone_errors (
 
     CONSTRAINT fk_job_run_zone_errors_run
         FOREIGN KEY (run_id)
-        REFERENCES job_runs(run_id),
+        REFERENCES job_runs(run_id) ON DELETE CASCADE,
 
     CONSTRAINT fk_job_run_zone_errors_zone
         FOREIGN KEY (zone_id)
