@@ -3,7 +3,7 @@ CREATE TABLE job_runs (
     job_name TEXT NOT NULL,
     scope TEXT NOT NULL,
     bucket_id TEXT,
-    status TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('running','success','failed','partial')),
     started_at TIMESTAMPTZ NOT NULL,
     ended_at TIMESTAMPTZ,
     idempotency_key TEXT NOT NULL UNIQUE,
