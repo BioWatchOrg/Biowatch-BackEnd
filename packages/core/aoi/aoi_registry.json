@@ -1,0 +1,10 @@
+{
+    "aois" : [
+        {
+            "label" : "idf",
+            "name" : "Île-de-France",
+            "geojson_path" : "packages/core/aoi/regions/idf.geojson", 
+            "default_res" : 8
+        }
+    ]
+}
