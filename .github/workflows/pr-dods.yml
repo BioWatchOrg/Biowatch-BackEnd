@@ -7,6 +7,10 @@ on:
       - opened
       - synchronize
       - reopened
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
 jobs:
   review:
     runs-on: ubuntu-latest
