@@ -7,6 +7,7 @@ from typing import TypeAlias
 from shapely.geometry import MultiPolygon, Polygon, shape
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.WARNING)
 
 
 class UndefinedAOIError(Exception):
@@ -52,23 +53,26 @@ def load_aoi(aoi_label: AoiLabel) -> AOI:
     """
     Load AOI from the registry and return an AOI object.
     """
-    try:
-        for aoi_info in aoi_data["aois"]:
-            if aoi_info["label"] == aoi_label:
+    for aoi_info in aoi_data["aois"]:
+        if aoi_info["label"] == aoi_label:
+            try:
                 geojson_path = os.path.join(ROOT_DIR, aoi_info["geojson_path"])
                 polygon = _load_polygon(geojson_path=geojson_path)
-                bbox = polygon.bounds
                 return AOI(
                     label=aoi_info["label"],
                     name=aoi_info["name"],
                     geom=polygon,
-                    bbox=bbox,
+                    bbox=polygon.bounds,
                 )
-        logger.error(f"CORE-AOI-load_aoi : AOI with label '{aoi_label}' not found in the registry.")
-        raise UndefinedAOIError(f"AOI with label '{aoi_label}' not found in the registry.")
-    except Exception as e:
-        logger.error(f"CORE-AOI-load_aoi : Error loading AOI with label '{aoi_label}': {e}")
-        raise LoadingAOIError(f"Error loading AOI with label '{aoi_label}': {e}")
+            except Exception as e:
+                logger.error(
+                    f"CORE-AOI-load_aoi : Error loading AOI with label '{aoi_label}': {e}"
+                )
+                raise LoadingAOIError(
+                    f"Error loading AOI with label '{aoi_label}': {e}"
+                ) from e
+    logger.error(f"CORE-AOI-load_aoi : AOI with label '{aoi_label}' not found in the registry.")
+    raise UndefinedAOIError(f"AOI with label '{aoi_label}' not found in the registry.")
 
 
 def _load_polygon(geojson_path: str) -> Polygon | MultiPolygon:

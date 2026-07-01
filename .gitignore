@@ -250,6 +250,4 @@ docker-data/
 logs/
 *.out
 
-
-
-
+*.parquet
