@@ -16,7 +16,7 @@ jobs:
         uses: Onigam/ai-mistral-pr-reviewer@v0.7
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OPENAI_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.MISTRAL_AI }}
         with:
           openai_base_url: "https://api.mistral.ai/v1"
           openai_heavy_model: "mistral-large"
