@@ -85,10 +85,6 @@ def test_registry_ids_follow_lowercase_convention(label):
     assert len(label) == 3
 
 
-# --------------------------------------------------------------------------- #
-# _load_polygon — testé directement pour couvrir la branche d'erreur
-# (géométrie non polygonale), inatteignable via load_aoi + registry réel.
-# --------------------------------------------------------------------------- #
 def _write_feature(tmp_path, geometry: dict) -> str:
     path = tmp_path / "aoi.geojson"
     path.write_text(json.dumps({"type": "Feature", "geometry": geometry, "properties": {}}))
