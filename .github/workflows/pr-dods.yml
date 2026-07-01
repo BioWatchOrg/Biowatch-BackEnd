@@ -1,4 +1,4 @@
-name: pr-dods_global
+name: pr-general_dods
 on:
   pull_request:
     branches:
