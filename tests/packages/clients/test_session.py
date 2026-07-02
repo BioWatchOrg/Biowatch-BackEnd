@@ -1,11 +1,9 @@
 """Tests for clients.db.session — URL building, engine memoization, session factory."""
 
 import pytest
+from clients.db.session import _build_database_url, get_sessionmaker, get_engine
 from sqlalchemy import Engine
 from sqlalchemy.orm import Session, sessionmaker
-
-from clients.db import get_engine, get_sessionmaker
-from clients.db.session import _build_database_url
 
 POSTGRES_VARS = (
     "DATABASE_URL",
@@ -74,7 +72,7 @@ def test_get_engine_is_memoized(clean_env):
     assert first is second  # single shared engine / pool
 
 
-def test_get_sessionmaker_uses_given_engine(clean_env):
+def testget_sessionmaker_uses_given_engine(clean_env):
     clean_env.setenv("POSTGRES_USER", "u")
     clean_env.setenv("POSTGRES_PASSWORD", "p")
     clean_env.setenv("POSTGRES_DB", "d")
@@ -85,7 +83,7 @@ def test_get_sessionmaker_uses_given_engine(clean_env):
     assert factory.kw["expire_on_commit"] is False
 
 
-def test_get_sessionmaker_falls_back_to_shared_engine(clean_env):
+def testget_sessionmaker_falls_back_to_shared_engine(clean_env):
     clean_env.setenv("POSTGRES_USER", "u")
     clean_env.setenv("POSTGRES_PASSWORD", "p")
     clean_env.setenv("POSTGRES_DB", "d")

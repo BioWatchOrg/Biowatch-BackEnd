@@ -1,14 +1,5 @@
 """
 SQLAlchemy ORM models — single source of truth for the BioWatch schema.
-
-These models replace the raw SQL previously kept in `infra/postgres/init/*.sql`.
-Table and column names match the business vocabulary defined in CLAUDE.md exactly.
-
-Note on primary keys: the original SQL tables for features / scores / partial
-errors declared only UNIQUE constraints and no PRIMARY KEY. The ORM requires a
-primary key, so the natural unique key is promoted to a composite primary key.
-This is semantically equivalent for uniqueness and directly enables idempotent
-UPSERT (`ON CONFLICT`) writes required by the jobs.
 """
 
 import datetime

@@ -1,4 +1,11 @@
 from .base import Base
+from .job_runs import (
+    JobAlreadySucceeded,
+    RunContext,
+    get_failed_zones,
+    job_run,
+    record_zone_error,
+)
 from .models import (
     JobRun,
     JobRunZoneError,
@@ -9,7 +16,8 @@ from .models import (
     StressScoreByZone,
     ZonesHex,
 )
-from .session import get_engine, get_sessionmaker
+from .session import session_scope
+from .upsert import upsert
 
 __all__ = [
     "Base",
@@ -21,6 +29,11 @@ __all__ = [
     "StressScoreByZone",
     "JobRun",
     "JobRunZoneError",
-    "get_engine",
-    "get_sessionmaker",
+    "session_scope",
+    "upsert",
+    "job_run",
+    "record_zone_error",
+    "get_failed_zones",
+    "JobAlreadySucceeded",
+    "RunContext",
 ]
