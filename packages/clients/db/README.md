@@ -24,4 +24,3 @@ docker compose -f infra/docker/docker-compose.yml up -d
 # 2. créer extensions + tables (variables lues depuis .env)
 uv run python -m clients.db.init_db
 ```
-
