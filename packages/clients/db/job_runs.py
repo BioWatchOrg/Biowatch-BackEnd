@@ -159,8 +159,11 @@ def job_run(
         yield run, session
         session.commit()
     except Exception as exc:
-        session.rollback()
-        _finish_run(run.run_id, "failed", str(exc), engine)
+        try:
+            session.rollback()
+            _finish_run(run.run_id, "failed", str(exc), engine)
+        except Exception:
+            logger.exception("CLIENTS-DB-job_run : failed to record 'failed' status")
         logger.error(
             "CLIENTS-DB-job_run : run failed",
             extra={

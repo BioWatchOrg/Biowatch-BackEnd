@@ -57,8 +57,8 @@ def test_host_and_port_default_to_localhost(clean_env):
 def test_missing_required_var_raises(clean_env):
     clean_env.setenv("POSTGRES_PASSWORD", "p")
     clean_env.setenv("POSTGRES_DB", "d")
-    # POSTGRES_USER missing → explicit failure rather than a silent bad URL.
-    with pytest.raises(KeyError):
+    # POSTGRES_USER missing → explicit, readable failure naming the variable.
+    with pytest.raises(RuntimeError, match="POSTGRES_USER"):
         _build_database_url()
 
 

@@ -30,10 +30,16 @@ def _create_extensions(engine: Engine) -> None:
 
 def init_db(engine: Engine | None = None) -> None:
     """Create extensions and every table. Idempotent: safe to re-run."""
-    engine = engine or get_engine()
-    _create_extensions(engine)
-    Base.metadata.create_all(engine)
-    logger.info("CLIENTS-DB-init_db : schema initialized (%d tables)", len(Base.metadata.tables))
+    try:
+        engine = engine or get_engine()
+        _create_extensions(engine)
+        Base.metadata.create_all(engine)
+        logger.info(
+            "CLIENTS-DB-init_db : schema initialized (%d tables)", len(Base.metadata.tables)
+        )
+    except Exception as e:
+        logger.error("CLIENTS-DB-init_db : error initializing schema: %s", e)
+        raise
 
 
 def main() -> None:

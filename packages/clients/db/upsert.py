@@ -42,7 +42,9 @@ def upsert(
         # Refresh all non-PK columns that appear in the incoming rows.
         provided = {key for row in rows for key in row}
         update_columns = [
-            col.name for col in mapper.columns if col.name not in pk_columns and col.name in provided
+            col.name
+            for col in mapper.columns
+            if col.name not in pk_columns and col.name in provided
         ]
 
     stmt = insert(model).values(list(rows))

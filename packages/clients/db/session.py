@@ -1,3 +1,4 @@
+import logging
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -6,6 +7,8 @@ from functools import lru_cache
 from dotenv import load_dotenv
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session, sessionmaker
+
+logger = logging.getLogger(__name__)
 
 
 def _build_database_url() -> str:
@@ -16,9 +19,14 @@ def _build_database_url() -> str:
     if explicit_url:
         return explicit_url
 
-    user = os.environ["POSTGRES_USER"]
-    password = os.environ["POSTGRES_PASSWORD"]
-    db = os.environ["POSTGRES_DB"]
+    try:
+        user = os.environ["POSTGRES_USER"]
+        password = os.environ["POSTGRES_PASSWORD"]
+        db = os.environ["POSTGRES_DB"]
+    except KeyError as e:
+        raise RuntimeError(
+            f"Variable d'environnement manquante : {e.args[0]} (voir .env.example)"
+        ) from e
     host = os.environ.get("POSTGRES_HOST", "127.0.0.1")
     port = os.environ.get("POSTGRES_PORT", "5432")
 
@@ -51,8 +59,9 @@ def session_scope(engine: Engine | None = None) -> Iterator[Session]:
     try:
         yield session
         session.commit()
-    except Exception:
+    except Exception as e:
         session.rollback()
+        logger.error("CLIENTS-DB-session_scope : error occurred: %s", e)
         raise
     finally:
         session.close()
