@@ -7,6 +7,10 @@ from sqlalchemy.orm import Session
 
 from .base import Base
 
+# PostgreSQL caps a single statement at 65535 bind parameters. Each row uses one
+# parameter per column, so we chunk rows to stay under the limit (with margin).
+_MAX_BIND_PARAMS = 65535
+
 
 def upsert(
     session: Session,
@@ -29,6 +33,9 @@ def upsert(
         update_columns: columns to overwrite on conflict. Defaults to every
             non-primary-key column present, so the row is fully refreshed.
 
+    Large row sets are automatically split into batches so a single statement
+    never exceeds PostgreSQL's 65535-parameter limit.
+
     Returns nothing: the affected-row count is unreliable with ON CONFLICT on
     PostgreSQL (psycopg often reports -1), so it is intentionally not exposed.
     """
@@ -47,14 +54,19 @@ def upsert(
             if col.name not in pk_columns and col.name in provided
         ]
 
-    stmt = insert(model).values(list(rows))
-    if update_columns:
-        stmt = stmt.on_conflict_do_update(
-            index_elements=pk_columns,
-            set_={col: stmt.excluded[col] for col in update_columns},
-        )
-    else:
-        # Nothing to update (rows carry only PK columns) → ignore duplicates.
-        stmt = stmt.on_conflict_do_nothing(index_elements=pk_columns)
+    # One bind parameter per column per row → cap rows so params stay under limit.
+    params_per_row = max(len(row) for row in rows)
+    batch_size = max(1, _MAX_BIND_PARAMS // params_per_row)
 
-    session.execute(stmt)
+    for start in range(0, len(rows), batch_size):
+        batch = list(rows[start : start + batch_size])
+        stmt = insert(model).values(batch)
+        if update_columns:
+            stmt = stmt.on_conflict_do_update(
+                index_elements=pk_columns,
+                set_={col: stmt.excluded[col] for col in update_columns},
+            )
+        else:
+            # Nothing to update (rows carry only PK columns) → ignore duplicates.
+            stmt = stmt.on_conflict_do_nothing(index_elements=pk_columns)
+        session.execute(stmt)

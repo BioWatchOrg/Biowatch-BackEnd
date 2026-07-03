@@ -5,8 +5,9 @@ import json
 def compute_idempotency_key(
     job_name: str,
     scope: str,
-    period: str,
     source_version: str,
+    period: str | None = None,
+    resolution: int | None = None,
     env: str | None = None,
 ) -> str:
     """
@@ -28,6 +29,7 @@ def compute_idempotency_key(
         "scope": scope,
         "period": period,
         "source_version": source_version,
+        "resolution": resolution,
         "env": env,
     }
     # sort_keys makes the serialization stable regardless of dict insertion order.
