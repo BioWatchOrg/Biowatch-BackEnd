@@ -40,12 +40,3 @@ def init_db(engine: Engine | None = None) -> None:
     except Exception as e:
         logger.error("CLIENTS-DB-init_db : error initializing schema: %s", e)
         raise
-
-
-def main() -> None:
-    logging.basicConfig(level=logging.INFO)
-    init_db()
-
-
-if __name__ == "__main__":
-    main()

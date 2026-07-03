@@ -1,4 +1,5 @@
 from .base import Base
+from .init_db import init_db
 from .job_runs import (
     JobAlreadySucceeded,
     RunContext,
@@ -36,4 +37,5 @@ __all__ = [
     "get_failed_zones",
     "JobAlreadySucceeded",
     "RunContext",
+    "init_db",
 ]

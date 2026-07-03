@@ -11,6 +11,7 @@ from .db import (
     StressScoreByZone,
     ZonesHex,
     get_failed_zones,
+    init_db,
     job_run,
     record_zone_error,
     session_scope,
@@ -34,4 +35,5 @@ __all__ = [
     "get_failed_zones",
     "JobAlreadySucceeded",
     "RunContext",
+    "init_db",
 ]

@@ -1,9 +1,14 @@
 """Tests for clients.db.init_db — extension creation and schema bootstrap."""
 
+import importlib
 from unittest.mock import MagicMock
 
-import clients.db.init_db as init_db_mod
 from clients.db.init_db import EXTENSIONS, _create_extensions, init_db
+
+# `clients.db` réexporte la fonction `init_db`, ce qui masque l'attribut de
+# sous-module du même nom. On récupère donc le module via sys.modules (importlib)
+# plutôt que par `import clients.db.init_db as ...` (résolu par getattr → fonction).
+init_db_mod = importlib.import_module("clients.db.init_db")
 
 
 def test_extensions_are_postgis_and_pgcrypto():
