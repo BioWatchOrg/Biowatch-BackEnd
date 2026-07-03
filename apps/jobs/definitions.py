@@ -24,8 +24,8 @@ def _configure_generate_h3_grid(parser: ArgumentParser) -> None:
     parser.add_argument(
         "--resolution",
         type=int,
-        required=True,
-        help="Résolution H3 (entier).",
+        default=None,
+        help="Résolution H3 (entier). Par défaut : le default_res de l'AOI.",
     )
 
 

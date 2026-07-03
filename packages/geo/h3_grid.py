@@ -48,6 +48,10 @@ def compute_h3_cells(aoi_label: AoiLabel, resolution: int) -> list[H3Cell]:
 
     try:
         h3_poly = h3.geo_to_h3shape(aoi.geom.__geo_interface__)  # type: ignore
+        # Règle de bordure FIGÉE : centroid-in-polygon. `h3shape_to_cells` retient
+        # une cellule ssi son centre tombe dans le polygone (mode containment par
+        # défaut de h3 v4). Ne pas changer sans bump de version d'AOI : la règle
+        # détermine quelles cellules de bord entrent dans la grille.
         return h3.h3shape_to_cells(h3_poly, resolution)  # type: ignore
     except Exception as e:
         logger.error(
@@ -78,7 +82,9 @@ def _cell_to_geometries(cell: H3Cell) -> tuple[Polygon, Point, Polygon]:
         raise H3GridGenerationError(f"Error converting H3 cell '{cell}' to geometries: {e}")
 
 
-def generate_h3_grid(aoi_label: AoiLabel, resolution: int, engine: Engine | None = None) -> None:
+def generate_h3_grid(
+    aoi_label: AoiLabel, resolution: int | None = None, engine: Engine | None = None
+) -> None:
     """
     Generate the H3 grid for an AOI + resolution and persist it into `zones_hex`.
 
@@ -90,8 +96,12 @@ def generate_h3_grid(aoi_label: AoiLabel, resolution: int, engine: Engine | None
     version in the registry when its geometry changes and the grid is recomputed.
     Validating the AOI before `job_run` also avoids recording a run for an
     unknown/broken AOI.
+
+    `resolution=None` falls back to the AOI's `default_res` from the registry.
     """
     aoi: AOI = load_aoi(aoi_label)
+    if resolution is None:
+        resolution = aoi.default_res
 
     idempotency_key = compute_idempotency_key(
         job_name="generate_h3_grid",

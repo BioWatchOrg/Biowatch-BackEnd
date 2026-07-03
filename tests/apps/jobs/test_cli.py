@@ -46,10 +46,17 @@ def test_generate_h3_grid_parses_args():
     assert isinstance(args.resolution, int)
 
 
-def test_generate_h3_grid_requires_aoi_and_resolution():
+def test_generate_h3_grid_requires_aoi():
     parser = build_parser()
     with pytest.raises(SystemExit):
         parser.parse_args(["generate_h3_grid"])
+
+
+def test_generate_h3_grid_resolution_is_optional_defaults_to_none():
+    """--resolution omis ⇒ None : generate_h3_grid retombera sur default_res."""
+    parser = build_parser()
+    args = parser.parse_args(["generate_h3_grid", "--aoi", "idf"])
+    assert args.resolution is None
 
 
 def test_generate_h3_grid_resolution_must_be_int():

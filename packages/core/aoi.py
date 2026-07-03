@@ -32,6 +32,7 @@ class AOI:
     geom: Polygon | MultiPolygon
     bbox: tuple[float, float, float, float]
     version: str
+    default_res: int
 
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -56,14 +57,15 @@ def load_aoi(aoi_label: AoiLabel) -> AOI:
     """
     for aoi_info in aoi_data["aois"]:
         if aoi_info["label"] == aoi_label:
-            if "version" not in aoi_info:
+            missing = [f for f in ("version", "default_res") if f not in aoi_info]
+            if missing:
                 logger.error(
-                    f"CORE-AOI-load_aoi : AOI '{aoi_label}' has no 'version' in the registry "
-                    "(aoi_registry.json)."
+                    f"CORE-AOI-load_aoi : AOI '{aoi_label}' missing registry field(s) "
+                    f"{missing} (aoi_registry.json)."
                 )
                 raise LoadingAOIError(
-                    f"AOI '{aoi_label}' has no 'version' in the registry (aoi_registry.json). "
-                    "Add a 'version' field to its entry."
+                    f"AOI '{aoi_label}' missing registry field(s) {missing} in "
+                    "aoi_registry.json. Add them to its entry."
                 )
             try:
                 geojson_path = os.path.join(ROOT_DIR, aoi_info["geojson_path"])
@@ -74,6 +76,7 @@ def load_aoi(aoi_label: AoiLabel) -> AOI:
                     geom=polygon,
                     bbox=polygon.bounds,
                     version=aoi_info["version"],
+                    default_res=aoi_info["default_res"],
                 )
             except Exception as e:
                 logger.error(

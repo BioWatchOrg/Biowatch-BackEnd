@@ -47,6 +47,13 @@ def test_load_aoi_carries_registry_version():
     assert aoi.version == expected
 
 
+def test_load_aoi_carries_default_res():
+    """default_res vient du registry (défaut de résolution H3 par AOI)."""
+    aoi = load_aoi("idf")
+    expected = next(a["default_res"] for a in aoi_data["aois"] if a["label"] == "idf")
+    assert aoi.default_res == expected
+
+
 def test_load_aoi_geometry_is_polygonal_valid_and_non_empty():
     geom = load_aoi("idf").geom
     assert isinstance(geom, (Polygon, MultiPolygon))
@@ -78,8 +85,8 @@ def test_load_aoi_unknown_raises_undefined():
         load_aoi("zzz")
 
 
-def test_load_aoi_missing_version_raises_clear_error(monkeypatch):
-    """Entrée de registry sans 'version' → erreur explicite, pas de KeyError brut."""
+def test_load_aoi_missing_required_field_raises_clear_error(monkeypatch):
+    """Entrée de registry incomplète → erreur explicite, pas de KeyError brut."""
     import core.aoi as aoi_mod
 
     monkeypatch.setattr(
@@ -87,7 +94,7 @@ def test_load_aoi_missing_version_raises_clear_error(monkeypatch):
         "aoi_data",
         {"aois": [{"label": "tst", "name": "Test", "geojson_path": "x.geojson"}]},
     )
-    with pytest.raises(aoi_mod.LoadingAOIError, match="no 'version'"):
+    with pytest.raises(aoi_mod.LoadingAOIError, match="missing registry field"):
         load_aoi("tst")
 
 
