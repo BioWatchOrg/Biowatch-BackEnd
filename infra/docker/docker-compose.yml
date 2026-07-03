@@ -9,7 +9,9 @@ services:
       - "127.0.0.1:5432:5432"
     volumes:
       - postgis_data:/var/lib/postgresql/data
-      - ../../infra/postgres/init:/docker-entrypoint-initdb.d:ro
+      # Schema is owned by the SQLAlchemy ORM (packages/clients/db), not raw SQL.
+      # After the container is up, create extensions + tables with:
+      #   uv run python -m clients.db.init_db
 
 volumes:
   postgis_data:

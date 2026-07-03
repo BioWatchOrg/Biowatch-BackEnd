@@ -185,6 +185,28 @@ Tout job doit être relançable sans produire de doublons.
 
 Toute proposition liée aux jobs doit respecter cette logique.
 
+## Accès base de données (packages/clients/db)
+
+Couche d'accès DB via ORM SQLAlchemy. **Source de vérité de l'API** : lire
+`packages/clients/db/` et `docs/database-usage.md` avant d'écrire du code DB.
+Ne jamais faire d'accès DB direct hors de cette couche (rien dans `scoring`/`api`
+ne contourne `clients`).
+
+Règles :
+- **Job** → englober dans `job_run(...)` (idempotence + statut + session). Clé via
+  `compute_idempotency_key(...)` (`core`). Attraper `JobAlreadySucceeded` pour skip.
+- **Écriture / update** → `upsert(session, Model, rows)` (jamais d'`INSERT` manuel).
+  Conflit sur la PK = **UPDATE en place** (pas de doublon, pas de delete).
+- **Lecture / delete hors job** → `session_scope()` (aucune ligne `job_runs` créée).
+
+Forme d'appel exacte (à respecter) :
+
+```python
+with job_run(job, scope=..., bucket_id=..., idempotency_key=key) as (run, session):
+    upsert(session, Model, rows)             # commit auto en sortie propre
+    record_zone_error(run.run_id, z, msg)    # erreur par zone → statut partial
+```
+
 ## Exigences de qualité
 
 **Code** : lisible, structuré, typé sur la logique métier. Pas de bricolage. Pas de mélange logique métier / infrastructure.
