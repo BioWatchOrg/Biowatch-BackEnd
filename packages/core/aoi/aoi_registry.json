@@ -3,8 +3,9 @@
         {
             "label" : "idf",
             "name" : "Île-de-France",
-            "geojson_path" : "packages/core/aoi/regions/idf.geojson", 
-            "default_res" : 8
+            "geojson_path" : "packages/core/aoi/regions/idf.geojson",
+            "default_res" : 8,
+            "version" : "1.0.0"
         }
     ]
 }

@@ -40,6 +40,13 @@ def test_load_aoi_sets_label_and_name():
     assert aoi.name == "Île-de-France"
 
 
+def test_load_aoi_carries_registry_version():
+    """La version vient du registry (source of truth), pas d'une constante."""
+    aoi = load_aoi("idf")
+    expected = next(a["version"] for a in aoi_data["aois"] if a["label"] == "idf")
+    assert aoi.version == expected
+
+
 def test_load_aoi_geometry_is_polygonal_valid_and_non_empty():
     geom = load_aoi("idf").geom
     assert isinstance(geom, (Polygon, MultiPolygon))
@@ -69,6 +76,19 @@ def test_load_aoi_is_deterministic():
 def test_load_aoi_unknown_raises_undefined():
     with pytest.raises(UndefinedAOIError):
         load_aoi("zzz")
+
+
+def test_load_aoi_missing_version_raises_clear_error(monkeypatch):
+    """Entrée de registry sans 'version' → erreur explicite, pas de KeyError brut."""
+    import core.aoi as aoi_mod
+
+    monkeypatch.setattr(
+        aoi_mod,
+        "aoi_data",
+        {"aois": [{"label": "tst", "name": "Test", "geojson_path": "x.geojson"}]},
+    )
+    with pytest.raises(aoi_mod.LoadingAOIError, match="no 'version'"):
+        load_aoi("tst")
 
 
 @pytest.mark.parametrize("label", REGISTRY_LABELS)

@@ -22,7 +22,6 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
 GRID_STORE_ROOT = "docs/grids"
-AOI_VERSION = "1.0.0"  # TODO : SEE if we add aoi versioning
 
 H3Cell: TypeAlias = str  # H3 cell id (hex string)
 
@@ -83,14 +82,22 @@ def generate_h3_grid(aoi_label: AoiLabel, resolution: int, engine: Engine | None
     """
     Generate the H3 grid for an AOI + resolution and persist it into `zones_hex`.
 
-    Idempotent: guarded by `job_run` (same aoi + resolution + source version ⇒
+    Idempotent: guarded by `job_run` (same aoi + resolution + aoi version ⇒
     skip if already succeeded) and written via `upsert` (no duplicates on re-run).
+
+    The AOI is resolved up front so the run is keyed on its declared `version`
+    (registry source of truth) rather than a hardcoded constant: bump the AOI
+    version in the registry when its geometry changes and the grid is recomputed.
+    Validating the AOI before `job_run` also avoids recording a run for an
+    unknown/broken AOI.
     """
+    aoi: AOI = load_aoi(aoi_label)
+
     idempotency_key = compute_idempotency_key(
         job_name="generate_h3_grid",
         scope=aoi_label,
         resolution=resolution,
-        source_version=AOI_VERSION,
+        source_version=aoi.version,
     )
     try:
         with job_run(
@@ -123,7 +130,7 @@ def generate_h3_grid(aoi_label: AoiLabel, resolution: int, engine: Engine | None
                         "centroid": from_shape(centroid, srid=4326),
                         "bbox": from_shape(bbox, srid=4326),
                         "aoi_id": aoi_label,
-                        "aoi_version": AOI_VERSION,
+                        "aoi_version": aoi.version,
                     }
                 )
 
@@ -142,7 +149,13 @@ def generate_h3_grid(aoi_label: AoiLabel, resolution: int, engine: Engine | None
                 resolution,
             )
             # Artefact grille (liste des cellules) pour reproductibilité / debug.
-            out_dir = os.path.join(GRID_STORE_ROOT, f"aoi={aoi_label}", f"res={resolution}")
+            # Partitionné par version d'AOI : deux versions ne s'écrasent pas.
+            out_dir = os.path.join(
+                GRID_STORE_ROOT,
+                f"aoi={aoi_label}",
+                f"version={aoi.version}",
+                f"res={resolution}",
+            )
             os.makedirs(out_dir, exist_ok=True)
             write_parquet(pd.DataFrame({"h3_index": cells}), os.path.join(out_dir, "grid.parquet"))
 
