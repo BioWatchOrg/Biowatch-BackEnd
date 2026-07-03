@@ -10,6 +10,8 @@ you need to provide .env file with var listed in .env.example
 1) run postgis
 ```bash
 docker compose -f infra/docker/docker-compose.yml up -d postgis
+# 2. créer extensions + tables (variables lues depuis .env)
+uv run python -m clients.db.init_db
 ```
 2) see logs
 ```bash
@@ -24,5 +26,7 @@ docker exec -it postgis psql -U <user_name> -d <db_name>
 ```bash 
 docker compose -f infra/docker/docker-compose.yml down -v && \
 docker compose -f infra/docker/docker-compose.yml up -d postgis
+# 2. créer extensions + tables (variables lues depuis .env)
+uv run python -m clients.db.init_db
 ```
 ---
