@@ -19,7 +19,6 @@ from shapely.geometry import Point, Polygon, box
 from sqlalchemy import Engine
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
 
 GRID_STORE_ROOT = "docs/grids"
 
@@ -115,19 +114,24 @@ def generate_h3_grid(
             scope=aoi_label,
             idempotency_key=idempotency_key,
             engine=engine,
-        ) as (_, session):
+        ) as (run, session):
+            log_ctx = {
+                "run_id": str(run.run_id),
+                "aoi": aoi_label,
+                "resolution": resolution,
+            }
             logger.info(
-                'generate_h3_grid : generating H3 grid for AOI "%s" at resolution %s',
-                aoi_label,
-                resolution,
+                "generating H3 grid",
+                extra={"event": "h3_grid.compute", "context": log_ctx},
             )
             cells = compute_h3_cells(aoi_label, resolution)
 
             logger.info(
-                'generate_h3_grid : computed %s H3 cells for AOI "%s" at resolution %s',
-                len(cells),
-                aoi_label,
-                resolution,
+                "computed H3 cells",
+                extra={
+                    "event": "h3_grid.computed",
+                    "context": {**log_ctx, "n_cells": len(cells)},
+                },
             )
             rows: list[dict[str, object]] = []
             for cell in cells:
@@ -144,19 +148,14 @@ def generate_h3_grid(
                     }
                 )
 
-            logger.info(
-                'generate_h3_grid : upserting %s rows into zones_hex for AOI "%s" at resolution %s',
-                len(rows),
-                aoi_label,
-                resolution,
-            )
             upsert(session=session, model=ZonesHex, rows=rows)
 
             logger.info(
-                'generate_h3_grid : successfully upserted %s rows into zones_hex for AOI "%s" at resolution %s',
-                len(rows),
-                aoi_label,
-                resolution,
+                "upserted rows into zones_hex",
+                extra={
+                    "event": "h3_grid.upserted",
+                    "context": {**log_ctx, "n_rows": len(rows)},
+                },
             )
             # Artefact grille (liste des cellules) pour reproductibilité / debug.
             # Partitionné par version d'AOI : deux versions ne s'écrasent pas.
@@ -170,5 +169,11 @@ def generate_h3_grid(
             write_parquet(pd.DataFrame({"h3_index": cells}), os.path.join(out_dir, "grid.parquet"))
 
     except JobAlreadySucceeded:
-        logger.info("generate_h3_grid : déjà généré pour %s res=%s, skip", aoi_label, resolution)
+        logger.info(
+            "grid already generated, skipping",
+            extra={
+                "event": "h3_grid.skip",
+                "context": {"aoi": aoi_label, "resolution": resolution},
+            },
+        )
         return

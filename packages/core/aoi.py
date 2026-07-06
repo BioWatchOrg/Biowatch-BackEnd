@@ -7,7 +7,6 @@ from typing import TypeAlias
 from shapely.geometry import MultiPolygon, Polygon, shape
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.WARNING)
 
 
 class UndefinedAOIError(Exception):

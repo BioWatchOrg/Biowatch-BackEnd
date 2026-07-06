@@ -247,7 +247,6 @@ docker-data/
 *.tar
 
 #Logs génériques (hors Django)
-logs/
 *.out
 
 *.parquet

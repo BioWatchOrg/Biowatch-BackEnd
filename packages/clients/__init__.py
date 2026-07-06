@@ -1,3 +1,5 @@
+from .logs import setup_logging
+
 from .db import (
     Base,
     JobAlreadySucceeded,
@@ -36,4 +38,5 @@ __all__ = [
     "JobAlreadySucceeded",
     "RunContext",
     "init_db",
+    "setup_logging",
 ]
