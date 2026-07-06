@@ -31,7 +31,7 @@ jobs:
           MIRROR_TOKEN: ${{ secrets.BIOWATCH_MIRROR_TOKEN }}
         run: |
           git clone \
-            -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$MIRROR_TOKEN" | base64)" \
+            -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$MIRROR_TOKEN" | base64 -w0)" \
             https://github.com/BioWatchOrg/biowatch.git \
             /tmp/biowatch-central
 
