@@ -39,7 +39,8 @@ def compute_h3_cells(aoi_label: AoiLabel, resolution: int) -> list[H3Cell]:
     """
     if not aoi_registry(aoi_label):
         logger.error(
-            f"GEO-H3-compute_h3_cells : AOI with label '{aoi_label}' is not defined in the registry."
+            "AOI not defined in registry",
+            extra={"event": "h3_grid.aoi_undefined", "context": {"aoi": aoi_label}},
         )
         raise UndefinedAOIError(f"AOI with label '{aoi_label}' is not defined in the registry.")
 
@@ -54,7 +55,11 @@ def compute_h3_cells(aoi_label: AoiLabel, resolution: int) -> list[H3Cell]:
         return h3.h3shape_to_cells(h3_poly, resolution)  # type: ignore
     except Exception as e:
         logger.error(
-            f"GEO-H3-compute_h3_cells : Error generating H3 grid for AOI '{aoi_label}' at resolution {resolution}: {e}"
+            "error generating H3 grid",
+            extra={
+                "event": "h3_grid.compute_error",
+                "context": {"aoi": aoi_label, "resolution": resolution, "error": str(e)},
+            },
         )
         raise H3GridGenerationError(
             f"Error generating H3 grid for AOI '{aoi_label}' at resolution {resolution}: {e}"
@@ -76,7 +81,8 @@ def _cell_to_geometries(cell: H3Cell) -> tuple[Polygon, Point, Polygon]:
         return polygon, centroid, bbox
     except Exception as e:
         logger.error(
-            f"GEO-H3-_cell_to_geometries : Error converting H3 cell '{cell}' to geometries: {e}"
+            "error converting H3 cell to geometries",
+            extra={"event": "h3_grid.cell_error", "context": {"cell": cell, "error": str(e)}},
         )
         raise H3GridGenerationError(f"Error converting H3 cell '{cell}' to geometries: {e}")
 

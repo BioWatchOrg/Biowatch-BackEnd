@@ -166,7 +166,10 @@ def job_run(
             session.rollback()
             _finish_run(run.run_id, "failed", str(exc), engine)
         except Exception:
-            logger.exception("CLIENTS-DB-job_run : failed to record 'failed' status")
+            logger.exception(
+                "failed to record 'failed' status",
+                extra={"event": "job.status_write_error"},
+            )
         logger.error(
             "CLIENTS-DB-job_run : run failed",
             extra={

@@ -35,8 +35,15 @@ def init_db(engine: Engine | None = None) -> None:
         _create_extensions(engine)
         Base.metadata.create_all(engine)
         logger.info(
-            "CLIENTS-DB-init_db : schema initialized (%d tables)", len(Base.metadata.tables)
+            "schema initialized",
+            extra={
+                "event": "db.init_db.success",
+                "context": {"n_tables": len(Base.metadata.tables)},
+            },
         )
     except Exception as e:
-        logger.error("CLIENTS-DB-init_db : error initializing schema: %s", e)
+        logger.error(
+            "error initializing schema",
+            extra={"event": "db.init_db.error", "context": {"error": str(e)}},
+        )
         raise
