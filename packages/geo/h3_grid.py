@@ -114,12 +114,9 @@ def generate_h3_grid(
             scope=aoi_label,
             idempotency_key=idempotency_key,
             engine=engine,
-        ) as (run, session):
-            log_ctx = {
-                "run_id": str(run.run_id),
-                "aoi": aoi_label,
-                "resolution": resolution,
-            }
+        ) as (_, session):
+            # run_id is injected into every log below by ContextFilter (job_run).
+            log_ctx = {"aoi": aoi_label, "resolution": resolution}
             logger.info(
                 "generating H3 grid",
                 extra={"event": "h3_grid.compute", "context": log_ctx},
@@ -173,7 +170,11 @@ def generate_h3_grid(
             "grid already generated, skipping",
             extra={
                 "event": "h3_grid.skip",
-                "context": {"aoi": aoi_label, "resolution": resolution},
+                "context": {
+                    "aoi": aoi_label,
+                    "resolution": resolution,
+                    "idempotency_key": idempotency_key,
+                },
             },
         )
         return

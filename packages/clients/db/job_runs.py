@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from sqlalchemy import Engine, delete, func, select
 from sqlalchemy.orm import Session
 
+from ..logs import run_id_var
 from .models import JobRun, JobRunZoneError
 from .session import get_sessionmaker, session_scope
 
@@ -149,9 +150,11 @@ def job_run(
     retryable (see `get_failed_zones` for targeted retry).
     """
     run = _start_run(job_name, scope, idempotency_key, bucket_id, engine)
+    # Expose the run_id to every log emitted inside the block (see ContextFilter).
+    run_id_token = run_id_var.set(str(run.run_id))
     logger.info(
         "CLIENTS-DB-job_run : run started",
-        extra={"run_id": str(run.run_id), "idempotency_key": idempotency_key, "event": "job.start"},
+        extra={"idempotency_key": idempotency_key, "event": "job.start"},
     )
     started = _now()
     session = get_sessionmaker(engine)()
@@ -167,7 +170,6 @@ def job_run(
         logger.error(
             "CLIENTS-DB-job_run : run failed",
             extra={
-                "run_id": str(run.run_id),
                 "idempotency_key": idempotency_key,
                 "event": "job.failed",
                 "duration_ms": int((_now() - started).total_seconds() * 1000),
@@ -181,7 +183,6 @@ def job_run(
         logger.info(
             "CLIENTS-DB-job_run : run %s" % status,
             extra={
-                "run_id": str(run.run_id),
                 "idempotency_key": idempotency_key,
                 "event": "job.%s" % status,
                 "duration_ms": int((_now() - started).total_seconds() * 1000),
@@ -189,6 +190,7 @@ def job_run(
         )
     finally:
         session.close()
+        run_id_var.reset(run_id_token)
 
 
 def record_zone_error(

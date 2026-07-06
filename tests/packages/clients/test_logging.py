@@ -102,6 +102,33 @@ def test_setup_logging_is_idempotent_and_emits_json(capsys):
         root.handlers.clear()
 
 
+def test_ambient_run_id_is_injected_into_every_log(capsys):
+    from clients import run_id_var
+
+    setup_logging(service="biowatch-jobs", level="INFO")
+    root = logging.getLogger()
+    token = run_id_var.set("run-42")
+    try:
+        # A log with no explicit run_id still carries the ambient one.
+        logging.getLogger("geo.h3_grid").error("cell conversion failed")
+        payload = json.loads(capsys.readouterr().out.strip())
+        assert payload["context"]["run_id"] == "run-42"
+    finally:
+        run_id_var.reset(token)
+        root.handlers.clear()
+
+
+def test_ambient_run_id_absent_outside_a_run(capsys):
+    setup_logging(service="biowatch-jobs", level="INFO")
+    root = logging.getLogger()
+    try:
+        logging.getLogger("some.reader").info("plain read")
+        payload = json.loads(capsys.readouterr().out.strip())
+        assert "context" not in payload or "run_id" not in payload.get("context", {})
+    finally:
+        root.handlers.clear()
+
+
 def test_setup_logging_reads_level_from_env(monkeypatch):
     monkeypatch.setenv("LOG_LEVEL", "warning")
     setup_logging(service="biowatch-jobs")

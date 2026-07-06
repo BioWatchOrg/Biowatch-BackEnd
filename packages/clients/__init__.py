@@ -1,4 +1,4 @@
-from .logs import setup_logging
+from .logs import request_id_var, run_id_var, setup_logging
 
 from .db import (
     Base,
@@ -39,4 +39,6 @@ __all__ = [
     "RunContext",
     "init_db",
     "setup_logging",
+    "run_id_var",
+    "request_id_var",
 ]

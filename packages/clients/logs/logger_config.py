@@ -29,6 +29,7 @@ import json
 import logging
 import os
 import sys
+from contextvars import ContextVar
 
 # Attributes the stdlib puts on every LogRecord. Anything NOT in here that a
 # caller attached via `extra=` is application context, so it goes into `context`.
@@ -39,6 +40,29 @@ _RESERVED_ATTRS = set(logging.LogRecord("", 0, "", 0, "", (), None).__dict__) | 
 }
 
 DEFAULT_LEVEL = "INFO"
+
+# Ambient correlation ids for the current execution. `job_run` sets `run_id_var`
+# for the duration of a job; the API sets `request_id_var` per request. The
+# ContextFilter below copies whichever is set onto every LogRecord, so *every*
+# business log emitted during a run/request carries the id without threading it
+# through function signatures.
+run_id_var: ContextVar[str | None] = ContextVar("run_id", default=None)
+request_id_var: ContextVar[str | None] = ContextVar("request_id", default=None)
+
+
+class ContextFilter(logging.Filter):
+    """Inject the ambient run_id / request_id onto records that don't set one."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if not hasattr(record, "run_id"):
+            run_id = run_id_var.get()
+            if run_id is not None:
+                record.run_id = run_id
+        if not hasattr(record, "request_id"):
+            request_id = request_id_var.get()
+            if request_id is not None:
+                record.request_id = request_id
+        return True
 
 
 class JsonFormatter(logging.Formatter):
@@ -103,5 +127,6 @@ def setup_logging(service: str = "biowatch", level: str | int | None = None) -> 
 
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(JsonFormatter(service))
+    handler.addFilter(ContextFilter())
     root.addHandler(handler)
     root.setLevel(resolved)
