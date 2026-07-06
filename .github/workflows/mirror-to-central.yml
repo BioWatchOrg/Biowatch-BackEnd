@@ -40,6 +40,7 @@ jobs:
           mkdir -p /tmp/biowatch-central/backend
           rsync -av --delete \
             --exclude='.git' \
+            --exclude='.github/workflows/mirror-to-central.yml' \
             ./ /tmp/biowatch-central/backend/
 
       - name: Commit and push to central
