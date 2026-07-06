@@ -7,7 +7,6 @@ from typing import TypeAlias
 from shapely.geometry import MultiPolygon, Polygon, shape
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.WARNING)
 
 
 class UndefinedAOIError(Exception):
@@ -60,8 +59,11 @@ def load_aoi(aoi_label: AoiLabel) -> AOI:
             missing = [f for f in ("version", "default_res") if f not in aoi_info]
             if missing:
                 logger.error(
-                    f"CORE-AOI-load_aoi : AOI '{aoi_label}' missing registry field(s) "
-                    f"{missing} (aoi_registry.json)."
+                    "AOI missing registry field(s)",
+                    extra={
+                        "event": "aoi.missing_field",
+                        "context": {"aoi": aoi_label, "missing": missing},
+                    },
                 )
                 raise LoadingAOIError(
                     f"AOI '{aoi_label}' missing registry field(s) {missing} in "
@@ -80,12 +82,19 @@ def load_aoi(aoi_label: AoiLabel) -> AOI:
                 )
             except Exception as e:
                 logger.error(
-                    f"CORE-AOI-load_aoi : Error loading AOI with label '{aoi_label}': {e}"
+                    "error loading AOI",
+                    extra={
+                        "event": "aoi.load_error",
+                        "context": {"aoi": aoi_label, "error": str(e)},
+                    },
                 )
                 raise LoadingAOIError(
                     f"Error loading AOI with label '{aoi_label}': {e}"
                 ) from e
-    logger.error(f"CORE-AOI-load_aoi : AOI with label '{aoi_label}' not found in the registry.")
+    logger.error(
+        "AOI not found in registry",
+        extra={"event": "aoi.not_found", "context": {"aoi": aoi_label}},
+    )
     raise UndefinedAOIError(f"AOI with label '{aoi_label}' not found in the registry.")
 
 
@@ -100,6 +109,7 @@ def _load_polygon(geojson_path: str) -> Polygon | MultiPolygon:
         return geom
     else:
         logger.error(
-            f"CORE-AOI-load_polygon : Geometry in {geojson_path} is not a Polygon or MultiPolygon."
+            "geometry is not a Polygon or MultiPolygon",
+            extra={"event": "aoi.invalid_geometry", "context": {"path": geojson_path}},
         )
         raise GeoJsonValueError(f"Geometry in {geojson_path} is not a Polygon or MultiPolygon.")

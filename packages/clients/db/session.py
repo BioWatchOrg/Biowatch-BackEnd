@@ -61,7 +61,10 @@ def session_scope(engine: Engine | None = None) -> Iterator[Session]:
         session.commit()
     except Exception as e:
         session.rollback()
-        logger.error("CLIENTS-DB-session_scope : error occurred: %s", e)
+        logger.error(
+            "session rolled back on error",
+            extra={"event": "db.session_error", "context": {"error": str(e)}},
+        )
         raise
     finally:
         session.close()

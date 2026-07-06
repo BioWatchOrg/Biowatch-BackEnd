@@ -19,7 +19,6 @@ from shapely.geometry import Point, Polygon, box
 from sqlalchemy import Engine
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
 
 GRID_STORE_ROOT = "docs/grids"
 
@@ -40,7 +39,8 @@ def compute_h3_cells(aoi_label: AoiLabel, resolution: int) -> list[H3Cell]:
     """
     if not aoi_registry(aoi_label):
         logger.error(
-            f"GEO-H3-compute_h3_cells : AOI with label '{aoi_label}' is not defined in the registry."
+            "AOI not defined in registry",
+            extra={"event": "h3_grid.aoi_undefined", "context": {"aoi": aoi_label}},
         )
         raise UndefinedAOIError(f"AOI with label '{aoi_label}' is not defined in the registry.")
 
@@ -55,7 +55,11 @@ def compute_h3_cells(aoi_label: AoiLabel, resolution: int) -> list[H3Cell]:
         return h3.h3shape_to_cells(h3_poly, resolution)  # type: ignore
     except Exception as e:
         logger.error(
-            f"GEO-H3-compute_h3_cells : Error generating H3 grid for AOI '{aoi_label}' at resolution {resolution}: {e}"
+            "error generating H3 grid",
+            extra={
+                "event": "h3_grid.compute_error",
+                "context": {"aoi": aoi_label, "resolution": resolution, "error": str(e)},
+            },
         )
         raise H3GridGenerationError(
             f"Error generating H3 grid for AOI '{aoi_label}' at resolution {resolution}: {e}"
@@ -77,7 +81,8 @@ def _cell_to_geometries(cell: H3Cell) -> tuple[Polygon, Point, Polygon]:
         return polygon, centroid, bbox
     except Exception as e:
         logger.error(
-            f"GEO-H3-_cell_to_geometries : Error converting H3 cell '{cell}' to geometries: {e}"
+            "error converting H3 cell to geometries",
+            extra={"event": "h3_grid.cell_error", "context": {"cell": cell, "error": str(e)}},
         )
         raise H3GridGenerationError(f"Error converting H3 cell '{cell}' to geometries: {e}")
 
@@ -116,18 +121,20 @@ def generate_h3_grid(
             idempotency_key=idempotency_key,
             engine=engine,
         ) as (_, session):
+            # run_id is injected into every log below by ContextFilter (job_run).
+            log_ctx = {"aoi": aoi_label, "resolution": resolution}
             logger.info(
-                'generate_h3_grid : generating H3 grid for AOI "%s" at resolution %s',
-                aoi_label,
-                resolution,
+                "generating H3 grid",
+                extra={"event": "h3_grid.compute", "context": log_ctx},
             )
             cells = compute_h3_cells(aoi_label, resolution)
 
             logger.info(
-                'generate_h3_grid : computed %s H3 cells for AOI "%s" at resolution %s',
-                len(cells),
-                aoi_label,
-                resolution,
+                "computed H3 cells",
+                extra={
+                    "event": "h3_grid.computed",
+                    "context": {**log_ctx, "n_cells": len(cells)},
+                },
             )
             rows: list[dict[str, object]] = []
             for cell in cells:
@@ -144,19 +151,14 @@ def generate_h3_grid(
                     }
                 )
 
-            logger.info(
-                'generate_h3_grid : upserting %s rows into zones_hex for AOI "%s" at resolution %s',
-                len(rows),
-                aoi_label,
-                resolution,
-            )
             upsert(session=session, model=ZonesHex, rows=rows)
 
             logger.info(
-                'generate_h3_grid : successfully upserted %s rows into zones_hex for AOI "%s" at resolution %s',
-                len(rows),
-                aoi_label,
-                resolution,
+                "upserted rows into zones_hex",
+                extra={
+                    "event": "h3_grid.upserted",
+                    "context": {**log_ctx, "n_rows": len(rows)},
+                },
             )
             # Artefact grille (liste des cellules) pour reproductibilité / debug.
             # Partitionné par version d'AOI : deux versions ne s'écrasent pas.
@@ -170,5 +172,15 @@ def generate_h3_grid(
             write_parquet(pd.DataFrame({"h3_index": cells}), os.path.join(out_dir, "grid.parquet"))
 
     except JobAlreadySucceeded:
-        logger.info("generate_h3_grid : déjà généré pour %s res=%s, skip", aoi_label, resolution)
+        logger.info(
+            "grid already generated, skipping",
+            extra={
+                "event": "h3_grid.skip",
+                "context": {
+                    "aoi": aoi_label,
+                    "resolution": resolution,
+                    "idempotency_key": idempotency_key,
+                },
+            },
+        )
         return
