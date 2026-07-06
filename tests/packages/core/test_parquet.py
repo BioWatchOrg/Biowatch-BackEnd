@@ -10,7 +10,7 @@ def sample_df() -> pd.DataFrame:
         {
             "zone_id": ["8a1fb46622dffff", "8a1fb46622d7fff"],
             "ndvi": [0.42, 0.71],
-            "bucket_id": [202601, 202601],
+            "bucket_id": ["2026-01", "2026-01"],
         }
     )
 
