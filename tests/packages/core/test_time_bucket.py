@@ -132,7 +132,7 @@ def test_invalid_iso_string_raises():
         bucket_id("not-a-date", BucketFormat.MONTHLY)
 
 
-@pytest.mark.parametrize("bad", [42, 3.14, None, ["2024-01-01"], {"y": 2024}])
+@pytest.mark.parametrize("bad", [42, 3.14, ["2024-01-01"], {"y": 2024}])
 def test_unsupported_type_raises(bad):
     with pytest.raises(UnsupportedDateType):
         bucket_id(bad, BucketFormat.MONTHLY)
@@ -148,3 +148,11 @@ def test_unsupported_format_raises():
 
 def test_biowatch_now_returns_a_date():
     assert isinstance(biowatch_now(), date)
+
+
+def test_none_falls_back_to_current_date():
+    assert bucket_id(None) == bucket_id(biowatch_now())
+
+
+def test_no_arg_defaults_to_current_date():
+    assert bucket_id() == bucket_id(biowatch_now())

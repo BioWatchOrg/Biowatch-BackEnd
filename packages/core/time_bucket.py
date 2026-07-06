@@ -30,17 +30,20 @@ class BucketFormat(enum.Enum):
     YEARLY = "yearly"
 
 
-def _coerce_to_date(dt: Any) -> date:
-    match dt:
+def _coerce_to_date(value: Any) -> date:
+    match value:
+        case None:
+            return biowatch_now()
         case str():
-            return datetime.fromisoformat(dt).date()
+            return datetime.fromisoformat(value).date()
         case datetime():
-            return dt.date()
+            return value.date()
         case date():
-            return dt
+            return value
         case _:
             raise UnsupportedDateType(
-                f"Unsupported type for bucket ID: {type(dt)}. Expected str, datetime, or date."
+                f"Unsupported type for bucket ID: {type(value)}. "
+                "Expected None, str, datetime, or date."
             )
 
 
@@ -56,15 +59,21 @@ def _format_to_str(dt: date, format: BucketFormat) -> str:
         raise UnsupportedBucketFormat(f"Unsupported bucket format: {format}")
 
 
-def bucket_id(date: Any, format: BucketFormat = BucketFormat.MONTHLY) -> BucketId:
+def bucket_id(
+    value: datetime | date | str | None = None,
+    format: BucketFormat = BucketFormat.MONTHLY,
+) -> BucketId:
     """
-    Returns the bucket ID for a given datetime and format.
+    Return the bucket ID for a given date and format.
 
-    returns :
-        'YYYY' for yearly buckets,
-        'YYYY-MM' for monthly buckets,
-        'YYYY-bB' for bimonthly buckets (where B is the bimester
+    `value` accepts a date, a datetime, an ISO 8601 string, or None
+    (falls back to the current date in the project timezone).
+
+    Returns:
+        'YYYY'      for yearly buckets,
+        'YYYY-MM'   for monthly buckets,
+        'YYYY-bNN'  for bimonthly buckets (NN = bimester number, 01..06).
     """
-    date_formated = _coerce_to_date(date)
+    resolved_date = _coerce_to_date(value)
 
-    return _format_to_str(date_formated, format)
+    return _format_to_str(resolved_date, format)
