@@ -11,6 +11,7 @@ from core import (
     UnsupportedDateType,
     biowatch_now,
     bucket_id,
+    related_bucket_ids,
 )
 
 
@@ -160,6 +161,81 @@ def test_biowatch_now_returns_a_date():
 
 def test_none_falls_back_to_current_date():
     assert bucket_id(None) == bucket_id(biowatch_now())
+
+
+# --- related_bucket_ids ----------------------------------------------------
+
+
+def test_related_of_year_contains_self_bimesters_and_months():
+    related = related_bucket_ids("2024")
+    assert related[0] == "2024"  # self always first
+    for b in range(1, 7):
+        assert f"2024-b{b:02d}" in related
+    for m in range(1, 13):
+        assert f"2024-{m:02d}" in related
+    # self + 6 bimesters + 12 months (no ancestors for a year)
+    assert len(related) == 1 + 6 + 12
+
+
+def test_related_of_month_is_self_bimester_and_year():
+    # month -> its enclosing bimester + its year
+    assert related_bucket_ids("2024-03") == ["2024-03", "2024-b02", "2024"]
+
+
+def test_related_of_month_maps_to_correct_bimester():
+    assert related_bucket_ids("2024-01") == ["2024-01", "2024-b01", "2024"]
+    assert related_bucket_ids("2024-02") == ["2024-02", "2024-b01", "2024"]
+    assert related_bucket_ids("2024-12") == ["2024-12", "2024-b06", "2024"]
+
+
+def test_related_of_bimester_is_self_two_months_and_year():
+    # bimester -> its 2 months + its year
+    assert related_bucket_ids("2024-b02") == ["2024-b02", "2024-03", "2024-04", "2024"]
+
+
+def test_related_of_first_and_last_bimester():
+    assert related_bucket_ids("2024-b01") == ["2024-b01", "2024-01", "2024-02", "2024"]
+    assert related_bucket_ids("2024-b06") == ["2024-b06", "2024-11", "2024-12", "2024"]
+
+
+def test_related_always_include_self_first():
+    for b in ("2024", "2024-03", "2024-b02"):
+        assert related_bucket_ids(b)[0] == b
+
+
+def test_related_buckets_are_valid_bucket_ids():
+    # every produced bucket must parse back (no garbage)
+    for b in related_bucket_ids("2024"):
+        assert related_bucket_ids(b)[0] == b
+
+
+def test_related_is_consistent_across_formats():
+    # a month, its bimester and its year all reference the same year bucket
+    month = related_bucket_ids("2024-03")
+    bimester = related_bucket_ids("2024-b02")
+    assert "2024" in month
+    assert "2024" in bimester
+    assert "2024-b02" in month  # month knows its bimester
+    assert "2024-03" in bimester  # bimester knows its month
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "abcd",  # non-numeric year
+        "2024-13",  # month out of range
+        "2024-00",  # month out of range
+        "2024-b07",  # bimester out of range
+        "2024-b00",  # bimester out of range
+        "2024/03",  # wrong separator
+        "24-03",  # short year
+        "2024-3",  # unpadded month
+        "",
+    ],
+)
+def test_related_bucket_ids_rejects_malformed(bad):
+    with pytest.raises(UnsupportedBucketFormat):
+        related_bucket_ids(bad)
 
 
 def test_no_arg_defaults_to_current_date():
