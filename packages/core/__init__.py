@@ -4,6 +4,7 @@ from .parquet import write_parquet
 from .time_bucket import (
     BucketFormat,
     BucketId,
+    InvalidDateString,
     UnsupportedBucketFormat,
     UnsupportedDateType,
     biowatch_now,
@@ -21,6 +22,7 @@ __all__ = [
     "compute_idempotency_key",
     "BucketFormat",
     "BucketId",
+    "InvalidDateString",
     "UnsupportedBucketFormat",
     "UnsupportedDateType",
     "biowatch_now",

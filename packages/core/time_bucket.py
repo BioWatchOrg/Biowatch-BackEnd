@@ -12,6 +12,10 @@ class UnsupportedDateType(Exception):
     """Exception raised when an unsupported date type is provided."""
 
 
+class InvalidDateString(ValueError):
+    """Exception raised when a string cannot be parsed as an ISO 8601 date."""
+
+
 def biowatch_now() -> date:
     """
     Returns the current date in the Europe/Paris timezone.
@@ -35,7 +39,10 @@ def _coerce_to_date(value: Any) -> date:
         case None:
             return biowatch_now()
         case str():
-            return datetime.fromisoformat(value).date()
+            try:
+                return datetime.fromisoformat(value).date()
+            except ValueError as exc:
+                raise InvalidDateString(f"Invalid ISO 8601 date string: {value!r}.") from exc
         case datetime():
             return value.date()
         case date():

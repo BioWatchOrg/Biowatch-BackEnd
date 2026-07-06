@@ -6,6 +6,7 @@ import pytest
 
 from core import (
     BucketFormat,
+    InvalidDateString,
     UnsupportedBucketFormat,
     UnsupportedDateType,
     biowatch_now,
@@ -127,7 +128,14 @@ def test_is_deterministic():
 # --- Errors ----------------------------------------------------------------
 
 
-def test_invalid_iso_string_raises():
+@pytest.mark.parametrize("bad", ["not-a-date", "2024-13-01", "2024/03/15", ""])
+def test_invalid_iso_string_raises(bad):
+    with pytest.raises(InvalidDateString):
+        bucket_id(bad, BucketFormat.MONTHLY)
+
+
+def test_invalid_iso_string_is_a_value_error():
+    # InvalidDateString subclasses ValueError -> generic handlers still catch it
     with pytest.raises(ValueError):
         bucket_id("not-a-date", BucketFormat.MONTHLY)
 
