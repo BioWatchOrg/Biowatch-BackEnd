@@ -272,7 +272,7 @@ Organisation horizontale : responsabilités partagées, montée en compétence c
 
 **Workflow**
 - Sprint de 2 semaines. Réunion sprint chaque lundi (QA avant la réunion). Travail async le reste du temps.
-- Une branche par tâche. Merge uniquement via PR, **≥ 2 reviews**. PR vers `dev` (branche par défaut du repo), puis `main` après QA.
+- Une branche par tâche. Merge uniquement via PR, **≥ 1 review**. PR vers `dev` (branche par défaut du repo), puis `main` après QA.
 - Commits au format `<type>: description`. Types autorisés : `feat`, `fix`, `perf`, `refactor`, `test`, `docs`, `style`, `ci`, `build`.
 
 **CI qualité obligatoire avant merge**
