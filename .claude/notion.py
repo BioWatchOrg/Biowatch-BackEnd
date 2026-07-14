@@ -148,13 +148,13 @@ async def _walk_database(
     return node
 
 
-async def _resolve_root(
-    client: httpx.AsyncClient, node_id: str, max_depth: int
-) -> dict[str, Any]:
+async def _resolve_root(client: httpx.AsyncClient, node_id: str, max_depth: int) -> dict[str, Any]:
     db_r = await client.get(f"{NOTION_API}/databases/{node_id}", headers=_headers())
     if db_r.status_code == 200:
         data = db_r.json()
-        title = "".join(p.get("plain_text", "") for p in data.get("title", [])) or "(untitled database)"
+        title = (
+            "".join(p.get("plain_text", "") for p in data.get("title", [])) or "(untitled database)"
+        )
         return await _walk_database(client, node_id, title, 0, max_depth)
     if db_r.status_code not in (400, 404):
         db_r.raise_for_status()
@@ -479,11 +479,7 @@ async def call_tool(name: str, arguments: dict[str, Any] | None) -> list[types.T
             blocks = _build_doc_blocks(resume, structure, workflow, requirements)
             action, page_id = await _create_or_update_doc(client, title, blocks)
             url = f"https://notion.so/{page_id.replace('-', '')}"
-            return [
-                types.TextContent(
-                    type="text", text=f"Doc {action}: {title}\n{url}"
-                )
-            ]
+            return [types.TextContent(type="text", text=f"Doc {action}: {title}\n{url}")]
 
         raise ValueError(f"Unknown tool: {name}")
 
