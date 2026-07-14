@@ -6,6 +6,7 @@ permissions:
   contents: read
   pull-requests: write
   issues: write
+  id-token: write
 
 jobs:
   review:
@@ -19,10 +20,21 @@ jobs:
         with:
           fetch-depth: 1
 
+      # claude-code-action@v1 only accepts an inline `prompt`, not a file path —
+      # load reviewer-prompt.md here so it stays a single external source of truth.
+      - name: Load reviewer prompt
+        id: reviewer_prompt
+        run: |
+          {
+            echo 'content<<PROMPT_EOF'
+            cat .github/claude/reviewer-prompt.md
+            echo 'PROMPT_EOF'
+          } >> "$GITHUB_OUTPUT"
+
       - uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          prompt_file: .github/claude/reviewer-prompt.md
+          prompt: ${{ steps.reviewer_prompt.outputs.content }}
           use_sticky_comment: true
           claude_args: |
             --allowedTools "Read,Grep,Glob,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh issue view:*)"
