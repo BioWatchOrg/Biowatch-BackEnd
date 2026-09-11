@@ -36,7 +36,9 @@ def _get_run(engine, key=KEY):
 
 def _count_runs(engine, key=KEY):
     with get_sessionmaker(engine)() as s:
-        return s.scalar(select(func.count()).select_from(JobRun).where(JobRun.idempotency_key == key))
+        return s.scalar(
+            select(func.count()).select_from(JobRun).where(JobRun.idempotency_key == key)
+        )
 
 
 def _probe_count(engine):

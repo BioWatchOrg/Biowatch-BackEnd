@@ -88,9 +88,7 @@ def load_aoi(aoi_label: AoiLabel) -> AOI:
                         "context": {"aoi": aoi_label, "error": str(e)},
                     },
                 )
-                raise LoadingAOIError(
-                    f"Error loading AOI with label '{aoi_label}': {e}"
-                ) from e
+                raise LoadingAOIError(f"Error loading AOI with label '{aoi_label}': {e}") from e
     logger.error(
         "AOI not found in registry",
         extra={"event": "aoi.not_found", "context": {"aoi": aoi_label}},

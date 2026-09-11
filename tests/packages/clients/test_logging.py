@@ -67,8 +67,13 @@ def test_exception_is_serialised_under_error():
         import sys
 
         record = logging.LogRecord(
-            name="t", level=logging.ERROR, pathname=__file__, lineno=1,
-            msg="failed", args=(), exc_info=sys.exc_info(),
+            name="t",
+            level=logging.ERROR,
+            pathname=__file__,
+            lineno=1,
+            msg="failed",
+            args=(),
+            exc_info=sys.exc_info(),
         )
     payload = _format(record)
 

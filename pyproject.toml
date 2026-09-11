@@ -25,6 +25,9 @@ dev = [
     "pytest>=8",
     "ruff>=0.6",
     "mypy>=1.11",
+    "types-shapely>=2.1.0.20260630",
+    "pandas-stubs>=3.0.3.260530",
+    "pytest-cov>=7.1.0",
 ]
 
 [build-system]
@@ -48,3 +51,7 @@ target-version = "py312"
 
 [tool.pytest.ini_options]
 testpaths = ["apps", "packages", "tests"]
+
+[[tool.mypy.overrides]]
+module = "h3.*"
+ignore_missing_imports = true
