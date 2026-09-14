@@ -7,6 +7,7 @@ from .config import (
     UnknownEnvError,
     data_root,
     env_file,
+    load_env_file,
     resolve_env,
 )
 from .idempotency import compute_idempotency_key
@@ -31,6 +32,7 @@ __all__ = [
     "UnknownEnvError",
     "resolve_env",
     "env_file",
+    "load_env_file",
     "data_root",
     "AoiLabel",
     "aoi_registry",

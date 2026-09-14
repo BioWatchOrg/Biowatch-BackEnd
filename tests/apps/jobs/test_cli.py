@@ -8,9 +8,11 @@ on vérifie que chaque job enregistré est exposé en sous-commande, câblé sur
 import os
 
 import pytest
+from core import ENV_VAR
 
+import jobs.cli as cli
 from jobs.cli import build_parser
-from jobs.registry import get_jobs
+from jobs.registry import Job, get_jobs
 
 
 def test_every_registered_job_is_a_subcommand():
@@ -101,43 +103,53 @@ def test_unknown_env_is_rejected_by_the_parser():
         parser.parse_args(["--env", "staging", "generate_h3_grid", "--aoi", "idf"])
 
 
+def _fake_job(run):
+    """Un job minimal enregistrable, pour piloter `main` sans job métier réel."""
+    return {"fake_job": Job(name="fake_job", help="job de test", run=run)}
+
+
 def test_main_exports_the_env_before_dispatching(monkeypatch):
     """`main` pose BIOWATCH_ENV avant d'appeler le job.
 
-    C'est l'invariant critique : `get_engine` est mis en cache dès le premier
-    appel, donc l'env doit être fixé avant que le job ne touche la DB.
+    Invariant critique : `get_engine` est mis en cache dès le premier appel,
+    donc l'env doit être fixé avant que le job ne touche la DB.
     """
-    from core import ENV_VAR
-
-    import jobs.cli as cli
-
-    monkeypatch.delenv(ENV_VAR, raising=False)
-    monkeypatch.setattr(cli, "setup_logging", lambda **_: None)
-    monkeypatch.setattr(
-        "sys.argv", ["biowatch-jobs", "--env", "prod", "generate_h3_grid", "--aoi", "idf"]
-    )
-
     seen: dict[str, str | None] = {}
 
     def fake_run(_args):
-        # L'env doit déjà être posé au moment où le job démarre.
         seen["env"] = os.environ.get(ENV_VAR)
 
-    monkeypatch.setattr(cli, "build_parser", _parser_returning(fake_run))
+    monkeypatch.delenv(ENV_VAR, raising=False)
+    monkeypatch.setattr(cli, "setup_logging", lambda **_: None)
+    monkeypatch.setattr(cli, "get_jobs", lambda: _fake_job(fake_run))
+    monkeypatch.setattr("sys.argv", ["biowatch-jobs", "--env", "prod", "fake_job"])
+
     cli.main()
 
     assert seen["env"] == "prod"
 
 
-def _parser_returning(run):
-    """Construit un parser réel dont le job pointe sur `run`."""
-    original = build_parser
+def test_dotenv_is_loaded_before_logging_is_configured(monkeypatch, tmp_path):
+    """`LOG_LEVEL` de `.env.<env>` doit être lu AVANT `setup_logging`.
 
-    def factory():
-        parser = original()
-        for action in parser._subparsers._group_actions:  # type: ignore[union-attr]
-            for sub in action.choices.values():
-                sub.set_defaults(_run=run)
-        return parser
+    Régression : le dotenv n'était chargé qu'au premier accès DB, donc après
+    `setup_logging` — `LOG_LEVEL` n'avait alors aucun effet sur les jobs, alors
+    que `.env.dev.example` le documente comme un réglage actif.
+    """
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv(ENV_VAR, raising=False)
+    monkeypatch.delenv("LOG_LEVEL", raising=False)
+    (tmp_path / ".env.dev").write_text("LOG_LEVEL=WARNING\n")
 
-    return factory
+    seen: dict[str, str | None] = {}
+
+    def fake_setup_logging(**_):
+        seen["level"] = os.environ.get("LOG_LEVEL")
+
+    monkeypatch.setattr(cli, "setup_logging", fake_setup_logging)
+    monkeypatch.setattr(cli, "get_jobs", lambda: _fake_job(lambda _args: None))
+    monkeypatch.setattr("sys.argv", ["biowatch-jobs", "fake_job"])
+
+    cli.main()
+
+    assert seen["level"] == "WARNING"

@@ -4,8 +4,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from functools import lru_cache
 
-from core import env_file, resolve_env
-from dotenv import find_dotenv, load_dotenv
+from core import env_file, load_env_file, resolve_env
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -20,11 +19,9 @@ def _build_database_url() -> str:
     reconstruit ensuite.
     """
     env = resolve_env()
-    # Chemin explicite : `load_dotenv()` sans argument retomberait sur `.env`,
-    # qui ne porte que les secrets d'outillage (tokens Notion).
-    dotenv_path = find_dotenv(env_file(env), usecwd=True)
-    if dotenv_path:
-        load_dotenv(dotenv_path, override=False)
+    # Filet pour les entrypoints qui ne passent pas par le CLI (API à venir,
+    # usage en librairie). Idempotent si le CLI l'a déjà fait.
+    load_env_file(env)
     logger.debug(
         "environment resolved",
         extra={

@@ -14,6 +14,8 @@ import os
 from pathlib import Path
 from typing import Literal, cast, get_args
 
+from dotenv import find_dotenv, load_dotenv
+
 Env = Literal["dev", "prod"]
 
 ENVS: tuple[Env, ...] = get_args(Env)
@@ -44,6 +46,23 @@ def resolve_env(cli_env: str | None = None) -> Env:
 def env_file(env: Env) -> str:
     """Nom du fichier de config applicative de l'environnement (`.env.dev`…)."""
     return f".env.{env}"
+
+
+def load_env_file(env: Env) -> str | None:
+    """Charge `.env.<env>` dans l'environnement du process ; retourne le chemin.
+
+    À appeler au démarrage de l'entrypoint, AVANT toute lecture de variable —
+    `setup_logging()` lit `LOG_LEVEL` dès son appel, donc un chargement
+    paresseux (au premier accès DB) arriverait trop tard.
+
+    Idempotent : `override=False` laisse gagner les variables déjà présentes
+    dans l'environnement, un second appel ne change donc rien.
+    """
+    path = find_dotenv(env_file(env), usecwd=True)
+    if not path:
+        return None
+    load_dotenv(path, override=False)
+    return path
 
 
 def data_root(env: Env) -> Path:
