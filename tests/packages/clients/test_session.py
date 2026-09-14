@@ -18,8 +18,8 @@ POSTGRES_VARS = (
 @pytest.fixture
 def clean_env(monkeypatch):
     """Isolate the process env: neutralize .env loading and clear POSTGRES_* vars."""
-    # Prevent the real .env from leaking into these tests.
-    monkeypatch.setattr("clients.db.session.load_dotenv", lambda *a, **k: False)
+    # Prevent the real .env.<env> from leaking into these tests.
+    monkeypatch.setattr("clients.db.session.load_env_file", lambda *a, **k: None)
     for var in POSTGRES_VARS:
         monkeypatch.delenv(var, raising=False)
     # A memoized engine from a previous test must not bleed into this one.
