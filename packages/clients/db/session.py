@@ -4,7 +4,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from functools import lru_cache
 
-from dotenv import load_dotenv
+from core import env_file, resolve_env
+from dotenv import find_dotenv, load_dotenv
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -12,8 +13,25 @@ logger = logging.getLogger(__name__)
 
 
 def _build_database_url() -> str:
+    """URL SQLAlchemy de l'environnement courant.
 
-    load_dotenv(override=False)
+    L'environnement vient de `BIOWATCH_ENV`, que l'entrypoint (CLI) pose
+    avant tout accès DB — `get_engine` étant mis en cache, il n'est jamais
+    reconstruit ensuite.
+    """
+    env = resolve_env()
+    # Chemin explicite : `load_dotenv()` sans argument retomberait sur `.env`,
+    # qui ne porte que les secrets d'outillage (tokens Notion).
+    dotenv_path = find_dotenv(env_file(env), usecwd=True)
+    if dotenv_path:
+        load_dotenv(dotenv_path, override=False)
+    logger.debug(
+        "environment resolved",
+        extra={
+            "event": "db.env_resolved",
+            "context": {"env": env, "env_file": env_file(env)},
+        },
+    )
 
     explicit_url = os.environ.get("DATABASE_URL")
     if explicit_url:
@@ -25,7 +43,8 @@ def _build_database_url() -> str:
         db = os.environ["POSTGRES_DB"]
     except KeyError as e:
         raise RuntimeError(
-            f"Variable d'environnement manquante : {e.args[0]} (voir .env.example)"
+            f"Variable d'environnement manquante : {e.args[0]} — environnement "
+            f"'{env}', fichier attendu : {env_file(env)} (voir .env.dev.example)."
         ) from e
     host = os.environ.get("POSTGRES_HOST", "127.0.0.1")
     port = os.environ.get("POSTGRES_PORT", "5432")

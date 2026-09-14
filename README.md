@@ -2,9 +2,42 @@
 BioWatch aide à détecter et anticiper les tensions écologiques grâce à la fusion de données satellites, open data et IA.
 
 ---
+## Environnements (dev / prod)
+
+Deux environnements, deux bases, deux répertoires de données. **`dev` est le défaut** :
+une commande qui ne précise rien ne peut pas écrire en production.
+
+| | fichier de config | base | artefacts |
+| --- | --- | --- | --- |
+| dev | `.env.dev` (local) | `biowatch_dev` | `data/dev/` |
+| prod | `.env.prod` (**VPS uniquement**) | `biowatch_prod` | `data/prod/` |
+
+L'environnement est résolu dans cet ordre : `--env` > `BIOWATCH_ENV` > `dev`.
+
+```bash
+uv run biowatch-jobs generate_h3_grid --aoi idf   # dev (défaut)
+uv run biowatch-jobs --env prod generate_h3_grid --aoi idf
+```
+
+`.env.prod` n'existe pas sur un poste de dev : c'est ce qui fait échouer un
+`--env prod` lancé par erreur, avec un message explicite, avant tout accès DB.
+
+Les tokens d'outillage (Notion) restent dans `.env`, commun aux deux envs.
+
+### Setup (une fois)
+
+```bash
+cp .env.example .env            # tokens Notion
+cp .env.dev.example .env.dev    # config applicative dev
+# ⚠️ change POSTGRES_PASSWORD dans .env.dev AVANT le premier `up` :
+#    Postgres ne lit ces variables qu'à l'initialisation du volume.
+uv sync
+```
+
+---
 ## PostGis 
 ### Locally 
-Vous devez enregistrer les données dans un .env avant de lancer (cd .env.example)
+La config de la base est lue depuis `.env.dev` (voir ci-dessus).
 
 
 1) run postgis
