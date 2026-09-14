@@ -1,5 +1,4 @@
 import logging
-import os
 from typing import TypeAlias
 
 import h3
@@ -11,7 +10,9 @@ from core import (
     UndefinedAOIError,
     aoi_registry,
     compute_idempotency_key,
+    data_root,
     load_aoi,
+    resolve_env,
     write_parquet,
 )
 from geoalchemy2.shape import from_shape
@@ -19,8 +20,6 @@ from shapely.geometry import Point, Polygon, box
 from sqlalchemy import Engine
 
 logger = logging.getLogger(__name__)
-
-GRID_STORE_ROOT = "docs/grids"
 
 H3Cell: TypeAlias = str  # H3 cell id (hex string)
 
@@ -108,11 +107,15 @@ def generate_h3_grid(
     if resolution is None:
         resolution = aoi.default_res
 
+    # L'env entre dans la clé : un run de dev ne peut pas marquer le run de
+    # prod comme déjà réussi, même si les deux partageaient une base.
+    env = resolve_env()
     idempotency_key = compute_idempotency_key(
         job_name="generate_h3_grid",
         scope=aoi_label,
         resolution=resolution,
         source_version=aoi.version,
+        env=env,
     )
     try:
         with job_run(
@@ -162,14 +165,15 @@ def generate_h3_grid(
             )
             # Artefact grille (liste des cellules) pour reproductibilité / debug.
             # Partitionné par version d'AOI : deux versions ne s'écrasent pas.
-            out_dir = os.path.join(
-                GRID_STORE_ROOT,
-                f"aoi={aoi_label}",
-                f"version={aoi.version}",
-                f"res={resolution}",
+            out_dir = (
+                data_root(env)
+                / "grids"
+                / f"aoi={aoi_label}"
+                / f"version={aoi.version}"
+                / f"res={resolution}"
             )
-            os.makedirs(out_dir, exist_ok=True)
-            write_parquet(pd.DataFrame({"h3_index": cells}), os.path.join(out_dir, "grid.parquet"))
+            out_dir.mkdir(parents=True, exist_ok=True)
+            write_parquet(pd.DataFrame({"h3_index": cells}), str(out_dir / "grid.parquet"))
 
     except JobAlreadySucceeded:
         logger.info(

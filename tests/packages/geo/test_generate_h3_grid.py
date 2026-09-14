@@ -63,3 +63,84 @@ def test_generate_h3_grid_is_idempotent(tmp_path, monkeypatch):
     assert zones == GOLDEN_COUNT  # no duplicates despite two runs
     assert runs == 1  # single run reused (idempotent), not two
     assert successes == 1
+
+
+def test_generate_h3_grid_writes_the_artifact_under_data_env(monkeypatch, tmp_path):
+    """L'artefact parquet atterrit dans `data/<env>/grids/...`, plus dans `docs/`.
+
+    Le chemin de stockage par environnement est un livrable central de la
+    séparation dev/prod : il doit être couvert par un test qui tourne en CI,
+    pas seulement par le test d'idempotence qui exige une vraie PostGIS.
+    """
+    from types import SimpleNamespace
+
+    from core import ENV_VAR, load_aoi
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv(ENV_VAR, raising=False)  # rien de posé ⇒ dev par défaut
+
+    @contextmanager
+    def fake_job_run(*args, **kwargs):
+        yield SimpleNamespace(run_id=uuid.uuid4()), object()
+
+    written: list[list[dict]] = []
+    monkeypatch.setattr(h3_grid, "job_run", fake_job_run)
+    monkeypatch.setattr(h3_grid, "upsert", lambda **kwargs: written.append(kwargs["rows"]))
+
+    h3_grid.generate_h3_grid(GOLDEN_AOI, GOLDEN_RES)
+
+    version = load_aoi(GOLDEN_AOI).version
+    expected = (
+        tmp_path
+        / "data"
+        / "dev"
+        / "grids"
+        / f"aoi={GOLDEN_AOI}"
+        / f"version={version}"
+        / f"res={GOLDEN_RES}"
+        / "grid.parquet"
+    )
+    assert expected.is_file(), f"artefact attendu en {expected}"
+    assert not (tmp_path / "docs").exists(), "l'ancien emplacement docs/grids ne doit plus servir"
+    assert len(written[0]) == GOLDEN_COUNT
+
+
+def test_generate_h3_grid_isolates_prod_artifacts_from_dev(monkeypatch, tmp_path):
+    """Le même job en prod écrit ailleurs : les deux envs ne se marchent pas dessus."""
+    from types import SimpleNamespace
+
+    from core import ENV_VAR
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(ENV_VAR, "prod")
+
+    @contextmanager
+    def fake_job_run(*args, **kwargs):
+        yield SimpleNamespace(run_id=uuid.uuid4()), object()
+
+    monkeypatch.setattr(h3_grid, "job_run", fake_job_run)
+    monkeypatch.setattr(h3_grid, "upsert", lambda **kwargs: None)
+
+    h3_grid.generate_h3_grid(GOLDEN_AOI, GOLDEN_RES)
+
+    assert list((tmp_path / "data").iterdir()) == [tmp_path / "data" / "prod"]
+    assert not (tmp_path / "data" / "dev").exists()
+
+
+def test_env_discriminates_the_idempotency_key(monkeypatch):
+    """Même AOI, même résolution, deux envs ⇒ deux clés distinctes."""
+    from core import ENV_VAR, compute_idempotency_key, load_aoi
+
+    aoi = load_aoi(GOLDEN_AOI)
+    monkeypatch.delenv(ENV_VAR, raising=False)
+
+    def key_for(env: str) -> str:
+        return compute_idempotency_key(
+            job_name="generate_h3_grid",
+            scope=GOLDEN_AOI,
+            resolution=GOLDEN_RES,
+            source_version=aoi.version,
+            env=env,
+        )
+
+    assert key_for("dev") != key_for("prod")
