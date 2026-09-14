@@ -136,6 +136,9 @@ celerybeat.pid
 
 # Environments
 .env
+.env.*
+!.env.example
+!.env.dev.example
 .envrc
 .venv
 env/
@@ -225,7 +228,8 @@ data/
 *.jp2
 *.hdf
 *.nc
-.geojson
+*.geojson
+!packages/core/aoi/regions/*.geojson
 *.gpkg
 *.shp
 *.dbf

@@ -5,6 +5,8 @@ on vérifie que chaque job enregistré est exposé en sous-commande, câblé sur
 `run`, et que ses arguments sont bien déclarés.
 """
 
+import os
+
 import pytest
 
 from jobs.cli import build_parser
@@ -76,3 +78,66 @@ def test_unknown_job_is_rejected():
     parser = build_parser()
     with pytest.raises(SystemExit):
         parser.parse_args(["does_not_exist"])
+
+
+def test_env_flag_defaults_to_none_so_resolution_can_apply():
+    """Sans `--env`, le parser laisse None : c'est `resolve_env` qui tranche."""
+    parser = build_parser()
+    args = parser.parse_args(["generate_h3_grid", "--aoi", "idf"])
+    assert args.env is None
+
+
+@pytest.mark.parametrize("value", ["dev", "prod"])
+def test_env_flag_is_parsed(value):
+    parser = build_parser()
+    args = parser.parse_args(["--env", value, "generate_h3_grid", "--aoi", "idf"])
+    assert args.env == value
+
+
+def test_unknown_env_is_rejected_by_the_parser():
+    """`choices` refuse un env inconnu dès le parsing, avant tout accès DB."""
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--env", "staging", "generate_h3_grid", "--aoi", "idf"])
+
+
+def test_main_exports_the_env_before_dispatching(monkeypatch):
+    """`main` pose BIOWATCH_ENV avant d'appeler le job.
+
+    C'est l'invariant critique : `get_engine` est mis en cache dès le premier
+    appel, donc l'env doit être fixé avant que le job ne touche la DB.
+    """
+    from core import ENV_VAR
+
+    import jobs.cli as cli
+
+    monkeypatch.delenv(ENV_VAR, raising=False)
+    monkeypatch.setattr(cli, "setup_logging", lambda **_: None)
+    monkeypatch.setattr(
+        "sys.argv", ["biowatch-jobs", "--env", "prod", "generate_h3_grid", "--aoi", "idf"]
+    )
+
+    seen: dict[str, str | None] = {}
+
+    def fake_run(_args):
+        # L'env doit déjà être posé au moment où le job démarre.
+        seen["env"] = os.environ.get(ENV_VAR)
+
+    monkeypatch.setattr(cli, "build_parser", _parser_returning(fake_run))
+    cli.main()
+
+    assert seen["env"] == "prod"
+
+
+def _parser_returning(run):
+    """Construit un parser réel dont le job pointe sur `run`."""
+    original = build_parser
+
+    def factory():
+        parser = original()
+        for action in parser._subparsers._group_actions:  # type: ignore[union-attr]
+            for sub in action.choices.values():
+                sub.set_defaults(_run=run)
+        return parser
+
+    return factory
