@@ -1,0 +1,17 @@
+services:
+  postgis:
+    image: postgis/postgis:16-3.4-alpine
+    container_name: postgis
+    restart: always
+    env_file:
+      - ../../.env
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgis_data:/var/lib/postgresql/data
+      # Schema is owned by the SQLAlchemy ORM (packages/clients/db), not raw SQL.
+      # After the container is up, create extensions + tables with:
+      #   uv run python -m clients.db.init_db
+
+volumes:
+  postgis_data:

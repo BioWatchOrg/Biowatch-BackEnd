@@ -225,7 +225,7 @@ data/
 *.jp2
 *.hdf
 *.nc
-*.geojson
+.geojson
 *.gpkg
 *.shp
 *.dbf
@@ -247,9 +247,6 @@ docker-data/
 *.tar
 
 #Logs génériques (hors Django)
-logs/
 *.out
 
-
-
-
+*.parquet

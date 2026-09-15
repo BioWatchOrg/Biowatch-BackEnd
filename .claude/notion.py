@@ -1,11 +1,15 @@
 """BioWatch Notion MCP server (stdio).
 
-Exposes two tools to Claude Code so every team member can read tasks from Notion:
+Exposes tools to Claude Code so every team member can read tasks from Notion
+and write concise feature documentation as MRs land:
   - notion_get_subpages: recursive index of the task tree (titles + ids)
   - notion_get_page_content: full body of a task page (Markdown-like)
+  - notion_create_doc: create/update a feature doc page in the
+    "Documentation Technique" database, following the team template
 
-Requires NOTION_TOKEN in the local .env file (gitignored). The integration
-must be granted access to the BioWatch root page on Notion.
+Requires two tokens in the local .env file (gitignored):
+  - NOTION_TOKEN: read access, granted on the BioWatch root page
+  - NOTION_TOKEN_DOC: write access, granted on the Documentation Technique DB
 """
 
 import asyncio
@@ -26,15 +30,17 @@ load_dotenv(REPO_ROOT / ".env")
 NOTION_API = "https://api.notion.com/v1"
 NOTION_VERSION = "2022-06-28"
 BIOWATCH_ROOT_PAGE_ID = "31150bea-018d-800e-843b-f3403306af0e"
+DOC_DATABASE_ID = "2ed50bea-018d-80dc-82e6-fdaf63413233"
+DOC_TOKEN_ENV = "NOTION_TOKEN_DOC"
 
 
-def _headers() -> dict[str, str]:
-    token = os.environ.get("NOTION_TOKEN")
+def _headers(token_env: str = "NOTION_TOKEN") -> dict[str, str]:
+    token = os.environ.get(token_env)
     if not token:
         raise RuntimeError(
-            "NOTION_TOKEN missing. Add `NOTION_TOKEN=secret_...` to the project's "
+            f"{token_env} missing. Add `{token_env}=secret_...` to the project's "
             ".env (create a Notion integration at https://www.notion.so/my-integrations, "
-            "then share the BioWatch root page with it)."
+            "then share the relevant BioWatch page/database with it)."
         )
     return {
         "Authorization": f"Bearer {token}",
@@ -67,6 +73,7 @@ async def _paginate(
     method: str,
     url: str,
     body: dict[str, Any] | None = None,
+    token_env: str = "NOTION_TOKEN",
 ) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     cursor: str | None = None
@@ -75,12 +82,12 @@ async def _paginate(
             params: dict[str, Any] = {"page_size": 100}
             if cursor:
                 params["start_cursor"] = cursor
-            r = await client.get(url, params=params, headers=_headers())
+            r = await client.get(url, params=params, headers=_headers(token_env))
         else:
             payload: dict[str, Any] = {"page_size": 100, **(body or {})}
             if cursor:
                 payload["start_cursor"] = cursor
-            r = await client.post(url, json=payload, headers=_headers())
+            r = await client.post(url, json=payload, headers=_headers(token_env))
         r.raise_for_status()
         data = r.json()
         results.extend(data.get("results", []))
@@ -141,13 +148,13 @@ async def _walk_database(
     return node
 
 
-async def _resolve_root(
-    client: httpx.AsyncClient, node_id: str, max_depth: int
-) -> dict[str, Any]:
+async def _resolve_root(client: httpx.AsyncClient, node_id: str, max_depth: int) -> dict[str, Any]:
     db_r = await client.get(f"{NOTION_API}/databases/{node_id}", headers=_headers())
     if db_r.status_code == 200:
         data = db_r.json()
-        title = "".join(p.get("plain_text", "") for p in data.get("title", [])) or "(untitled database)"
+        title = (
+            "".join(p.get("plain_text", "") for p in data.get("title", [])) or "(untitled database)"
+        )
         return await _walk_database(client, node_id, title, 0, max_depth)
     if db_r.status_code not in (400, 404):
         db_r.raise_for_status()
@@ -222,6 +229,111 @@ async def _render_blocks(
 
 
 # ---------------------------------------------------------------------------
+# Doc writing (Documentation Technique database)
+# ---------------------------------------------------------------------------
+
+
+def _rt(content: str) -> list[dict[str, Any]]:
+    """Notion rich_text array, split into <=2000 char chunks (API limit)."""
+    chunks = [content[i : i + 2000] for i in range(0, len(content), 2000)] or [""]
+    return [{"type": "text", "text": {"content": c}} for c in chunks]
+
+
+def _heading(text: str) -> dict[str, Any]:
+    return {"object": "block", "type": "heading_1", "heading_1": {"rich_text": _rt(text)}}
+
+
+def _paragraph(text: str) -> dict[str, Any]:
+    return {"object": "block", "type": "paragraph", "paragraph": {"rich_text": _rt(text)}}
+
+
+def _code(text: str, language: str = "python") -> dict[str, Any]:
+    return {
+        "object": "block",
+        "type": "code",
+        "code": {"rich_text": _rt(text), "language": language},
+    }
+
+
+def _callout(text: str, emoji: str = "💡") -> dict[str, Any]:
+    return {
+        "object": "block",
+        "type": "callout",
+        "callout": {"rich_text": _rt(text), "icon": {"type": "emoji", "emoji": emoji}},
+    }
+
+
+def _build_doc_blocks(
+    resume: str, structure: str, workflow: str, requirements: str | None
+) -> list[dict[str, Any]]:
+    """Blocks matching the BioWatch feature-doc template."""
+    blocks = [
+        _heading("Résumé (2 phrases)"),
+        _paragraph(resume),
+        _heading("Structure"),
+        _code(structure, "python"),
+        _heading("Exemple / workflow"),
+        _callout(workflow),
+    ]
+    if requirements and requirements.strip():
+        blocks.append(_heading("Requirements (optionnel)"))
+        blocks.append(_callout(requirements))
+    return blocks
+
+
+async def _find_doc_page(client: httpx.AsyncClient, title: str) -> str | None:
+    """Return the page id of a doc whose title exactly matches, else None."""
+    r = await client.post(
+        f"{NOTION_API}/databases/{DOC_DATABASE_ID}/query",
+        json={"filter": {"property": "Name", "title": {"equals": title}}, "page_size": 1},
+        headers=_headers(DOC_TOKEN_ENV),
+    )
+    r.raise_for_status()
+    results = r.json().get("results", [])
+    return results[0]["id"] if results else None
+
+
+async def _create_or_update_doc(
+    client: httpx.AsyncClient,
+    title: str,
+    blocks: list[dict[str, Any]],
+) -> tuple[str, str]:
+    """Create the doc page, or replace the body of an existing same-title page.
+
+    Returns (action, page_id) with action in {"created", "updated"}.
+    """
+    page_id = await _find_doc_page(client, title)
+    if page_id:
+        existing = await _paginate(
+            client, "GET", f"{NOTION_API}/blocks/{page_id}/children", token_env=DOC_TOKEN_ENV
+        )
+        for block in existing:
+            dr = await client.delete(
+                f"{NOTION_API}/blocks/{block['id']}", headers=_headers(DOC_TOKEN_ENV)
+            )
+            dr.raise_for_status()
+        ar = await client.patch(
+            f"{NOTION_API}/blocks/{page_id}/children",
+            json={"children": blocks},
+            headers=_headers(DOC_TOKEN_ENV),
+        )
+        ar.raise_for_status()
+        return "updated", page_id
+
+    pr = await client.post(
+        f"{NOTION_API}/pages",
+        json={
+            "parent": {"database_id": DOC_DATABASE_ID},
+            "properties": {"Name": {"title": [{"text": {"content": title}}]}},
+            "children": blocks,
+        },
+        headers=_headers(DOC_TOKEN_ENV),
+    )
+    pr.raise_for_status()
+    return "created", pr.json()["id"]
+
+
+# ---------------------------------------------------------------------------
 # MCP server
 # ---------------------------------------------------------------------------
 
@@ -282,6 +394,52 @@ async def list_tools() -> list[types.Tool]:
                 "required": ["page_id"],
             },
         ),
+        types.Tool(
+            name="notion_create_doc",
+            description=(
+                "Write CONCISE BioWatch feature documentation to the 'Documentation Technique' "
+                "Notion database. Call this when documenting a feature as part of an MR. "
+                "The page follows the team template EXACTLY (do not add or reorder sections): "
+                "Résumé (2 phrases) → Structure (code tree) → Exemple / workflow → Requirements (optional). "
+                "GOAL: a teammate must grasp the feature in under 2 minutes — no long essays, "
+                "keep each section tight. If a doc with the same `title` already exists, its body is "
+                "REPLACED (idempotent per feature); otherwise a new page is created. "
+                "Choose a clear, self-explanatory `title` (the feature name) so docs are easy to find in the DB."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Feature name — the page title. Clear and recognizable (e.g. 'Grille H3 par AOI'). Reused as the update key.",
+                    },
+                    "resume": {
+                        "type": "string",
+                        "description": "Summary in AT MOST 2 sentences: what the feature does and why.",
+                    },
+                    "structure": {
+                        "type": "string",
+                        "description": (
+                            "File/folder tree of the feature, rendered in a python code block. "
+                            "Annotate key files with short inline comments, e.g.:\n"
+                            "folder/\n-- file1\n-- file2  # entities\n-- file3  # call api"
+                        ),
+                    },
+                    "workflow": {
+                        "type": "string",
+                        "description": (
+                            "A short concrete example or end-to-end workflow of the code. "
+                            "E.g. 'Chaque lundi une cronjob appelle sentinel2Repository qui récupère les données de la semaine…'."
+                        ),
+                    },
+                    "requirements": {
+                        "type": "string",
+                        "description": "Optional. Business rules / technical constraints (e.g. 'ne stocker que si couverture nuageuse < 20%').",
+                    },
+                },
+                "required": ["title", "resume", "structure", "workflow"],
+            },
+        ),
     ]
 
 
@@ -307,6 +465,21 @@ async def call_tool(name: str, arguments: dict[str, Any] | None) -> list[types.T
             body = await _render_blocks(client, page_id, 0, max_depth)
             text = f"# {title}\n\n{body}".rstrip() + "\n"
             return [types.TextContent(type="text", text=text)]
+
+        if name == "notion_create_doc":
+            title = (arguments.get("title") or "").strip()
+            resume = arguments.get("resume") or ""
+            structure = arguments.get("structure") or ""
+            workflow = arguments.get("workflow") or ""
+            requirements = arguments.get("requirements")
+            if not title or not resume or not structure or not workflow:
+                raise ValueError(
+                    "title, resume, structure and workflow are required for notion_create_doc"
+                )
+            blocks = _build_doc_blocks(resume, structure, workflow, requirements)
+            action, page_id = await _create_or_update_doc(client, title, blocks)
+            url = f"https://notion.so/{page_id.replace('-', '')}"
+            return [types.TextContent(type="text", text=f"Doc {action}: {title}\n{url}")]
 
         raise ValueError(f"Unknown tool: {name}")
 
