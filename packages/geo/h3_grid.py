@@ -1,6 +1,5 @@
 import logging
 import os
-from typing import TypeAlias
 
 import h3
 import pandas as pd
@@ -15,14 +14,14 @@ from core import (
     write_parquet,
 )
 from geoalchemy2.shape import from_shape
-from shapely.geometry import Point, Polygon, box
+from shapely.geometry import Point, Polygon
 from sqlalchemy import Engine
+
+from .h3 import H3Cell, H3ConversionError, cell_to_bbox, cell_to_centroid, cell_to_polygon
 
 logger = logging.getLogger(__name__)
 
 GRID_STORE_ROOT = "docs/grids"
-
-H3Cell: TypeAlias = str  # H3 cell id (hex string)
 
 
 class H3GridGenerationError(Exception):
@@ -67,23 +66,13 @@ def compute_h3_cells(aoi_label: AoiLabel, resolution: int) -> list[H3Cell]:
 
 
 def _cell_to_geometries(cell: H3Cell) -> tuple[Polygon, Point, Polygon]:
-    """H3 cell → (polygone, centroïde, bbox) shapely."""
+    """H3 cell → (polygone, centroïde, bbox) shapely, via packages/geo/h3.py."""
     try:
-        boundary = h3.cell_to_boundary(cell)
-        # h3 retourne (lat, lng) ; shapely veut (x=lng, y=lat).
-        polygon = Polygon([(lng, lat) for lat, lng in boundary])
-
-        lat, lng = h3.cell_to_latlng(cell)
-        centroid = Point(lng, lat)
-
-        bbox = box(*polygon.bounds)
-
+        polygon = cell_to_polygon(cell)
+        centroid = cell_to_centroid(cell)
+        bbox = cell_to_bbox(cell)
         return polygon, centroid, bbox
-    except Exception as e:
-        logger.error(
-            "error converting H3 cell to geometries",
-            extra={"event": "h3_grid.cell_error", "context": {"cell": cell, "error": str(e)}},
-        )
+    except H3ConversionError as e:
         raise H3GridGenerationError(f"Error converting H3 cell '{cell}' to geometries: {e}")
 
 
