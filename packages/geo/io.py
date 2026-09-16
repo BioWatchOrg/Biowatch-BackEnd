@@ -19,7 +19,7 @@ def to_wkt(geom: BaseGeometry) -> str:
     """Shapely geometry -> WKT text (e.g. for PostGIS/GeoAlchemy2)."""
     try:
         return shapely.wkt.dumps(geom)
-    except ShapelyError as e:
+    except (ShapelyError, TypeError) as e:
         logger.error(
             "error serializing geometry to WKT",
             extra={"event": "geo_io.to_wkt_error", "context": {"error": str(e)}},

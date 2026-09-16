@@ -25,7 +25,10 @@ def cell_to_polygon(cell: H3Cell) -> Polygon:
     except Exception as e:
         logger.error(
             "error converting H3 cell to polygon",
-            extra={"event": "geo_h3.cell_to_polygon_error", "context": {"cell": cell, "error": str(e)}},
+            extra={
+                "event": "geo_h3.cell_to_polygon_error",
+                "context": {"cell": cell, "error": str(e)},
+            },
         )
         raise H3ConversionError(f"Error converting H3 cell '{cell}' to polygon: {e}")
 

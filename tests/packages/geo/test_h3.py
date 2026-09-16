@@ -64,3 +64,17 @@ def test_cell_to_polygon_unknown_cell_raises():
 
     with pytest.raises(H3ConversionError):
         cell_to_polygon("not-a-cell")
+
+
+def test_cell_to_centroid_unknown_cell_raises():
+    from geo.h3 import H3ConversionError
+
+    with pytest.raises(H3ConversionError):
+        cell_to_centroid("not-a-cell")
+
+
+def test_polygon_to_cells_invalid_geometry_raises():
+    from geo.h3 import H3ConversionError
+
+    with pytest.raises(H3ConversionError):
+        polygon_to_cells(None, resolution=9)  # type: ignore[arg-type]

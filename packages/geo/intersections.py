@@ -37,9 +37,7 @@ def _intersection(geom_a: BaseGeometry, geom_b: BaseGeometry) -> BaseGeometry | 
         raise IntersectionError(f"Error computing geometry intersection: {e}")
 
 
-def filter_intersecting(
-    geoms: list[BaseGeometry], mask: BaseGeometry
-) -> list[BaseGeometry]:
+def filter_intersecting(geoms: list[BaseGeometry], mask: BaseGeometry) -> list[BaseGeometry]:
     """Keep only the geometries that intersect `mask` (e.g. features touching a zone)."""
     return [geom for geom in geoms if _intersects(geom, mask)]
 

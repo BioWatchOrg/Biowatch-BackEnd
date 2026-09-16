@@ -1,11 +1,9 @@
 import pytest
-from geo.metrics import SRID_LAMBERT93, _reproject, area_m2, length_m
+from geo.metrics import SRID_LAMBERT93, MetricsError, _reproject, area_m2, length_m
 from shapely.geometry import LineString, Polygon
 
 # Petit carré en Île-de-France (WGS84, degrés) : ~0.01° de côté autour de Paris.
-SQUARE_WGS84 = Polygon(
-    [(2.35, 48.85), (2.36, 48.85), (2.36, 48.86), (2.35, 48.86), (2.35, 48.85)]
-)
+SQUARE_WGS84 = Polygon([(2.35, 48.85), (2.36, 48.85), (2.36, 48.86), (2.35, 48.86), (2.35, 48.85)])
 # Segment est-ouest de 0.01° de longitude à la même latitude.
 LINE_WGS84 = LineString([(2.35, 48.85), (2.36, 48.85)])
 
@@ -39,3 +37,8 @@ def test_length_m_matches_expected_order_of_magnitude():
 def test_length_m_with_lambert93_input_skips_reprojection():
     line_l93 = LineString([(0, 0), (3, 4)])
     assert length_m(line_l93, srid=SRID_LAMBERT93) == pytest.approx(5.0)
+
+
+def test_reproject_invalid_srid_raises():
+    with pytest.raises(MetricsError):
+        _reproject(SQUARE_WGS84, from_srid=4326, to_srid=99_999_999)

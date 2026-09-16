@@ -30,3 +30,13 @@ def test_from_wkt_invalid_raises():
 def test_from_geojson_invalid_raises():
     with pytest.raises(GeometryIOError):
         from_geojson({"type": "NotAType", "coordinates": []})
+
+
+def test_to_wkt_invalid_input_raises():
+    with pytest.raises(GeometryIOError):
+        to_wkt("not a geometry")  # type: ignore[arg-type]
+
+
+def test_to_geojson_invalid_input_raises():
+    with pytest.raises(GeometryIOError):
+        to_geojson("not a geometry")  # type: ignore[arg-type]
