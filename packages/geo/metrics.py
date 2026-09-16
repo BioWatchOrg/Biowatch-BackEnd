@@ -31,7 +31,7 @@ def _reproject(
                 "context": {"from_srid": from_srid, "to_srid": to_srid, "error": str(e)},
             },
         )
-        raise MetricsError(f"Error reprojecting geometry from {from_srid} to {to_srid}: {e}")
+        raise MetricsError(f"Error reprojecting geometry from {from_srid} to {to_srid}: {e}") from e
 
 
 def area_m2(geom: BaseGeometry, srid: int = SRID_WGS84) -> float:

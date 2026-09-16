@@ -14,10 +14,10 @@ from core import (
     write_parquet,
 )
 from geoalchemy2.shape import from_shape
-from shapely.geometry import Point, Polygon
+from shapely.geometry import Point, Polygon, box
 from sqlalchemy import Engine
 
-from .h3 import H3Cell, H3ConversionError, cell_to_bbox, cell_to_centroid, cell_to_polygon
+from .h3 import H3Cell, H3ConversionError, cell_to_centroid, cell_to_polygon
 
 logger = logging.getLogger(__name__)
 
@@ -62,18 +62,23 @@ def compute_h3_cells(aoi_label: AoiLabel, resolution: int) -> list[H3Cell]:
         )
         raise H3GridGenerationError(
             f"Error generating H3 grid for AOI '{aoi_label}' at resolution {resolution}: {e}"
-        )
+        ) from e
 
 
 def _cell_to_geometries(cell: H3Cell) -> tuple[Polygon, Point, Polygon]:
-    """H3 cell → (polygone, centroïde, bbox) shapely, via packages/geo/h3.py."""
+    """H3 cell → (polygone, centroïde, bbox) shapely, via packages/geo/h3.py.
+
+    La bbox est dérivée de `polygon.bounds` plutôt que via `cell_to_bbox(cell)`, qui
+    recalculerait le polygone une seconde fois (h3.cell_to_boundary) — coûteux sur une
+    grille de plusieurs milliers de cellules.
+    """
     try:
         polygon = cell_to_polygon(cell)
         centroid = cell_to_centroid(cell)
-        bbox = cell_to_bbox(cell)
+        bbox = box(*polygon.bounds)
         return polygon, centroid, bbox
     except H3ConversionError as e:
-        raise H3GridGenerationError(f"Error converting H3 cell '{cell}' to geometries: {e}")
+        raise H3GridGenerationError(f"Error converting H3 cell '{cell}' to geometries: {e}") from e
 
 
 def generate_h3_grid(

@@ -24,7 +24,7 @@ def to_wkt(geom: BaseGeometry) -> str:
             "error serializing geometry to WKT",
             extra={"event": "geo_io.to_wkt_error", "context": {"error": str(e)}},
         )
-        raise GeometryIOError(f"Error serializing geometry to WKT: {e}")
+        raise GeometryIOError(f"Error serializing geometry to WKT: {e}") from e
 
 
 def from_wkt(wkt: str) -> BaseGeometry:
@@ -36,7 +36,7 @@ def from_wkt(wkt: str) -> BaseGeometry:
             "error parsing WKT",
             extra={"event": "geo_io.from_wkt_error", "context": {"wkt": wkt, "error": str(e)}},
         )
-        raise GeometryIOError(f"Error parsing WKT '{wkt}': {e}")
+        raise GeometryIOError(f"Error parsing WKT '{wkt}': {e}") from e
 
 
 def to_geojson(geom: BaseGeometry) -> GeoJSON:
@@ -48,7 +48,7 @@ def to_geojson(geom: BaseGeometry) -> GeoJSON:
             "error serializing geometry to GeoJSON",
             extra={"event": "geo_io.to_geojson_error", "context": {"error": str(e)}},
         )
-        raise GeometryIOError(f"Error serializing geometry to GeoJSON: {e}")
+        raise GeometryIOError(f"Error serializing geometry to GeoJSON: {e}") from e
 
 
 def from_geojson(geojson: GeoJSON) -> BaseGeometry:
@@ -60,4 +60,4 @@ def from_geojson(geojson: GeoJSON) -> BaseGeometry:
             "error parsing GeoJSON",
             extra={"event": "geo_io.from_geojson_error", "context": {"error": str(e)}},
         )
-        raise GeometryIOError(f"Error parsing GeoJSON: {e}")
+        raise GeometryIOError(f"Error parsing GeoJSON: {e}") from e

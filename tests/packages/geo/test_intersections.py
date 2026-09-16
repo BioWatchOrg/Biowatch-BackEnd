@@ -6,19 +6,7 @@ from geo.intersections import (
     coverage_ratio,
     filter_intersecting,
 )
-from shapely.errors import ShapelyError
 from shapely.geometry import Point, Polygon
-
-
-class _BrokenGeometry:
-    """Stand-in raising ShapelyError, to exercise the error-handling branches."""
-
-    def intersects(self, _other):
-        raise ShapelyError("broken geometry")
-
-    def intersection(self, _other):
-        raise ShapelyError("broken geometry")
-
 
 FULL_SQUARE = Polygon([(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)])
 HALF_OVERLAP = Polygon([(5, 0), (15, 0), (15, 10), (5, 10), (5, 0)])  # chevauche à 50%
@@ -66,11 +54,12 @@ def test_coverage_ratio_zero_area_geom_is_zero():
     assert coverage_ratio(point_on_boundary, FULL_SQUARE, srid=2154) == pytest.approx(0.0)
 
 
-def test_intersects_wraps_shapely_error():
+def test_intersects_invalid_input_raises():
+    # Un argument non-géométrie fait lever un TypeError côté shapely, pas un ShapelyError.
     with pytest.raises(IntersectionError):
-        _intersects(_BrokenGeometry(), FULL_SQUARE)
+        _intersects(FULL_SQUARE, "not a geometry")  # type: ignore[arg-type]
 
 
-def test_intersection_wraps_shapely_error():
+def test_intersection_invalid_input_raises():
     with pytest.raises(IntersectionError):
-        _intersection(_BrokenGeometry(), FULL_SQUARE)
+        _intersection(FULL_SQUARE, "not a geometry")  # type: ignore[arg-type]

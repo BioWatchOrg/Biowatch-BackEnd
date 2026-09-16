@@ -16,12 +16,12 @@ def _intersects(geom_a: BaseGeometry, geom_b: BaseGeometry) -> bool:
     """Whether two geometries touch or overlap."""
     try:
         return bool(geom_a.intersects(geom_b))
-    except ShapelyError as e:
+    except (ShapelyError, TypeError) as e:
         logger.error(
             "error testing geometry intersection",
             extra={"event": "geo_intersections.intersects_error", "context": {"error": str(e)}},
         )
-        raise IntersectionError(f"Error testing geometry intersection: {e}")
+        raise IntersectionError(f"Error testing geometry intersection: {e}") from e
 
 
 def _intersection(geom_a: BaseGeometry, geom_b: BaseGeometry) -> BaseGeometry | None:
@@ -29,12 +29,12 @@ def _intersection(geom_a: BaseGeometry, geom_b: BaseGeometry) -> BaseGeometry | 
     try:
         result = geom_a.intersection(geom_b)
         return None if result.is_empty else result
-    except ShapelyError as e:
+    except (ShapelyError, TypeError) as e:
         logger.error(
             "error computing geometry intersection",
             extra={"event": "geo_intersections.intersection_error", "context": {"error": str(e)}},
         )
-        raise IntersectionError(f"Error computing geometry intersection: {e}")
+        raise IntersectionError(f"Error computing geometry intersection: {e}") from e
 
 
 def filter_intersecting(geoms: list[BaseGeometry], mask: BaseGeometry) -> list[BaseGeometry]:

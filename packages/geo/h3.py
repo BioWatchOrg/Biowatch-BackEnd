@@ -30,7 +30,7 @@ def cell_to_polygon(cell: H3Cell) -> Polygon:
                 "context": {"cell": cell, "error": str(e)},
             },
         )
-        raise H3ConversionError(f"Error converting H3 cell '{cell}' to polygon: {e}")
+        raise H3ConversionError(f"Error converting H3 cell '{cell}' to polygon: {e}") from e
 
 
 def cell_to_centroid(cell: H3Cell) -> Point:
@@ -46,7 +46,7 @@ def cell_to_centroid(cell: H3Cell) -> Point:
                 "context": {"cell": cell, "error": str(e)},
             },
         )
-        raise H3ConversionError(f"Error converting H3 cell '{cell}' to centroid: {e}")
+        raise H3ConversionError(f"Error converting H3 cell '{cell}' to centroid: {e}") from e
 
 
 def cell_to_bbox(cell: H3Cell) -> Polygon:
@@ -83,4 +83,6 @@ def polygon_to_cells(geom: BaseGeometry, resolution: int) -> list[H3Cell]:
                 "context": {"resolution": resolution, "error": str(e)},
             },
         )
-        raise H3ConversionError(f"Error computing H3 coverage at resolution {resolution}: {e}")
+        raise H3ConversionError(
+            f"Error computing H3 coverage at resolution {resolution}: {e}"
+        ) from e
