@@ -1,4 +1,5 @@
 import logging
+from functools import lru_cache
 
 import pyproj
 from shapely.geometry.base import BaseGeometry
@@ -14,14 +15,19 @@ class MetricsError(Exception):
     """Exception raised when a geometric metric cannot be computed."""
 
 
+@lru_cache(maxsize=None)
+def _get_transformer(from_srid: int, to_srid: int) -> pyproj.Transformer:
+    """Cached pyproj.Transformer for an SRID pair — building one costs ~38x a transform()
+    call (pyproj 3.8.0), too expensive to redo per zone/feature in a per-cell loop."""
+    return pyproj.Transformer.from_crs(f"EPSG:{from_srid}", f"EPSG:{to_srid}", always_xy=True)
+
+
 def _reproject(
     geom: BaseGeometry, from_srid: int = SRID_WGS84, to_srid: int = SRID_LAMBERT93
 ) -> BaseGeometry:
     """Reproject a geometry between two SRIDs (e.g. WGS84 degrees -> Lambert-93 meters)."""
     try:
-        transformer = pyproj.Transformer.from_crs(
-            f"EPSG:{from_srid}", f"EPSG:{to_srid}", always_xy=True
-        )
+        transformer = _get_transformer(from_srid, to_srid)
         return transform(transformer.transform, geom)
     except Exception as e:
         logger.error(

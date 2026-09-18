@@ -63,3 +63,26 @@ def test_intersects_invalid_input_raises():
 def test_intersection_invalid_input_raises():
     with pytest.raises(IntersectionError):
         _intersection(FULL_SQUARE, "not a geometry")  # type: ignore[arg-type]
+
+
+def test_intersects_none_geometry_raises_instead_of_attribute_error():
+    # geoms=[None, ...] can reach here from a source feed with a null geometry.
+    with pytest.raises(IntersectionError):
+        _intersects(None, FULL_SQUARE)  # type: ignore[arg-type]
+
+
+def test_intersects_none_mask_raises_instead_of_silently_returning_false():
+    # square.intersects(None) returns False without raising (shapely 2.1.2) — would
+    # otherwise make filter_intersecting silently drop everything on a None mask.
+    with pytest.raises(IntersectionError):
+        _intersects(FULL_SQUARE, None)  # type: ignore[arg-type]
+
+
+def test_intersection_none_geometry_raises():
+    with pytest.raises(IntersectionError):
+        _intersection(None, FULL_SQUARE)  # type: ignore[arg-type]
+
+
+def test_filter_intersecting_none_mask_raises():
+    with pytest.raises(IntersectionError):
+        filter_intersecting([FULL_SQUARE], None)  # type: ignore[arg-type]

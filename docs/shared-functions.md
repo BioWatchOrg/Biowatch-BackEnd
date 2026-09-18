@@ -115,9 +115,16 @@ l'instant.
 - `cell_to_centroid(cell: H3Cell) -> Point`
 - `cell_to_bbox(cell: H3Cell) -> Polygon`
 - `cell_to_wkt(cell: H3Cell) -> str` / `cell_to_geojson(cell: H3Cell) -> dict`
-- `polygon_to_cells(geom, resolution) -> list[H3Cell]` — cellules H3 couvrant une géométrie
-  arbitraire (ex. un polygone OSM ou une aire protégée) — c'est la fonction à utiliser pour
-  savoir dans quelles zones écrire une ligne `*_by_zone`.
+- `polygon_to_cells(geom: Polygon | MultiPolygon, resolution, contain="overlap") -> list[H3Cell]`
+  — cellules H3 couvrant une géométrie arbitraire (ex. un polygone OSM ou une aire protégée) —
+  c'est la fonction à utiliser pour savoir dans quelles zones écrire une ligne `*_by_zone`.
+  Containment par défaut **`overlap`** (pas `center`, contrairement à `compute_h3_cells`) :
+  une géométrie plus petite qu'une cellule ne contient le centre d'aucune cellule, donc
+  `center` la rattacherait silencieusement à zéro zone. `contain` reste surchargeable
+  (`"center"`, `"full"`, `"bbox_overlap"`) via l'API expérimentale de h3
+  (`h3shape_to_cells_experimental`, sans garantie de stabilité inter-versions côté h3).
+  N'accepte que `Polygon`/`MultiPolygon` — passer une `LineString` (ex. une route OSM) lève
+  `H3ConversionError`.
 - Exception : `H3ConversionError`.
 
 ### `geo.io` (sérialisation générique, toute géométrie)

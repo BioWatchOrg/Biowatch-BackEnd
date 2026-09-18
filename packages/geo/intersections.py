@@ -15,8 +15,12 @@ class IntersectionError(Exception):
 def _intersects(geom_a: BaseGeometry, geom_b: BaseGeometry) -> bool:
     """Whether two geometries touch or overlap."""
     try:
+        if geom_a is None or geom_b is None:
+            # geom.intersects(None) returns False instead of raising (shapely 2.1.2) —
+            # would otherwise silently drop/pass geometries instead of failing loudly.
+            raise TypeError("Cannot test intersection with a None geometry")
         return bool(geom_a.intersects(geom_b))
-    except (ShapelyError, TypeError) as e:
+    except (ShapelyError, TypeError, AttributeError) as e:
         logger.error(
             "error testing geometry intersection",
             extra={"event": "geo_intersections.intersects_error", "context": {"error": str(e)}},
@@ -27,9 +31,11 @@ def _intersects(geom_a: BaseGeometry, geom_b: BaseGeometry) -> bool:
 def _intersection(geom_a: BaseGeometry, geom_b: BaseGeometry) -> BaseGeometry | None:
     """The overlapping geometry between two geometries, or None if they don't overlap."""
     try:
+        if geom_a is None or geom_b is None:
+            raise TypeError("Cannot compute intersection with a None geometry")
         result = geom_a.intersection(geom_b)
         return None if result.is_empty else result
-    except (ShapelyError, TypeError) as e:
+    except (ShapelyError, TypeError, AttributeError) as e:
         logger.error(
             "error computing geometry intersection",
             extra={"event": "geo_intersections.intersection_error", "context": {"error": str(e)}},

@@ -79,6 +79,18 @@ def _cell_to_geometries(cell: H3Cell) -> tuple[Polygon, Point, Polygon]:
         return polygon, centroid, bbox
     except H3ConversionError as e:
         raise H3GridGenerationError(f"Error converting H3 cell '{cell}' to geometries: {e}") from e
+    except Exception as e:
+        # Catches box(*polygon.bounds) failing on a degenerate polygon (e.g. GEOSException
+        # on NaN bounds) — cell_to_polygon/cell_to_centroid already log+wrap their own
+        # errors as H3ConversionError above, so this branch only logs once, for this step.
+        logger.error(
+            "error deriving bbox from H3 cell polygon",
+            extra={
+                "event": "h3_grid.cell_to_geometries_error",
+                "context": {"cell": cell, "error": str(e)},
+            },
+        )
+        raise H3GridGenerationError(f"Error converting H3 cell '{cell}' to geometries: {e}") from e
 
 
 def generate_h3_grid(

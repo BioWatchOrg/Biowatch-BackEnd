@@ -40,3 +40,16 @@ def test_to_wkt_invalid_input_raises():
 def test_to_geojson_invalid_input_raises():
     with pytest.raises(GeometryIOError):
         to_geojson("not a geometry")  # type: ignore[arg-type]
+
+
+def test_to_wkt_is_trimmed_not_padded_with_zeros():
+    # Untrimmed shapely.wkt.dumps defaults pad every coordinate to full float precision
+    # (e.g. "1.0000000000000000") — trim=True drops that without losing round-trip exactness.
+    assert "0000000" not in to_wkt(SQUARE)
+
+
+def test_from_wkt_error_message_is_truncated_for_a_huge_invalid_wkt():
+    huge_invalid_wkt = "NOT A VALID WKT " * 100_000  # ~1.7 MB
+    with pytest.raises(GeometryIOError) as exc_info:
+        from_wkt(huge_invalid_wkt)
+    assert len(str(exc_info.value)) < 1_000

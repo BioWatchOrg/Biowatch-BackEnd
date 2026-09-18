@@ -1,5 +1,12 @@
 import pytest
-from geo.metrics import SRID_LAMBERT93, MetricsError, _reproject, area_m2, length_m
+from geo.metrics import (
+    SRID_LAMBERT93,
+    MetricsError,
+    _get_transformer,
+    _reproject,
+    area_m2,
+    length_m,
+)
 from shapely.geometry import LineString, Polygon
 
 # Petit carré en Île-de-France (WGS84, degrés) : ~0.01° de côté autour de Paris.
@@ -42,3 +49,7 @@ def test_length_m_with_lambert93_input_skips_reprojection():
 def test_reproject_invalid_srid_raises():
     with pytest.raises(MetricsError):
         _reproject(SQUARE_WGS84, from_srid=4326, to_srid=99_999_999)
+
+
+def test_get_transformer_is_cached_per_srid_pair():
+    assert _get_transformer(4326, SRID_LAMBERT93) is _get_transformer(4326, SRID_LAMBERT93)

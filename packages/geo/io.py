@@ -18,7 +18,9 @@ class GeometryIOError(Exception):
 def to_wkt(geom: BaseGeometry) -> str:
     """Shapely geometry -> WKT text (e.g. for PostGIS/GeoAlchemy2)."""
     try:
-        return shapely.wkt.dumps(geom)
+        # trim=True drops the untrimmed default's redundant trailing zeros (~4x the bytes
+        # for the same geometry) without losing precision (round-trip stays exact).
+        return shapely.wkt.dumps(geom, trim=True)
     except (ShapelyError, TypeError) as e:
         logger.error(
             "error serializing geometry to WKT",
@@ -32,11 +34,18 @@ def from_wkt(wkt: str) -> BaseGeometry:
     try:
         return shapely.wkt.loads(wkt)
     except ShapelyError as e:
+        # Full WKT omitted from both the log context and the message: a bad MultiPolygon
+        # can be several MB, enough to saturate structured-log shipping on one line.
         logger.error(
             "error parsing WKT",
-            extra={"event": "geo_io.from_wkt_error", "context": {"wkt": wkt, "error": str(e)}},
+            extra={
+                "event": "geo_io.from_wkt_error",
+                "context": {"wkt_prefix": wkt[:200], "wkt_len": len(wkt), "error": str(e)},
+            },
         )
-        raise GeometryIOError(f"Error parsing WKT '{wkt}': {e}") from e
+        raise GeometryIOError(
+            f"Error parsing WKT (prefix: {wkt[:200]!r}, len={len(wkt)}): {e}"
+        ) from e
 
 
 def to_geojson(geom: BaseGeometry) -> GeoJSON:
