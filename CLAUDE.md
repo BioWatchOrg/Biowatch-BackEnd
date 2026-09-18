@@ -91,6 +91,14 @@ Layout (chaque dossier est un package Python installé en éditable) :
 
 Quand tu proposes du code, **respecter cette séparation**. Pas de logique scoring dans `apps/api`, pas d'accès DB direct dans `packages/scoring`, etc.
 
+### Fonctions communes déjà disponibles
+
+**Avant d'écrire une fonction utilitaire** (géospatial, gestion du temps, idempotence, accès
+DB, logs...), consulter `docs/shared-functions.md` — catalogue des fonctions publiques de
+`packages/core`, `packages/clients` et `packages/geo`. Ne pas réimplémenter une fonction qui y
+existe déjà. Ce fichier doit être mis à jour à chaque MR qui ajoute une fonction publique dans
+un de ces packages.
+
 ### Frontend (rappel)
 
 Séparer composants UI, pages, routes, services API, store Zustand, modèles TypeScript, hooks, composants cartographiques, utilitaires. Pas de mélange affichage / appels API / logique métier.

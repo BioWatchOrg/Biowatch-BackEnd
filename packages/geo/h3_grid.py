@@ -1,6 +1,5 @@
 import logging
 import os
-from typing import TypeAlias
 
 import h3
 import pandas as pd
@@ -18,11 +17,11 @@ from geoalchemy2.shape import from_shape
 from shapely.geometry import Point, Polygon, box
 from sqlalchemy import Engine
 
+from .h3 import H3Cell, H3ConversionError, cell_to_centroid, cell_to_polygon
+
 logger = logging.getLogger(__name__)
 
 GRID_STORE_ROOT = "docs/grids"
-
-H3Cell: TypeAlias = str  # H3 cell id (hex string)
 
 
 class H3GridGenerationError(Exception):
@@ -63,28 +62,35 @@ def compute_h3_cells(aoi_label: AoiLabel, resolution: int) -> list[H3Cell]:
         )
         raise H3GridGenerationError(
             f"Error generating H3 grid for AOI '{aoi_label}' at resolution {resolution}: {e}"
-        )
+        ) from e
 
 
 def _cell_to_geometries(cell: H3Cell) -> tuple[Polygon, Point, Polygon]:
-    """H3 cell → (polygone, centroïde, bbox) shapely."""
+    """H3 cell → (polygone, centroïde, bbox) shapely, via packages/geo/h3.py.
+
+    La bbox est dérivée de `polygon.bounds` plutôt que via `cell_to_bbox(cell)`, qui
+    recalculerait le polygone une seconde fois (h3.cell_to_boundary) — coûteux sur une
+    grille de plusieurs milliers de cellules.
+    """
     try:
-        boundary = h3.cell_to_boundary(cell)
-        # h3 retourne (lat, lng) ; shapely veut (x=lng, y=lat).
-        polygon = Polygon([(lng, lat) for lat, lng in boundary])
-
-        lat, lng = h3.cell_to_latlng(cell)
-        centroid = Point(lng, lat)
-
+        polygon = cell_to_polygon(cell)
+        centroid = cell_to_centroid(cell)
         bbox = box(*polygon.bounds)
-
         return polygon, centroid, bbox
+    except H3ConversionError as e:
+        raise H3GridGenerationError(f"Error converting H3 cell '{cell}' to geometries: {e}") from e
     except Exception as e:
+        # Catches box(*polygon.bounds) failing on a degenerate polygon (e.g. GEOSException
+        # on NaN bounds) — cell_to_polygon/cell_to_centroid already log+wrap their own
+        # errors as H3ConversionError above, so this branch only logs once, for this step.
         logger.error(
-            "error converting H3 cell to geometries",
-            extra={"event": "h3_grid.cell_error", "context": {"cell": cell, "error": str(e)}},
+            "error deriving bbox from H3 cell polygon",
+            extra={
+                "event": "h3_grid.cell_to_geometries_error",
+                "context": {"cell": cell, "error": str(e)},
+            },
         )
-        raise H3GridGenerationError(f"Error converting H3 cell '{cell}' to geometries: {e}")
+        raise H3GridGenerationError(f"Error converting H3 cell '{cell}' to geometries: {e}") from e
 
 
 def generate_h3_grid(
