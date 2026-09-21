@@ -1327,3 +1327,151 @@ Run: `uv run biowatch-jobs --debug update_gbif_occurrences --aoi idf`
 - [ ] **Step 3: Report the result**
 
 Note the outcome (row count, any errors) back before considering this ticket done — this step has no automated pass/fail, it's the real-world check the unit tests can't cover (they all mock GBIF).
+
+---
+
+### Task 10: GBIF geometry fallback (convex hull)
+
+**Added after Task 9 confirmed the risk for real:** GBIF rejected the `idf`
+AOI's exact polygon (466 vertices, 15291-byte WKT) with a `400` — the request
+line (~16KB) trips a proxy/servlet URI-length limit before GBIF's own
+validator runs. Confirmed empirically that the AOI's **convex hull** fixes
+this: 22 vertices, 733-byte WKT, only +15.5% area over the true polygon. The
+extra area is harmless: `update_gbif_occurrences` already discards any
+occurrence whose computed `zone_id` isn't in `zones_hex` for the AOI (the
+existing zone-membership safety check from Task 6), so hull-only false
+positives are filtered out downstream — this fallback only widens what GBIF
+is asked for, never what gets stored. A convex hull is also always valid
+(never self-intersecting) and always fully contains the original polygon,
+unlike a tolerance-based `shapely.simplify()` which could clip off real area
+— matching the spec's own fallback description ("simplifier... en préservant
+le polygone englobant").
+
+**Files:**
+- Modify: `packages/species/gbif_occurrences.py`
+- Modify: `tests/packages/species/test_gbif_occurrences.py`
+
+**Interfaces:**
+- No new public interface — `update_gbif_occurrences`'s signature is
+  unchanged. Internal only: the `geometry_wkt` passed to `fetch_occurrences`
+  changes from `aoi.geom.wkt` to `aoi.geom.convex_hull.wkt`.
+
+- [ ] **Step 1: Write the failing test**
+
+Add to `tests/packages/species/test_gbif_occurrences.py`:
+
+```python
+def test_update_gbif_occurrences_queries_gbif_with_convex_hull_not_raw_polygon(monkeypatch):
+    """GBIF rejects the idf AOI's raw polygon (466 vertices, ~16KB request
+    line) with a 400 — confirmed against the real API. The convex hull (22
+    vertices) is what must be sent instead; the exact polygon is still used
+    for the zones_hex membership check, so no correctness is lost."""
+    aoi = gbif_occurrences.load_aoi(GOLDEN_AOI)
+    captured_geometries = []
+
+    @contextmanager
+    def fake_job_run(*args, idempotency_key="", **kwargs):
+        raise JobAlreadySucceeded(idempotency_key, uuid.uuid4())
+        yield  # pragma: no cover
+
+    def fake_fetch_occurrences(geometry_wkt, year, client=None):
+        captured_geometries.append(geometry_wkt)
+        return iter([])
+
+    monkeypatch.setattr(gbif_occurrences, "job_run", fake_job_run)
+    monkeypatch.setattr(gbif_occurrences, "fetch_occurrences", fake_fetch_occurrences)
+
+    # job_run raises before the loop, so no geometry is captured this way —
+    # instead call the geometry computation directly as update_gbif_occurrences
+    # does internally: assert the module computes the hull, not the raw geom.
+    assert aoi.geom.convex_hull.wkt != aoi.geom.wkt  # sanity: hull actually differs for idf
+    assert len(aoi.geom.convex_hull.exterior.coords) < len(aoi.geom.exterior.coords)
+```
+
+Note: the test above's sanity assertions are safe to keep, but they don't
+yet exercise `update_gbif_occurrences` itself computing the hull. Replace
+the body with a version that actually drives the function: reuse the
+DB-gated test's fake `job_run` pattern from Task 6
+(`_fake_job_run_yielding`-style, i.e. a fake that actually yields a
+`(RunContext, session)` pair so the function body runs) so the real
+`geometry_wkt = ...` line executes and gets captured. Look at the existing
+`test_update_gbif_occurrences_row_level_dedup_across_overlapping_windows`
+test in the same file (added in Task 6's fix round) for the established
+pattern of a `job_run` fake that lets the function body actually run against
+a fake session — mirror that structure, but you don't need a real DB for
+this test: a `MagicMock()` session is enough since this test only checks
+what `geometry_wkt` value reaches `fetch_occurrences`, not persistence.
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `uv run pytest tests/packages/species/test_gbif_occurrences.py -v -k convex_hull`
+Expected: FAIL — the captured `geometry_wkt` equals `aoi.geom.wkt` (466
+vertices), not `aoi.geom.convex_hull.wkt` (22 vertices), because the
+implementation hasn't changed yet.
+
+- [ ] **Step 3: Implement the fix**
+
+In `packages/species/gbif_occurrences.py`, find:
+
+```python
+            geometry_wkt = aoi.geom.wkt
+```
+
+Replace with:
+
+```python
+            # GBIF's `geometry` param has an undocumented complexity/URL-length
+            # limit — the idf AOI's exact polygon (466 vertices, ~15KB WKT)
+            # gets a 400 from a proxy/servlet limit before GBIF's own
+            # validator runs (confirmed against the real API). The convex
+            # hull (22 vertices for idf) is small, always valid, and always
+            # fully contains the original polygon, so it never causes GBIF to
+            # miss a real occurrence. The extra area is safe: any occurrence
+            # whose zone_id falls outside zones_hex for this AOI is already
+            # discarded below (the zone-membership check), so hull-only false
+            # positives never reach storage — this only widens the fetch,
+            # never what's persisted.
+            geometry_wkt = aoi.geom.convex_hull.wkt
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `uv run pytest tests/packages/species/test_gbif_occurrences.py -v -k convex_hull`
+Expected: PASS.
+
+- [ ] **Step 5: Run the full suite**
+
+Run: `uv run pytest -q`
+Expected: all pass (same counts as after Task 8, plus this one new test).
+
+- [ ] **Step 6: Re-run the real smoke test to confirm the actual fix**
+
+The unit test only proves the function computes the hull's WKT — it doesn't
+prove GBIF accepts it. Repeat Task 9's exact manual check:
+
+Run: `uv run biowatch-jobs --debug update_gbif_occurrences --aoi idf`
+
+Expected: no `GbifApiError`; the job completes (`job.success` in the logs).
+Then verify: `SELECT count(*) FROM staging.species_occurrences_raw WHERE aoi_id='idf';`
+via `docker exec postgis psql -U biowatch -d biowatch_dev -c "..."` returns a
+plausible non-zero count, and a few sample rows
+(`scientific_name`, `event_date`) look like real species data.
+
+If GBIF *still* rejects the hull (unexpected, but possible for some other
+reason): report back with the exact error — do not attempt a second fallback
+(e.g. bounding box) speculatively; that would need its own scoped task.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add packages/species/gbif_occurrences.py tests/packages/species/test_gbif_occurrences.py
+git commit -m "fix: use AOI convex hull for GBIF geometry filter
+
+GBIF rejects the idf AOI's exact polygon (466 vertices, ~15KB WKT) with
+a 400 -- confirmed against the real API, the request line trips a
+proxy/servlet URI-length limit. The convex hull (22 vertices, 733-byte
+WKT, +15.5% area) fixes this safely: any occurrence outside the AOI's
+real shape is already discarded by the existing zones_hex membership
+check, so the extra hull area only widens the GBIF fetch, never what
+gets persisted."
+```
