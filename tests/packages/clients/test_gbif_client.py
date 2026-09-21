@@ -119,6 +119,17 @@ def test_wait_for_download_raises_on_failed_status(monkeypatch):
         wait_for_download("key123", auth=httpx.BasicAuth("a", "b"))
 
 
+def test_wait_for_download_raises_on_http_error(monkeypatch):
+    def fake_get(self, url, auth=None, **kwargs):
+        return httpx.Response(500, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx.Client, "get", fake_get)
+    monkeypatch.setattr("clients.gbif.client.time.sleep", lambda s: None)
+
+    with pytest.raises(GbifApiError):
+        wait_for_download("key123", auth=httpx.BasicAuth("a", "b"))
+
+
 def test_wait_for_download_raises_on_timeout(monkeypatch):
     def fake_get(self, url, auth=None, **kwargs):
         return httpx.Response(200, json={"status": "RUNNING"}, request=httpx.Request("GET", url))
