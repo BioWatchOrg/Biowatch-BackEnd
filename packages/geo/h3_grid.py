@@ -66,6 +66,16 @@ def compute_h3_cells(aoi_label: AoiLabel, resolution: int) -> list[H3Cell]:
         )
 
 
+def point_to_h3_cell(lat: float, lon: float, resolution: int) -> H3Cell:
+    """
+    Pure, deterministic point → H3 cell conversion at the given resolution.
+
+    Inverse of `compute_h3_cells`: used to place an external point (e.g. a
+    GBIF occurrence) into the same H3 grid already persisted in `zones_hex`.
+    """
+    return h3.latlng_to_cell(lat, lon, resolution)
+
+
 def _cell_to_geometries(cell: H3Cell) -> tuple[Polygon, Point, Polygon]:
     """H3 cell → (polygone, centroïde, bbox) shapely."""
     try:

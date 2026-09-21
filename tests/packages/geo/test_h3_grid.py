@@ -3,7 +3,7 @@ import hashlib
 import h3
 import pytest
 from core import UndefinedAOIError
-from geo.h3_grid import compute_h3_cells
+from geo.h3_grid import compute_h3_cells, point_to_h3_cell
 
 GOLDEN_AOI = "idf"
 GOLDEN_RES = 5
@@ -51,3 +51,26 @@ def test_compute_h3_cells_returns_valid_h3_indexes():
 def test_compute_h3_cells_unknown_aoi_raises():
     with pytest.raises(UndefinedAOIError):
         compute_h3_cells("zzz", GOLDEN_RES)
+
+
+# Notre-Dame de Paris, a fixed, well-known point.
+NOTRE_DAME_LAT = 48.852968
+NOTRE_DAME_LON = 2.349902
+
+
+def test_point_to_h3_cell_returns_valid_cell_at_requested_resolution():
+    cell = point_to_h3_cell(NOTRE_DAME_LAT, NOTRE_DAME_LON, GOLDEN_RES)
+    assert h3.is_valid_cell(cell)
+    assert h3.get_resolution(cell) == GOLDEN_RES
+
+
+def test_point_to_h3_cell_is_deterministic():
+    a = point_to_h3_cell(NOTRE_DAME_LAT, NOTRE_DAME_LON, GOLDEN_RES)
+    b = point_to_h3_cell(NOTRE_DAME_LAT, NOTRE_DAME_LON, GOLDEN_RES)
+    assert a == b
+
+
+def test_point_to_h3_cell_matches_containing_grid_cell():
+    """The cell for a point inside idf must be one of compute_h3_cells(idf, res)."""
+    cell = point_to_h3_cell(NOTRE_DAME_LAT, NOTRE_DAME_LON, GOLDEN_RES)
+    assert cell in set(compute_h3_cells(GOLDEN_AOI, GOLDEN_RES))
