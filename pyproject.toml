@@ -41,6 +41,7 @@ packages = [
     "packages/geo",
     "packages/ml",
     "packages/scoring",
+    "packages/species",
 ]
 
 [tool.ruff]

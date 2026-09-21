@@ -47,6 +47,7 @@ uv run biowatch-jobs generate_h3_grid --aoi idf --resolution 8
     uv run biowatch-jobs --help # Pour voir les jobs disponibles 
     uv run biowatch-jobs <job> --help # Pour voir les arguments à mettre 
     uv run biowatch-jobs generate_h3_grid --aoi idf --resolution 5
+    uv run biowatch-jobs update_gbif_occurrences --aoi idf
 ````
 ### Enregistrer un nouveau job
 Il faut enregistrer le nouveau job dans : apps/jobs/definitions.py
