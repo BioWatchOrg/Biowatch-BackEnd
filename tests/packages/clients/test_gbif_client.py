@@ -3,7 +3,13 @@
 import httpx
 import pytest
 
-from clients.gbif.client import GBIF_PAGE_LIMIT, GBIF_SEARCH_URL, GbifApiError, fetch_occurrences
+from clients.gbif.client import (
+    GBIF_MAX_RETRIES,
+    GBIF_PAGE_LIMIT,
+    GBIF_SEARCH_URL,
+    GbifApiError,
+    fetch_occurrences,
+)
 
 
 def _response(results: list[dict], end_of_records: bool) -> httpx.Response:
@@ -77,3 +83,79 @@ def test_fetch_occurrences_uses_injected_client():
 
     assert [r["key"] for r in records] == [42]
     client.close()
+
+
+def test_fetch_occurrences_retries_on_429_with_retry_after_header(monkeypatch):
+    responses = [
+        httpx.Response(
+            429,
+            headers={"Retry-After": "3"},
+            request=httpx.Request("GET", GBIF_SEARCH_URL),
+        ),
+        _response([{"key": 1}], end_of_records=True),
+    ]
+    sleeps = []
+
+    def fake_get(self, url, params=None, **kwargs):
+        return responses.pop(0)
+
+    monkeypatch.setattr(httpx.Client, "get", fake_get)
+    monkeypatch.setattr("clients.gbif.client.time.sleep", lambda s: sleeps.append(s))
+
+    records = list(fetch_occurrences("POLYGON((0 0,0 1,1 1,1 0,0 0))", 2020))
+
+    assert [r["key"] for r in records] == [1]
+    assert sleeps == [3.0]
+
+
+def test_fetch_occurrences_retries_on_429_without_retry_after_uses_backoff(monkeypatch):
+    responses = [
+        httpx.Response(429, request=httpx.Request("GET", GBIF_SEARCH_URL)),
+        _response([{"key": 1}], end_of_records=True),
+    ]
+    sleeps = []
+
+    def fake_get(self, url, params=None, **kwargs):
+        return responses.pop(0)
+
+    monkeypatch.setattr(httpx.Client, "get", fake_get)
+    monkeypatch.setattr("clients.gbif.client.time.sleep", lambda s: sleeps.append(s))
+
+    records = list(fetch_occurrences("POLYGON((0 0,0 1,1 1,1 0,0 0))", 2020))
+
+    assert [r["key"] for r in records] == [1]
+    assert sleeps == [2.0]  # GBIF_DEFAULT_RETRY_SECONDS * 2**0
+
+
+def test_fetch_occurrences_raises_after_max_retries_on_persistent_429(monkeypatch):
+    call_count = {"n": 0}
+
+    def fake_get(self, url, params=None, **kwargs):
+        call_count["n"] += 1
+        return httpx.Response(429, request=httpx.Request("GET", GBIF_SEARCH_URL))
+
+    monkeypatch.setattr(httpx.Client, "get", fake_get)
+    monkeypatch.setattr("clients.gbif.client.time.sleep", lambda s: None)
+
+    with pytest.raises(GbifApiError):
+        list(fetch_occurrences("POLYGON((0 0,0 1,1 1,1 0,0 0))", 2020))
+
+    assert call_count["n"] == GBIF_MAX_RETRIES + 1
+
+
+def test_fetch_occurrences_does_not_retry_non_429_errors(monkeypatch):
+    call_count = {"n": 0}
+    sleeps = []
+
+    def fake_get(self, url, params=None, **kwargs):
+        call_count["n"] += 1
+        return httpx.Response(500, request=httpx.Request("GET", GBIF_SEARCH_URL))
+
+    monkeypatch.setattr(httpx.Client, "get", fake_get)
+    monkeypatch.setattr("clients.gbif.client.time.sleep", lambda s: sleeps.append(s))
+
+    with pytest.raises(GbifApiError):
+        list(fetch_occurrences("POLYGON((0 0,0 1,1 1,1 0,0 0))", 2020))
+
+    assert call_count["n"] == 1  # no retry for a non-429 error
+    assert sleeps == []

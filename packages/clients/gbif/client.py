@@ -6,6 +6,7 @@ only knows how to talk to GBIF and paginate. See `species.quality` and
 """
 
 import logging
+import time
 from collections.abc import Iterator
 
 import httpx
@@ -15,10 +16,52 @@ logger = logging.getLogger(__name__)
 GBIF_SEARCH_URL = "https://api.gbif.org/v1/occurrence/search"
 GBIF_PAGE_LIMIT = 300
 GBIF_TIMEOUT_SECONDS = 30.0
+GBIF_MAX_RETRIES = 5
+GBIF_DEFAULT_RETRY_SECONDS = 2.0
 
 
 class GbifApiError(Exception):
     """Raised when the GBIF Occurrence Search API returns an error response."""
+
+
+def _retry_delay_seconds(response: httpx.Response, attempt: int) -> float:
+    """Delay before retrying a 429: honor GBIF's Retry-After header when
+    present (exact seconds to wait), otherwise exponential backoff."""
+    retry_after = response.headers.get("Retry-After")
+    if retry_after is not None:
+        try:
+            return float(retry_after)
+        except ValueError:
+            pass
+    return GBIF_DEFAULT_RETRY_SECONDS * (2**attempt)
+
+
+def _get_with_retry(
+    http_client: httpx.Client, params: dict, year: int, offset: int
+) -> httpx.Response:
+    """GET one page, retrying on GBIF's 429 (rate limit) with backoff.
+
+    Non-429 errors are returned as-is (not retried — those aren't
+    transient); the caller's existing `raise_for_status()` handles them.
+    If still 429 after `GBIF_MAX_RETRIES` attempts, the final 429 response
+    is returned and `raise_for_status()` converts it to a `GbifApiError`
+    the same way any other error status would be.
+    """
+    response = http_client.get(GBIF_SEARCH_URL, params=params)
+    for attempt in range(GBIF_MAX_RETRIES):
+        if response.status_code != 429:
+            return response
+        delay = _retry_delay_seconds(response, attempt)
+        logger.warning(
+            "GBIF rate limit hit, retrying",
+            extra={
+                "event": "gbif.rate_limited",
+                "context": {"year": year, "offset": offset, "attempt": attempt, "delay_s": delay},
+            },
+        )
+        time.sleep(delay)
+        response = http_client.get(GBIF_SEARCH_URL, params=params)
+    return response
 
 
 def fetch_occurrences(
@@ -41,8 +84,8 @@ def fetch_occurrences(
     try:
         offset = 0
         while True:
-            response = http_client.get(
-                GBIF_SEARCH_URL,
+            response = _get_with_retry(
+                http_client,
                 params={
                     "geometry": geometry_wkt,
                     "year": year,
@@ -51,6 +94,8 @@ def fetch_occurrences(
                     "limit": GBIF_PAGE_LIMIT,
                     "offset": offset,
                 },
+                year=year,
+                offset=offset,
             )
             try:
                 response.raise_for_status()
