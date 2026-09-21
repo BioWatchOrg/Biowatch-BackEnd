@@ -8,50 +8,82 @@ dans `staging.species_occurrences_raw`. Fréquence : 1×/an (année N → rechar
 N-9 → N).
 
 Source de vérité : page Notion « update_gbif_occurrences » (fournie par
-l'utilisateur après une première itération de ce design basée uniquement sur
-l'issue GitHub — cette v2 corrige le schéma et la logique pour coller
-exactement au Notion). Le MCP `biowatch-notion` reste non connecté
-(`NOTION_TOKEN` placeholder) ; si le Notion évolue après cette date, relire la
-page directement plutôt que ce document.
+l'utilisateur après une première itération basée uniquement sur l'issue
+GitHub — v2 a corrigé le schéma/logique pour coller au Notion). Le MCP
+`biowatch-notion` reste non connecté (`NOTION_TOKEN` placeholder) ; si le
+Notion évolue après cette date, relire la page directement plutôt que ce
+document.
 
 Prérequis DoR déjà en place dans le repo : AOI registry + `load_aoi(aoi_id)`
 (`packages/core/aoi.py`), grille H3 (`packages/geo/h3_grid.py`), idempotence +
-`job_run` (`packages/clients/db/job_runs.py`), env local (voir commits
-précédents). **Écart connu avec le DoR** : le Notion mentionne "CLI Click" —
-le repo utilise un runner CLI maison (`argparse` + registre dans
-`apps/jobs/registry.py`), fonctionnellement équivalent, pas un blocker.
-**Écart non résolu** : env dev/prod VPS pas encore montés, seul l'env local
-existe — hors scope de ce ticket, à suivre séparément.
+`job_run` (`packages/clients/db/job_runs.py`), env local. **Écart connu avec
+le DoR** : le Notion mentionne "CLI Click" — le repo utilise un runner CLI
+maison (`argparse`), fonctionnellement équivalent. **Écart non résolu** : env
+dev/prod VPS pas encore montés, seul l'env local existe — hors scope de ce
+ticket.
 
-## Décisions validées
+## v3 — Pivot Search API → Download API
 
-- **API GBIF** : Occurrence Search API (`GET /v1/occurrence/search`), paginée,
-  un sous-appel par année de la fenêtre. Pas de Download API (asynchrone,
-  complexité opérationnelle non justifiée pour une AOI régionale).
-- **Filtre spatial GBIF** : paramètre `geometry` (WKT du polygone réel de
-  l'AOI, `aoi.geom.wkt`) — pas un bbox lat/lon. Risque connu : GBIF limite la
-  complexité du WKT (auto-intersection interdite, nombre de sommets limité).
-  Si la requête est rejetée pour un polygone trop détaillé, fallback :
-  simplifier la géométrie (`shapely.simplify` avec une tolérance qui
-  préserve le polygone englobant) avant de l'envoyer. À vérifier en pratique
-  sur l'AOI `idf`.
-- **Résolution H3** : `aoi.default_res` (celle de `zones_hex`), pour que le
-  `zone_id` calculé soit cohérent avec la grille déjà générée.
-- **Filtre taxonomique** : aucun — la table raw est une base brute pour
-  l'agrégation en aval (`compute_species_features_by_zone`, #39).
-- **Conflit PK** : `DO NOTHING` (pas `DO UPDATE`) — une occurrence GBIF est un
-  fait historique immuable, inutile de la rafraîchir si déjà en base.
-  `upsert(session, model, rows, update_columns=[])` fait déjà ça (le helper
-  existant bascule sur `ON CONFLICT DO NOTHING` si `update_columns` est une
-  liste vide).
-- **Purge staging** : à chaque run, `DELETE` les lignes de l'AOI dont
-  `event_date < date_min` — garde la table bornée aux 10 ans glissants au
-  lieu de grossir indéfiniment. Confirmé explicitement (opération
-  destructive, DoD Notion l'exige).
-- **Nouveau package** : `packages/species/` — logique métier biodiversité,
-  accueillera aussi #39. Le client HTTP GBIF vit dans
-  `packages/clients/gbif/` (accès externe, cohérent avec la séparation
-  `clients` = DB/storage/services externes).
+**v1/v2** de ce document choisissaient l'Occurrence Search API (paginée par
+année). **Implémentée, testée contre la vraie API GBIF (Tasks 9-11 du plan),
+et invalidée par les vrais volumes de données** : GBIF plafonne
+`offset + limit` à 100 000 résultats par requête (confirmé dans la doc
+officielle : *"This service has a maximum offset of 100,000 [...] To
+retrieve all records beyond 100,000 you should use our asynchronous download
+service instead."*). L'AOI `idf` a entre 200k et 650k occurrences par an sur
+9 des 10 années de la fenêtre (≈4.86M au total) — la Search API ne peut
+structurellement jamais finir un run pour la seule AOI existante.
+
+**v3 bascule sur l'Occurrence Download API** (asynchrone, prédicat, pas de
+plafond d'offset — c'est explicitement le chemin que GBIF recommande pour ce
+volume).
+
+## Décisions validées (v3)
+
+- **API GBIF** : Occurrence Download API. `POST /occurrence/download/request`
+  avec un **prédicat unique** combinant géométrie (hull) + plage de dates
+  complète (10 ans en une fois, plus de boucle par année) → poll
+  `GET /occurrence/download/{key}` jusqu'à `SUCCEEDED`/échec → téléchargement
+  du fichier résultat.
+- **Format** : `SIMPLE_CSV` (tsv.gz, une ligne par occurrence). Pas `DWCA`
+  (zip + XML Darwin Core Archive, parsing plus lourd pour aucun champ
+  supplémentaire utile ici). Colonnes confirmées dans la doc GBIF :
+  `gbifID`, `scientificName`, `taxonKey`, `decimalLatitude`,
+  `decimalLongitude`, `eventDate`.
+- **Authentification** : obligatoire pour créer un download — *"It is
+  necessary to register as a user at GBIF.org [...] use HTTP authentication
+  using the username (not the email) and password."* Nouvelles variables
+  d'env : `GBIF_USERNAME`, `GBIF_PASSWORD` (jamais commitées, comme
+  `NOTION_TOKEN`).
+- **Filtre spatial GBIF** : prédicat `within` sur le **convex hull** de
+  l'AOI (`aoi.geom.convex_hull.wkt`), pas le polygone exact. Repris de v2 :
+  le polygone exact d'`idf` (466 sommets) dépassait déjà la limite de
+  complexité WKT de la Search API ; le hull (22 sommets pour `idf`, +15.5%
+  de surface) reste valide pour la même raison qu'avant — les occurrences
+  hors de la forme réelle sont filtrées après coup par le test
+  d'appartenance à `zones_hex` (étape 6 ci-dessous), donc la surface en trop
+  du hull n'introduit aucun risque de correction, seulement un fetch un peu
+  plus large. La doc de l'API Download annonce une limite de 10 000 points
+  pour un prédicat `within` — 22 est très en dessous.
+- **Résolution H3** : `aoi.default_res`, inchangé.
+- **Filtre taxonomique** : aucun, inchangé.
+- **Conflit PK** : `DO NOTHING`, inchangé — `upsert(..., update_columns=[])`.
+- **Purge staging** : inchangé — `DELETE` avant fetch, dans la transaction du
+  job. **Ajout suite à la revue finale** : un test dédié doit exister pour
+  cette opération destructive (v2 ne l'avait pas — trouvé en revue finale,
+  corrigé en v3).
+- **Idempotence** : **ajout suite à la revue finale** — la clé doit inclure
+  `aoi_version` et `resolution` (comme `generate_h3_grid` le fait déjà),
+  pas seulement `aoi_label` + année. Sans ça, un changement de géométrie ou
+  de résolution de l'AOI à l'intérieur d'une même année ne redéclenche pas
+  le job.
+- **Mémoire** : le flux SIMPLE_CSV est **streamé** (gzip + csv, ligne par
+  ligne) et upserté par lots de taille bornée — pas de liste Python de
+  millions de lignes en mémoire (le problème ne se posait pas en v2 tant que
+  le plafond à 100k limitait accidentellement le volume par requête ; il se
+  serait aggravé une fois ce plafond contourné, donc traité maintenant).
+- **Nouveau package** : inchangé — `packages/species/`, client HTTP dans
+  `packages/clients/gbif/`.
 
 ## Architecture
 
@@ -59,52 +91,50 @@ existe — hors scope de ce ticket, à suivre séparément.
 apps/jobs/definitions.py
   └─ update_gbif_occurrences (CLI: --aoi, --debug)
         └─ packages/species/gbif_occurrences.py
-              ├─ packages/clients/gbif/client.py   (HTTP GBIF, pagination brute)
-              ├─ packages/species/quality.py        (filtre qualité, pur)
-              └─ packages/geo/h3_grid.py            (+ nouvelle fn point→cell)
+              ├─ packages/clients/gbif/client.py   (Download API : request/poll/stream)
+              ├─ packages/species/quality.py        (filtre qualité, pur — inchangé)
+              └─ packages/geo/h3_grid.py            (point→cell — inchangé)
 ```
 
-Le job orchestre ; le client GBIF ne connaît rien de la DB ; le filtre qualité
-est pur (testable sans I/O) ; `packages/geo` gagne une fonction inverse de
-`compute_h3_cells` (point → cell) réutilisable ailleurs.
+## Logique (v3)
 
-## Logique (ordre exact du Notion)
+1. **`job_runs`** : `job_run(...)` standard — inchangé.
+2. **Fenêtre glissante** : `date_min = date(N-9, 1, 1)`, `date_max = date(N, 12, 31)` — inchangé.
+3. **Purge staging hors fenêtre** — inchangé (testé cette fois, cf. Tests).
+4. **Un seul appel GBIF pour toute la fenêtre** :
+   - `predicate = {"type": "and", "predicates": [
+        {"type": "within", "geometry": "<hull WKT>"},
+        {"type": "greaterThanOrEquals", "key": "EVENT_DATE", "value": "<date_min>"},
+        {"type": "lessThanOrEquals", "key": "EVENT_DATE", "value": "<date_max>"},
+        {"type": "equals", "key": "HAS_COORDINATE", "value": "true"},
+        {"type": "equals", "key": "HAS_GEOSPATIAL_ISSUE", "value": "false"},
+     ]}`
+   - `POST /occurrence/download/request` (auth Basic, body `{"creator": <username>, "format": "SIMPLE_CSV", "predicate": predicate}`) → `download_key`.
+   - Poll `GET /occurrence/download/{download_key}` jusqu'à `status == "SUCCEEDED"` (ou erreur sur `FAILED`/`CANCELLED`/`KILLED`), borné par un timeout (le job ne doit pas bloquer indéfiniment).
+   - Téléchargement du fichier (redirection GBIF vers le fichier réel), streamé sur disque (pas en mémoire — potentiellement des centaines de Mo).
+5. **Filtrage qualité** — inchangé, mais adapté aux noms de colonnes CSV
+   (`gbifID` au lieu de `key`, sinon mêmes noms). Une fonction de
+   normalisation convertit une ligne CSV en le même dict que `quality_filter`
+   attendait déjà (pas de réécriture de `quality_filter`).
+6. **Conversion point → H3 + filtre `zones_hex`** — inchangé.
+7. **Insertion idempotente par lots bornés** (ex. 5000 lignes), pas un seul
+   lot pour tout le fichier — `upsert(..., update_columns=[])`.
+8. **Fin de run** — inchangé.
 
-1. **`job_runs`** : `job_run(...)` standard — `success` → skip
-   (`JobAlreadySucceeded`), `failed`/`partial`/`running` → retry.
-2. **Fenêtre glissante** :
-   `date_min = date(N - 9, 1, 1)`, `date_max = date(N, 12, 31)`
-   (`N = biowatch_now().year`).
-3. **Purge staging hors fenêtre** :
-   `DELETE FROM staging.species_occurrences_raw WHERE aoi_id = :aoi AND event_date < :date_min`
-   — avant le fetch, dans la même transaction que le job (`job_run` session).
-4. **Appel GBIF** sur la fenêtre + AOI :
-   `GET /v1/occurrence/search?geometry=<WKT>&hasCoordinate=true&year=<year>&limit=300&offset=<n>`
-   — un sous-appel par année de `range(N-9, N+1)`, pagination jusqu'à
-   `endOfRecords=true`.
-5. **Filtrage qualité** (en plus des filtres GBIF natifs) :
-   - coordonnées non nulles, pas `(0, 0)`, dans bornes valides
-     (-90/90, -180/180) ;
-   - `eventDate` GBIF présent et parseable en `DATE`, dans
-     `[date_min, date_max]` — **`event_date` est `NOT NULL` en base**, donc
-     une occurrence sans date exploitable est rejetée (pas de fallback sur
-     `year` seul) ;
-   - optionnel (non bloquant pour ce ticket) : `coordinateUncertaintyInMeters`
-     sous un seuil.
-6. **Conversion point → H3** : `zone_id = h3.latlng_to_cell(lat, lon, aoi.default_res)`.
-   Safety optionnelle : rejeter si `zone_id` absent de `zones_hex` pour cette
-   AOI (le `geometry` WKT réduit déjà ce cas vs. un bbox, mais garde le
-   filet de sécurité, coût quasi nul — un `SELECT zone_id FROM zones_hex
-   WHERE aoi_id=...` une fois avant la boucle).
-7. **Insertion idempotente** : `upsert(session, SpeciesOccurrencesRaw, rows, update_columns=[])`
-   par lot (batch par année, pas ligne à ligne) — `ON CONFLICT (gbif_occurrence_id) DO NOTHING`.
-8. **Fin de run** : `job_run` marque `success` (ou `failed` si exception —
-   pas de granularité par zone, la boucle est par année pas par zone H3).
+**Exactitude des noms de clés de prédicat** : la doc GBIF confirme les types
+`equals`/`and`/`greaterThanOrEquals`/`lessThanOrEquals`/`within` et les clés
+`HAS_COORDINATE`/`HAS_GEOSPATIAL_ISSUE`/`YEAR`/`COUNTRY`, mais la
+documentation Swagger (rendue en JS, non scrapable automatiquement) n'a pas
+confirmé à 100% l'orthographe exacte de la clé de date (`EVENT_DATE`
+supposé par convention avec les autres clés en `UPPER_SNAKE_CASE`). **À
+vérifier contre la vraie API** au moment de l'implémentation (même
+discipline que pour le hull et le rate-limit en v2 : si GBIF rejette le
+prédicat avec une erreur nommant la clé, corriger et re-vérifier avant de
+considérer la tâche terminée).
 
 ## Schéma `staging.species_occurrences_raw`
 
-Schéma Postgres `staging` créé dans `init_db.py` au même endroit que les
-extensions (`CREATE SCHEMA IF NOT EXISTS staging`), avant `create_all`.
+Inchangé depuis v2 :
 
 ```sql
 CREATE TABLE IF NOT EXISTS staging.species_occurrences_raw (
@@ -120,63 +150,65 @@ CREATE TABLE IF NOT EXISTS staging.species_occurrences_raw (
 );
 ```
 
-Repris tel quel du Notion (DDL source de vérité) — colonnes exactes, pas de
-`taxon_key`/`event_year`/`basis_of_record`/`source_version` ajoutés côté code.
-`zone_id` n'a pas de contrainte FK explicite vers `zones_hex` dans le DDL
-(cohérence assurée par le filtre applicatif à l'étape 6, pas par la DB).
-`aoi_id` est obligatoire : la table est globale, partagée entre AOI, pas une
-table par région.
+`gbif_occurrence_id` = `gbifID` de la colonne SIMPLE_CSV (équivalent du `key`
+JSON de la Search API — même identifiant GBIF global, juste exposé sous un
+nom de colonne différent selon l'endpoint).
 
-`gbif_occurrence_id` = GBIF `key` (entier GBIF, casté en `TEXT`) — stable et
-unique, jamais un `occurrenceID` Darwin Core (souvent absent/dupliqué entre
-datasets).
-
-## Idempotence
+## Idempotence (v3)
 
 ```
 idempotency_key = compute_idempotency_key(
     job_name="update_gbif_occurrences",
     scope=aoi_label,
-    period=str(N),                # année cible N
-    source_version="gbif-search-v1",
+    period=str(N),
+    source_version=f"gbif-download-v1+aoi{aoi.version}",  # bump + AOI version folded in
+    resolution=aoi.default_res,   # compute_idempotency_key already has this param (core/idempotency.py)
 )
 ```
 
-Un run par (AOI, année N). Rejouer la même année N → skip (`job_run`
-standard). L'année suivante (N+1) est un nouveau run : il refetch N-8..N+1
-(chevauchement volontaire avec le run précédent), la purge (étape 3) et le
-`DO NOTHING` (étape 7) garantissent zéro doublon et une table bornée à la
-fenêtre courante.
+`compute_idempotency_key` already accepts a `resolution` param (used as-is by
+`generate_h3_grid`) — no signature change needed. `aoi.version` doesn't have
+its own param, so it's folded into `source_version` (same effect: any value
+change forces a new key).
+
+Un run par (AOI, année N, version AOI, résolution). Rejouer à l'identique →
+skip. Un changement de géométrie AOI ou de résolution, même pour la même
+année N, déclenche un nouveau run.
 
 ## Gestion d'erreur
 
-Pas de granularité par zone (la boucle est par année GBIF, pas par zone H3) :
-`job_run_zone_errors` ne s'applique pas à ce job. Un échec réseau GBIF sur une
-année fait échouer tout le run (`status=failed`), le retry standard de
-`job_run` relance l'ensemble.
+Un seul appel réseau bloquant (au lieu d'une boucle par année) : un échec
+(auth, predicate rejeté, download `FAILED`, timeout de poll) fait échouer
+tout le run (`status=failed`), retry standard via `job_run`. Pas de
+granularité par zone.
 
 ## Tests (objectif ≥ 90% coverage sur le nouveau code)
 
-- **Client GBIF** (`packages/clients/gbif`) : mock `httpx` (aucun appel réseau
-  réel), pagination multi-pages, arrêt sur `endOfRecords`, gestion erreur HTTP
-  (4xx/5xx → exception typée), géométrie WKT trop complexe (simuler un rejet
-  GBIF si testable).
-- **Filtre qualité** (`packages/species/quality.py`) : cas limites — lat/lon
-  `None`, `(0, 0)`, hors bornes, `eventDate` absent/invalide, date hors
-  fenêtre `[date_min, date_max]`.
-- **Conversion point → H3** : point connu → cell attendue (réutilise le test
-  déterministe existant sur `compute_h3_cells`).
-- **Purge staging** : lignes hors fenêtre supprimées, lignes dans la fenêtre
-  conservées, scoping correct par `aoi_id` (ne touche pas les autres AOI).
-- **Job complet** (`packages/species/gbif_occurrences.py`) : DB de test comme
-  `test_upsert.py` — vérifie idempotence (rerun même année = skip via
-  `JobAlreadySucceeded`), vérifie qu'un rerun avec un `gbif_occurrence_id`
-  déjà connu ne duplique pas et ne modifie pas la ligne existante (`DO
-  NOTHING`), vérifie que les points hors `zones_hex` sont exclus.
+- **Client GBIF Download** (`packages/clients/gbif`) : mock `httpx` — requête
+  de download (corps du prédicat correct), poll (transitions de statut,
+  timeout), téléchargement + streaming du fichier (gzip+csv), erreurs HTTP
+  typées à chaque étape.
+- **Filtre qualité** : inchangé (déjà fait, testé, 100% coverage) — juste
+  vérifier que la normalisation CSV→dict alimente `quality_filter` sans le
+  modifier.
+- **Purge staging** : **nouveau test explicite** (absent en v2, finding de
+  revue) — lignes hors fenêtre supprimées, lignes dans la fenêtre
+  conservées, scoping correct par `aoi_id`.
+- **Job complet** : DB de test — idempotence (rerun identique = skip),
+  dédup PK (`DO NOTHING`), exclusion des points hors `zones_hex`, et
+  vérifie que changer `aoi.version`/`resolution` déclenche un nouveau run
+  (nouveau test, finding de revue).
 
 ## Hors scope
 
 - Agrégation par espèce / statut IUCN par zone → job séparé
   (`compute_species_features_by_zone`, #39).
-- Job de retry dédié (#40) — ce job suit juste le contrat `job_run` standard.
+- Job de retry dédié (#40) — ce job suit le contrat `job_run` standard. La
+  gestion des pannes réseau transitoires (timeout de connexion, coupure TCP
+  en cours de téléchargement) reste hors scope de ce ticket : un rerun est
+  sûr (idempotent, purge+refetch, `DO NOTHING`), donc suffisant en attendant
+  #40.
 - Env dev/prod VPS — hors scope, suivi séparément (issues #18/#19).
+- Mise à jour de `packages/clients/db/init_db.py`, du schéma DB, du client H3
+  et du filtre qualité — déjà livrés et corrects en v2, non affectés par ce
+  pivot (seul le mécanisme de récupération réseau change).
