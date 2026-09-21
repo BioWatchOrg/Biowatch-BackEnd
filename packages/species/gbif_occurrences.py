@@ -78,7 +78,18 @@ def update_gbif_occurrences(aoi_label: AoiLabel, engine: Engine | None = None) -
                     select(ZonesHex.zone_id).where(ZonesHex.aoi_id == aoi_label)
                 ).all()
             )
-            geometry_wkt = aoi.geom.wkt
+            # GBIF's `geometry` param has an undocumented complexity/URL-length
+            # limit -- the idf AOI's exact polygon (466 vertices, ~15KB WKT)
+            # gets a 400 from a proxy/servlet limit before GBIF's own
+            # validator runs (confirmed against the real API). The convex
+            # hull (22 vertices for idf) is small, always valid, and always
+            # fully contains the original polygon, so it never causes GBIF to
+            # miss a real occurrence. The extra area is safe: any occurrence
+            # whose zone_id falls outside zones_hex for this AOI is already
+            # discarded below (the zone-membership check), so hull-only false
+            # positives never reach storage -- this only widens the fetch,
+            # never what's persisted.
+            geometry_wkt = aoi.geom.convex_hull.wkt
 
             for year in range(date_min.year, date_max.year + 1):
                 rows: list[dict[str, object]] = []

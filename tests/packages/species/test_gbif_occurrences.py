@@ -147,6 +147,35 @@ def test_update_gbif_occurrences_skips_record_outside_valid_zone_ids(monkeypatch
     assert captured_rows == []
 
 
+def test_update_gbif_occurrences_queries_gbif_with_convex_hull_not_raw_polygon(monkeypatch):
+    """GBIF rejects the idf AOI's raw polygon (466 vertices, ~16KB request
+    line) with a 400 -- confirmed against the real API. The convex hull (22
+    vertices) is what must be sent instead; the exact polygon is still used
+    for the zones_hex membership check, so no correctness is lost.
+    """
+    captured_geometries: list[str] = []
+
+    aoi = gbif_occurrences.load_aoi(GOLDEN_AOI)
+    # zone_ids is irrelevant here -- this test only observes what geometry_wkt
+    # reaches `fetch_occurrences`, not what ends up persisted.
+    session = _FakeSession(zone_ids=set())
+    monkeypatch.setattr(gbif_occurrences, "job_run", _fake_job_run_yielding(session))
+    monkeypatch.setattr(gbif_occurrences, "biowatch_now", lambda: date(2025, 1, 1))
+    monkeypatch.setattr(gbif_occurrences, "load_aoi", lambda label: aoi)
+
+    def fake_fetch_occurrences(geometry_wkt, year, client=None):
+        captured_geometries.append(geometry_wkt)
+        return iter([])
+
+    monkeypatch.setattr(gbif_occurrences, "fetch_occurrences", fake_fetch_occurrences)
+
+    gbif_occurrences.update_gbif_occurrences(GOLDEN_AOI)
+
+    assert captured_geometries, "fetch_occurrences was never called"
+    assert all(g == aoi.geom.convex_hull.wkt for g in captured_geometries)
+    assert all(g != aoi.geom.wkt for g in captured_geometries)
+
+
 def test_update_gbif_occurrences_logs_and_reraises_gbif_api_error(monkeypatch):
     """A `GbifApiError` raised while fetching a year's occurrences is logged
     and re-raised, aborting the job -- covers the `except GbifApiError:` branch.
