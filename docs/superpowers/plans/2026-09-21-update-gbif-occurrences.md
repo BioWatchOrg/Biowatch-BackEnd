@@ -1475,3 +1475,258 @@ real shape is already discarded by the existing zones_hex membership
 check, so the extra hull area only widens the GBIF fetch, never what
 gets persisted."
 ```
+
+---
+
+### Task 11: GBIF rate-limit handling (429 retry with backoff)
+
+**Added after Task 10's real re-verification:** the convex-hull fix resolved
+every `400` (dozens of consecutive `200 OK` responses confirmed, zero `400`s)
+but both full runs against real GBIF still failed end-to-end on `429 Too Many
+Requests` — `fetch_occurrences` has no retry/backoff and paginates with zero
+delay between requests (hit at offset=2700 on run 1, offset=5400 on run 2).
+This is a second, orthogonal real-world gap: the job cannot currently
+complete a full 10-year fetch against the real API at all. Fix: honor GBIF's
+`Retry-After` response header when present (exact seconds to wait), fall
+back to exponential backoff when absent, bounded by a max retry count so a
+persistently-limited request still fails loudly instead of looping forever.
+Non-429 errors (4xx/5xx) must NOT retry — those aren't transient, retrying
+them would just waste time before the existing immediate-raise behavior.
+
+**Files:**
+- Modify: `packages/clients/gbif/client.py`
+- Modify: `tests/packages/clients/test_gbif_client.py`
+
+**Interfaces:**
+- No change to `fetch_occurrences`'s public signature.
+- New internal constants: `GBIF_MAX_RETRIES = 5`, `GBIF_DEFAULT_RETRY_SECONDS = 2.0`.
+- New internal helpers: `_retry_delay_seconds(response: httpx.Response, attempt: int) -> float`,
+  `_get_with_retry(http_client: httpx.Client, params: dict, year: int, offset: int) -> httpx.Response`.
+
+- [ ] **Step 1: Write the failing tests**
+
+Add to `tests/packages/clients/test_gbif_client.py`:
+
+```python
+def test_fetch_occurrences_retries_on_429_with_retry_after_header(monkeypatch):
+    responses = [
+        httpx.Response(
+            429,
+            headers={"Retry-After": "3"},
+            request=httpx.Request("GET", GBIF_SEARCH_URL),
+        ),
+        _response([{"key": 1}], end_of_records=True),
+    ]
+    sleeps = []
+
+    def fake_get(self, url, params=None, **kwargs):
+        return responses.pop(0)
+
+    monkeypatch.setattr(httpx.Client, "get", fake_get)
+    monkeypatch.setattr("clients.gbif.client.time.sleep", lambda s: sleeps.append(s))
+
+    records = list(fetch_occurrences("POLYGON((0 0,0 1,1 1,1 0,0 0))", 2020))
+
+    assert [r["key"] for r in records] == [1]
+    assert sleeps == [3.0]
+
+
+def test_fetch_occurrences_retries_on_429_without_retry_after_uses_backoff(monkeypatch):
+    responses = [
+        httpx.Response(429, request=httpx.Request("GET", GBIF_SEARCH_URL)),
+        _response([{"key": 1}], end_of_records=True),
+    ]
+    sleeps = []
+
+    def fake_get(self, url, params=None, **kwargs):
+        return responses.pop(0)
+
+    monkeypatch.setattr(httpx.Client, "get", fake_get)
+    monkeypatch.setattr("clients.gbif.client.time.sleep", lambda s: sleeps.append(s))
+
+    records = list(fetch_occurrences("POLYGON((0 0,0 1,1 1,1 0,0 0))", 2020))
+
+    assert [r["key"] for r in records] == [1]
+    assert sleeps == [2.0]  # GBIF_DEFAULT_RETRY_SECONDS * 2**0
+
+
+def test_fetch_occurrences_raises_after_max_retries_on_persistent_429(monkeypatch):
+    call_count = {"n": 0}
+
+    def fake_get(self, url, params=None, **kwargs):
+        call_count["n"] += 1
+        return httpx.Response(429, request=httpx.Request("GET", GBIF_SEARCH_URL))
+
+    monkeypatch.setattr(httpx.Client, "get", fake_get)
+    monkeypatch.setattr("clients.gbif.client.time.sleep", lambda s: None)
+
+    with pytest.raises(GbifApiError):
+        list(fetch_occurrences("POLYGON((0 0,0 1,1 1,1 0,0 0))", 2020))
+
+    assert call_count["n"] == GBIF_MAX_RETRIES + 1
+
+
+def test_fetch_occurrences_does_not_retry_non_429_errors(monkeypatch):
+    call_count = {"n": 0}
+    sleeps = []
+
+    def fake_get(self, url, params=None, **kwargs):
+        call_count["n"] += 1
+        return httpx.Response(500, request=httpx.Request("GET", GBIF_SEARCH_URL))
+
+    monkeypatch.setattr(httpx.Client, "get", fake_get)
+    monkeypatch.setattr("clients.gbif.client.time.sleep", lambda s: sleeps.append(s))
+
+    with pytest.raises(GbifApiError):
+        list(fetch_occurrences("POLYGON((0 0,0 1,1 1,1 0,0 0))", 2020))
+
+    assert call_count["n"] == 1  # no retry for a non-429 error
+    assert sleeps == []
+```
+
+Add `GBIF_MAX_RETRIES` to the existing `from clients.gbif.client import ...` line at
+the top of the test file.
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `uv run pytest tests/packages/clients/test_gbif_client.py -v -k "retry or backoff or non_429"`
+Expected: FAIL — `ImportError` (`GBIF_MAX_RETRIES` doesn't exist yet) or the
+429 responses propagate as an uncaught/wrongly-immediate `GbifApiError`
+instead of retrying.
+
+- [ ] **Step 3: Implement retry/backoff**
+
+Edit `packages/clients/gbif/client.py`. Add `import time` to the imports, and
+add these constants after `GBIF_TIMEOUT_SECONDS`:
+
+```python
+GBIF_MAX_RETRIES = 5
+GBIF_DEFAULT_RETRY_SECONDS = 2.0
+```
+
+Add these two helpers after the `GbifApiError` class, before `fetch_occurrences`:
+
+```python
+def _retry_delay_seconds(response: httpx.Response, attempt: int) -> float:
+    """Delay before retrying a 429: honor GBIF's Retry-After header when
+    present (exact seconds to wait), otherwise exponential backoff."""
+    retry_after = response.headers.get("Retry-After")
+    if retry_after is not None:
+        try:
+            return float(retry_after)
+        except ValueError:
+            pass
+    return GBIF_DEFAULT_RETRY_SECONDS * (2**attempt)
+
+
+def _get_with_retry(
+    http_client: httpx.Client, params: dict, year: int, offset: int
+) -> httpx.Response:
+    """GET one page, retrying on GBIF's 429 (rate limit) with backoff.
+
+    Non-429 errors are returned as-is (not retried — those aren't
+    transient); the caller's existing `raise_for_status()` handles them.
+    If still 429 after `GBIF_MAX_RETRIES` attempts, the final 429 response
+    is returned and `raise_for_status()` converts it to a `GbifApiError`
+    the same way any other error status would be.
+    """
+    response = http_client.get(GBIF_SEARCH_URL, params=params)
+    for attempt in range(GBIF_MAX_RETRIES):
+        if response.status_code != 429:
+            return response
+        delay = _retry_delay_seconds(response, attempt)
+        logger.warning(
+            "GBIF rate limit hit, retrying",
+            extra={
+                "event": "gbif.rate_limited",
+                "context": {"year": year, "offset": offset, "attempt": attempt, "delay_s": delay},
+            },
+        )
+        time.sleep(delay)
+        response = http_client.get(GBIF_SEARCH_URL, params=params)
+    return response
+```
+
+In `fetch_occurrences`, replace the direct `http_client.get(...)` call:
+
+```python
+            response = http_client.get(
+                GBIF_SEARCH_URL,
+                params={
+                    "geometry": geometry_wkt,
+                    "year": year,
+                    "hasCoordinate": "true",
+                    "hasGeospatialIssue": "false",
+                    "limit": GBIF_PAGE_LIMIT,
+                    "offset": offset,
+                },
+            )
+```
+
+with:
+
+```python
+            response = _get_with_retry(
+                http_client,
+                params={
+                    "geometry": geometry_wkt,
+                    "year": year,
+                    "hasCoordinate": "true",
+                    "hasGeospatialIssue": "false",
+                    "limit": GBIF_PAGE_LIMIT,
+                    "offset": offset,
+                },
+                year=year,
+                offset=offset,
+            )
+```
+
+The existing `response.raise_for_status()` / `except httpx.HTTPStatusError`
+block right after stays unchanged — a still-429 response after retries are
+exhausted raises exactly the same `GbifApiError` any other error status
+would, no new error path to maintain.
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `uv run pytest tests/packages/clients/test_gbif_client.py -v`
+Expected: PASS (all tests, including the 4 pre-existing ones from Task 4).
+
+- [ ] **Step 5: Run the full suite**
+
+Run: `uv run pytest -q`
+Expected: all pass (same counts as after Task 10, plus these 4 new tests).
+
+- [ ] **Step 6: Re-run the real smoke test to confirm end-to-end success**
+
+This is the one that matters — the unit tests only prove the retry logic
+runs, not that it actually gets the job past GBIF's real rate limiter.
+
+Run: `uv run biowatch-jobs --debug update_gbif_occurrences --aoi idf`
+
+Expected: the job completes this time (`job.success` in the logs) — some
+`gbif.rate_limited` warning log lines are fine and expected (GBIF will
+likely still rate-limit at points during a full 10-year fetch; the retry
+should now get past them instead of failing). Verify:
+`SELECT count(*) FROM staging.species_occurrences_raw WHERE aoi_id='idf';`
+via `docker exec postgis psql -U biowatch -d biowatch_dev -c "..."` returns a
+plausible non-zero count, and sample rows (`scientific_name`, `event_date`)
+look like real species data. This full run may take significantly longer
+than Task 9/10's partial runs (potentially 10+ minutes, since it now
+actually waits out rate limits instead of failing fast) — be patient.
+
+If it *still* fails (a third orthogonal issue, or the retry logic itself
+has a bug): report the exact error rather than attempting another fix
+speculatively.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add packages/clients/gbif/client.py tests/packages/clients/test_gbif_client.py
+git commit -m "fix: retry GBIF 429 responses with backoff
+
+Real end-to-end runs against GBIF hit 429 Too Many Requests reliably
+within minutes (zero delay between paginated requests). Honor GBIF's
+Retry-After header when present, fall back to exponential backoff
+otherwise, bounded by GBIF_MAX_RETRIES so a persistent 429 still fails
+loudly. Non-429 errors are unaffected -- still fail immediately."
+```
