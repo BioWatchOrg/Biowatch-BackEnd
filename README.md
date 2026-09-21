@@ -15,6 +15,13 @@ uv run biowatch-jobs init_db
 # 3. enregistrer les h3 pour le MVP 
 uv run biowatch-jobs generate_h3_grid --aoi idf --resolution 8
 ```
+Si le port 5432 est déjà pris localement (ex. un postgres natif) : ajoute
+`POSTGRES_HOST_PORT=5433` et `POSTGRES_PORT=5433` dans ton `.env`, puis lance
+avec `--env-file` explicite (la substitution `${POSTGRES_HOST_PORT}` du compose
+lit le `.env` du dossier courant, pas celui à côté du yml) :
+```bash
+docker compose -f infra/docker/docker-compose.yml --env-file .env up -d postgis
+```
 2) see logs
 ```bash
 docker compose -f infra/docker/docker-compose.yml logs -f postgis
