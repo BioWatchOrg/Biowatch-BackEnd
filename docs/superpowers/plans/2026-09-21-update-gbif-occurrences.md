@@ -1730,3 +1730,1476 @@ Retry-After header when present, fall back to exponential backoff
 otherwise, bounded by GBIF_MAX_RETRIES so a persistent 429 still fails
 loudly. Non-429 errors are unaffected -- still fail immediately."
 ```
+
+---
+
+## Pivot: GBIF Download API (v3)
+
+**Everything below supersedes the Search-API approach built in Tasks 4-11's
+`fetch_occurrences`/pagination/retry logic.** The final whole-branch review
+found GBIF hard-caps `offset + limit` at 100,000 per query (confirmed in
+GBIF's own OpenAPI spec: *"To retrieve all records beyond 100,000 you should
+use our asynchronous download service instead"*). The `idf` AOI has
+200k-650k occurrences/year for 9 of 10 window years — the Search API can
+structurally never finish for the only registered AOI. See
+`docs/superpowers/specs/2026-09-18-update-gbif-occurrences-design.md`
+("v3 — Pivot Search API → Download API") for full rationale.
+
+**What stays as-is, untouched by this pivot:** the DB schema (Task 2), the
+`point_to_h3_cell` helper (Task 3), the quality filter (Task 5) — its
+`quality_filter(record, date_min, date_max)` signature and expected input
+dict shape are unchanged, only *what feeds it* changes (SIMPLE_CSV rows
+normalized to the same shape instead of Search API JSON records). CLI
+registration (Task 7) needs no change in shape, just verification it still
+works after the orchestrator rewrite.
+
+**What's replaced:** `packages/clients/gbif/client.py` (and its tests) —
+wholesale rewrite from Search-API pagination to Download-API
+request/poll/stream. `packages/species/gbif_occurrences.py` — the per-year
+loop becomes a single request covering the whole 10-year window.
+
+**New requirement:** a GBIF.org account (username + password) is needed to
+create downloads. Set `GBIF_USERNAME` / `GBIF_PASSWORD` in `.env` (never
+committed) before Task 17's real verification.
+
+### Task 12: GBIF Download client (request, poll, predicate)
+
+**Files:**
+- Modify (full rewrite): `packages/clients/gbif/client.py`
+- Modify (full rewrite): `packages/clients/gbif/__init__.py`
+- Modify (full rewrite): `tests/packages/clients/test_gbif_client.py`
+- Modify: `packages/clients/__init__.py`
+- Modify: `.env.example`
+
+**Interfaces:**
+- Produces: `clients.build_predicate(geometry_wkt: str, date_min: date, date_max: date) -> dict`
+  (pure).
+- Produces: `clients.GbifCredentials` (frozen dataclass: `username: str`,
+  `password: str`, property `auth -> httpx.BasicAuth`) and
+  `clients.load_gbif_credentials() -> GbifCredentials` (reads
+  `GBIF_USERNAME`/`GBIF_PASSWORD` from env, raises `RuntimeError` with a
+  clear message if either is missing — mirror
+  `packages/clients/db/session.py:_build_database_url`'s error style
+  exactly).
+- Produces: `clients.request_download(predicate: dict, creator: str, auth: httpx.BasicAuth, client: httpx.Client | None = None) -> str`
+  (returns the GBIF download key).
+- Produces: `clients.wait_for_download(key: str, auth: httpx.BasicAuth, client: httpx.Client | None = None) -> None`
+  (blocks until `SUCCEEDED`, raises on failure/timeout).
+- Produces: `clients.GbifApiError`, `clients.GbifDownloadTimeoutError` (subclass of `GbifApiError`).
+- Task 13 consumes all of the above plus `clients.stream_download` (Task 13's own deliverable, kept in the same file for cohesion but written in that task).
+
+- [ ] **Step 1: Write the failing tests**
+
+Replace the entire contents of `tests/packages/clients/test_gbif_client.py` with:
+
+```python
+"""Tests for clients.gbif.client — GBIF Occurrence Download API."""
+
+from datetime import date
+
+import httpx
+import pytest
+
+from clients.gbif.client import (
+    GBIF_DOWNLOAD_REQUEST_URL,
+    GBIF_DOWNLOAD_STATUS_URL,
+    GbifApiError,
+    GbifCredentials,
+    GbifDownloadTimeoutError,
+    build_predicate,
+    load_gbif_credentials,
+    request_download,
+    wait_for_download,
+)
+
+
+def test_build_predicate_combines_geometry_and_date_range():
+    predicate = build_predicate(
+        "POLYGON((0 0,0 1,1 1,1 0,0 0))", date(2016, 1, 1), date(2025, 12, 31)
+    )
+
+    assert predicate["type"] == "and"
+    sub = predicate["predicates"]
+    assert {"type": "within", "geometry": "POLYGON((0 0,0 1,1 1,1 0,0 0))"} in sub
+    assert {"type": "greaterThanOrEquals", "key": "EVENT_DATE", "value": "2016-01-01"} in sub
+    assert {"type": "lessThanOrEquals", "key": "EVENT_DATE", "value": "2025-12-31"} in sub
+    assert {"type": "equals", "key": "HAS_COORDINATE", "value": "true"} in sub
+    assert {"type": "equals", "key": "HAS_GEOSPATIAL_ISSUE", "value": "false"} in sub
+
+
+def test_load_gbif_credentials_reads_env_vars(monkeypatch):
+    monkeypatch.setenv("GBIF_USERNAME", "alice")
+    monkeypatch.setenv("GBIF_PASSWORD", "secret")
+
+    creds = load_gbif_credentials()
+
+    assert creds.username == "alice"
+    assert creds.password == "secret"
+    assert isinstance(creds.auth, httpx.BasicAuth)
+
+
+def test_load_gbif_credentials_raises_on_missing_username(monkeypatch):
+    monkeypatch.delenv("GBIF_USERNAME", raising=False)
+    monkeypatch.setenv("GBIF_PASSWORD", "secret")
+
+    with pytest.raises(RuntimeError, match="GBIF_USERNAME"):
+        load_gbif_credentials()
+
+
+def test_request_download_returns_key(monkeypatch):
+    captured = {}
+
+    def fake_post(self, url, json=None, auth=None, **kwargs):
+        captured["url"] = url
+        captured["json"] = json
+        captured["auth"] = auth
+        return httpx.Response(
+            201, text="0012345-123456789012345", request=httpx.Request("POST", url)
+        )
+
+    monkeypatch.setattr(httpx.Client, "post", fake_post)
+
+    key = request_download(
+        {"type": "and", "predicates": []}, creator="alice", auth=httpx.BasicAuth("alice", "secret")
+    )
+
+    assert key == "0012345-123456789012345"
+    assert captured["url"] == GBIF_DOWNLOAD_REQUEST_URL
+    assert captured["json"]["creator"] == "alice"
+    assert captured["json"]["format"] == "SIMPLE_CSV"
+
+
+def test_request_download_raises_on_http_error(monkeypatch):
+    def fake_post(self, url, json=None, auth=None, **kwargs):
+        return httpx.Response(401, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx.Client, "post", fake_post)
+
+    with pytest.raises(GbifApiError):
+        request_download({"type": "and", "predicates": []}, creator="alice", auth=httpx.BasicAuth("a", "b"))
+
+
+def test_wait_for_download_returns_on_succeeded(monkeypatch):
+    responses = [
+        httpx.Response(200, json={"status": "RUNNING"}, request=httpx.Request("GET", GBIF_DOWNLOAD_STATUS_URL)),
+        httpx.Response(200, json={"status": "SUCCEEDED"}, request=httpx.Request("GET", GBIF_DOWNLOAD_STATUS_URL)),
+    ]
+    sleeps = []
+
+    def fake_get(self, url, auth=None, **kwargs):
+        return responses.pop(0)
+
+    monkeypatch.setattr(httpx.Client, "get", fake_get)
+    monkeypatch.setattr("clients.gbif.client.time.sleep", lambda s: sleeps.append(s))
+
+    wait_for_download("key123", auth=httpx.BasicAuth("a", "b"))  # must not raise
+
+    assert len(sleeps) == 1
+
+
+def test_wait_for_download_raises_on_failed_status(monkeypatch):
+    def fake_get(self, url, auth=None, **kwargs):
+        return httpx.Response(200, json={"status": "FAILED"}, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx.Client, "get", fake_get)
+    monkeypatch.setattr("clients.gbif.client.time.sleep", lambda s: None)
+
+    with pytest.raises(GbifApiError):
+        wait_for_download("key123", auth=httpx.BasicAuth("a", "b"))
+
+
+def test_wait_for_download_raises_on_timeout(monkeypatch):
+    def fake_get(self, url, auth=None, **kwargs):
+        return httpx.Response(200, json={"status": "RUNNING"}, request=httpx.Request("GET", url))
+
+    clock = {"t": 0.0}
+
+    def fake_monotonic():
+        clock["t"] += 10000.0  # jump well past any timeout on every call
+        return clock["t"]
+
+    monkeypatch.setattr(httpx.Client, "get", fake_get)
+    monkeypatch.setattr("clients.gbif.client.time.sleep", lambda s: None)
+    monkeypatch.setattr("clients.gbif.client.time.monotonic", fake_monotonic)
+
+    with pytest.raises(GbifDownloadTimeoutError):
+        wait_for_download("key123", auth=httpx.BasicAuth("a", "b"))
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `uv run pytest tests/packages/clients/test_gbif_client.py -v`
+Expected: FAIL — `ImportError` (none of these names exist in the current
+Search-API-era `client.py` yet).
+
+- [ ] **Step 3: Implement**
+
+Replace the entire contents of `packages/clients/gbif/client.py` with:
+
+```python
+"""HTTP client for the GBIF Occurrence Download API.
+
+No business logic here (no quality filtering, no H3, no DB) -- this module
+only knows how to build a download predicate, request a download, poll its
+status, and (see Task 13) stream-parse the resulting file. See
+`species.quality` and `species.gbif_occurrences` for the pipeline built on
+top of it.
+"""
+
+import logging
+import os
+import time
+from dataclasses import dataclass
+from datetime import date
+
+import httpx
+from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
+
+GBIF_API_BASE = "https://api.gbif.org/v1"
+GBIF_DOWNLOAD_REQUEST_URL = f"{GBIF_API_BASE}/occurrence/download/request"
+GBIF_DOWNLOAD_STATUS_URL = f"{GBIF_API_BASE}/occurrence/download"
+GBIF_DOWNLOAD_FILE_URL = f"{GBIF_API_BASE}/occurrence/download/request"
+
+GBIF_TIMEOUT_SECONDS = 30.0
+GBIF_POLL_INTERVAL_SECONDS = 30.0
+GBIF_POLL_TIMEOUT_SECONDS = 3600.0  # 1h ceiling on waiting for a download to finish
+GBIF_FAILED_STATUSES = frozenset({"FAILED", "CANCELLED", "KILLED"})
+
+
+class GbifApiError(Exception):
+    """Raised when the GBIF Download API returns an error response."""
+
+
+class GbifDownloadTimeoutError(GbifApiError):
+    """Raised when a download doesn't reach SUCCEEDED within the poll timeout."""
+
+
+@dataclass(frozen=True)
+class GbifCredentials:
+    """GBIF Basic Auth credentials. Registration required at gbif.org --
+    Basic Auth uses the *username* (not the email) and password."""
+
+    username: str
+    password: str
+
+    @property
+    def auth(self) -> httpx.BasicAuth:
+        return httpx.BasicAuth(self.username, self.password)
+
+
+def load_gbif_credentials() -> GbifCredentials:
+    """Load GBIF credentials from the environment (GBIF_USERNAME/GBIF_PASSWORD)."""
+    load_dotenv(override=False)
+    try:
+        username = os.environ["GBIF_USERNAME"]
+        password = os.environ["GBIF_PASSWORD"]
+    except KeyError as e:
+        raise RuntimeError(
+            f"Variable d'environnement manquante : {e.args[0]} (voir .env.example)"
+        ) from e
+    return GbifCredentials(username=username, password=password)
+
+
+def build_predicate(geometry_wkt: str, date_min: date, date_max: date) -> dict:
+    """
+    Pure: build the GBIF download predicate for one AOI + date window.
+
+    A single predicate covers the *entire* rolling window in one request --
+    no per-year looping needed (unlike the old Search API pagination this
+    replaces), since the Download API has no offset cap.
+    """
+    return {
+        "type": "and",
+        "predicates": [
+            {"type": "within", "geometry": geometry_wkt},
+            {"type": "greaterThanOrEquals", "key": "EVENT_DATE", "value": date_min.isoformat()},
+            {"type": "lessThanOrEquals", "key": "EVENT_DATE", "value": date_max.isoformat()},
+            {"type": "equals", "key": "HAS_COORDINATE", "value": "true"},
+            {"type": "equals", "key": "HAS_GEOSPATIAL_ISSUE", "value": "false"},
+        ],
+    }
+
+
+def request_download(
+    predicate: dict,
+    creator: str,
+    auth: httpx.BasicAuth,
+    client: httpx.Client | None = None,
+) -> str:
+    """POST a download request, return the GBIF download key."""
+    owns_client = client is None
+    http_client = client or httpx.Client(timeout=GBIF_TIMEOUT_SECONDS)
+    try:
+        response = http_client.post(
+            GBIF_DOWNLOAD_REQUEST_URL,
+            json={"creator": creator, "format": "SIMPLE_CSV", "predicate": predicate},
+            auth=auth,
+        )
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            logger.error(
+                "GBIF download request failed",
+                extra={
+                    "event": "gbif.download_request_error",
+                    "context": {"status_code": response.status_code},
+                },
+            )
+            raise GbifApiError(f"GBIF download request failed: {exc}") from exc
+        return response.text.strip()
+    finally:
+        if owns_client:
+            http_client.close()
+
+
+def wait_for_download(
+    key: str,
+    auth: httpx.BasicAuth,
+    client: httpx.Client | None = None,
+) -> None:
+    """Poll download status until SUCCEEDED, or raise on failure/timeout."""
+    owns_client = client is None
+    http_client = client or httpx.Client(timeout=GBIF_TIMEOUT_SECONDS)
+    started = time.monotonic()
+    try:
+        while True:
+            response = http_client.get(f"{GBIF_DOWNLOAD_STATUS_URL}/{key}", auth=auth)
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                raise GbifApiError(
+                    f"GBIF download status check failed (key={key}): {exc}"
+                ) from exc
+
+            status = response.json().get("status")
+            if status == "SUCCEEDED":
+                return
+            if status in GBIF_FAILED_STATUSES:
+                raise GbifApiError(f"GBIF download {key} ended in status {status}")
+            if time.monotonic() - started > GBIF_POLL_TIMEOUT_SECONDS:
+                raise GbifDownloadTimeoutError(
+                    f"GBIF download {key} did not succeed within "
+                    f"{GBIF_POLL_TIMEOUT_SECONDS}s (last status: {status})"
+                )
+            logger.info(
+                "GBIF download in progress",
+                extra={"event": "gbif.download_polling", "context": {"key": key, "status": status}},
+            )
+            time.sleep(GBIF_POLL_INTERVAL_SECONDS)
+    finally:
+        if owns_client:
+            http_client.close()
+```
+
+Replace `packages/clients/gbif/__init__.py` with:
+
+```python
+from .client import (
+    GbifApiError,
+    GbifCredentials,
+    GbifDownloadTimeoutError,
+    build_predicate,
+    load_gbif_credentials,
+    request_download,
+    wait_for_download,
+)
+
+__all__ = [
+    "build_predicate",
+    "load_gbif_credentials",
+    "request_download",
+    "wait_for_download",
+    "GbifApiError",
+    "GbifCredentials",
+    "GbifDownloadTimeoutError",
+]
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `uv run pytest tests/packages/clients/test_gbif_client.py -v`
+Expected: PASS (all 7 tests).
+
+- [ ] **Step 5: Update exports and `.env.example`**
+
+Edit `packages/clients/__init__.py`: remove the old
+`from .gbif import GBIF_PAGE_LIMIT, GbifApiError, fetch_occurrences` line and
+its `__all__` entries (`"fetch_occurrences"`, `"GbifApiError"`,
+`"GBIF_PAGE_LIMIT"`); replace with:
+
+```python
+from .gbif import (
+    GbifApiError,
+    GbifCredentials,
+    GbifDownloadTimeoutError,
+    build_predicate,
+    load_gbif_credentials,
+    request_download,
+    wait_for_download,
+)
+```
+
+and add `"build_predicate"`, `"load_gbif_credentials"`, `"request_download"`,
+`"wait_for_download"`, `"GbifCredentials"`, `"GbifDownloadTimeoutError"` to
+`__all__` (keep `"GbifApiError"`, it's unchanged).
+
+Edit `.env.example`, add after the Notion token section:
+
+```
+# GBIF account credentials, required to create Occurrence Downloads
+# (register at https://www.gbif.org — use your username, not your email).
+GBIF_USERNAME=...
+GBIF_PASSWORD=...
+```
+
+- [ ] **Step 6: Run the full suite**
+
+Run: `uv run pytest -q`
+Expected: `packages/species/gbif_occurrences.py` will now fail to import
+(`fetch_occurrences` no longer exists in `clients`) — this is expected and
+fixed in Task 14. For this step, run only the client and unaffected tests:
+`uv run pytest tests/packages/clients/test_gbif_client.py tests/packages/core tests/packages/geo tests/packages/species/test_quality.py -q`
+Expected: all pass.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add packages/clients/gbif tests/packages/clients/test_gbif_client.py \
+        packages/clients/__init__.py .env.example
+git commit -m "feat: rewrite GBIF client for the Download API
+
+Occurrence Search API caps offset+limit at 100,000 -- structurally
+incompatible with idf's real volume (200k-650k occurrences/year for
+9 of 10 window years). Occurrence Download API has no such cap and is
+what GBIF's own docs recommend past that threshold: one predicate
+(geometry + full date range) per run instead of per-year search
+pagination. This commit lands the request/poll half; Task 13 adds the
+streamed file download + parse."
+```
+
+---
+
+### Task 13: GBIF Download client — streaming file download
+
+**Files:**
+- Modify: `packages/clients/gbif/client.py`
+- Modify: `packages/clients/gbif/__init__.py`
+- Modify: `tests/packages/clients/test_gbif_client.py`
+- Modify: `packages/clients/__init__.py`
+
+**Interfaces:**
+- Consumes: nothing new from Task 12 directly (this is the remaining piece
+  of the same client module).
+- Produces: `clients.stream_download(key: str, auth: httpx.BasicAuth, client: httpx.Client | None = None) -> Iterator[dict]`
+  — downloads the finished SIMPLE_CSV(.gz) file to a temp path, streams it
+  to disk (never the whole file in memory), then yields one `dict` per CSV
+  row (parsed via `csv.DictReader`, tab-delimited, header-driven). Deletes
+  the temp file once the generator is exhausted.
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `tests/packages/clients/test_gbif_client.py` (add `csv`, `gzip`,
+`io` to imports, and add `stream_download`, `GBIF_DOWNLOAD_FILE_URL` to the
+`from clients.gbif.client import (...)` line):
+
+```python
+def _gzipped_tsv(rows: list[dict[str, str]]) -> bytes:
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=list(rows[0]), delimiter="\t")
+    writer.writeheader()
+    writer.writerows(rows)
+    return gzip.compress(buf.getvalue().encode("utf-8"))
+
+
+def test_stream_download_yields_parsed_rows(monkeypatch, tmp_path):
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+    body = _gzipped_tsv(
+        [
+            {"gbifID": "1001", "scientificName": "Vulpes vulpes", "taxonKey": "5219243",
+             "decimalLatitude": "48.8566", "decimalLongitude": "2.3522", "eventDate": "2020-06-15"},
+            {"gbifID": "1002", "scientificName": "Bubo bubo", "taxonKey": "2497252",
+             "decimalLatitude": "45.0", "decimalLongitude": "3.0", "eventDate": "2019-03-01"},
+        ]
+    )
+
+    class _FakeStreamResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def raise_for_status(self):
+            pass
+
+        def iter_bytes(self):
+            yield body
+
+    def fake_stream(self, method, url, auth=None, **kwargs):
+        return _FakeStreamResponse()
+
+    monkeypatch.setattr(httpx.Client, "stream", fake_stream)
+
+    rows = list(stream_download("key123", auth=httpx.BasicAuth("a", "b")))
+
+    assert [r["gbifID"] for r in rows] == ["1001", "1002"]
+    assert rows[0]["scientificName"] == "Vulpes vulpes"
+
+
+def test_stream_download_raises_on_http_error(monkeypatch, tmp_path):
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+
+    class _FakeErrorResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def raise_for_status(self):
+            raise httpx.HTTPStatusError(
+                "404", request=httpx.Request("GET", GBIF_DOWNLOAD_FILE_URL), response=httpx.Response(404)
+            )
+
+        def iter_bytes(self):
+            return iter([])
+
+    def fake_stream(self, method, url, auth=None, **kwargs):
+        return _FakeErrorResponse()
+
+    monkeypatch.setattr(httpx.Client, "stream", fake_stream)
+
+    with pytest.raises(GbifApiError):
+        list(stream_download("key123", auth=httpx.BasicAuth("a", "b")))
+```
+
+Add `import csv`, `import gzip`, `import io`, `import tempfile` to the top of
+the test file.
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `uv run pytest tests/packages/clients/test_gbif_client.py -v -k stream_download`
+Expected: FAIL — `ImportError: cannot import name 'stream_download'`.
+
+- [ ] **Step 3: Implement**
+
+Add to `packages/clients/gbif/client.py` (add `import csv`, `import gzip`,
+`import tempfile` to the top imports, `from collections.abc import Iterator`,
+`from pathlib import Path`):
+
+```python
+def stream_download(
+    key: str,
+    auth: httpx.BasicAuth,
+    client: httpx.Client | None = None,
+) -> Iterator[dict]:
+    """
+    Download the finished SIMPLE_CSV(.gz) file and yield one dict per row.
+
+    Streams to a temp file on disk (the file can be hundreds of MB for a
+    large AOI/window), then parses it as gzip-compressed, tab-separated CSV
+    with a header row -- the whole file is never held in memory at once.
+    The temp file is deleted once the generator is exhausted (or closed).
+    """
+    owns_client = client is None
+    http_client = client or httpx.Client(timeout=GBIF_TIMEOUT_SECONDS, follow_redirects=True)
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".csv.gz", delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+            with http_client.stream(
+                "GET", f"{GBIF_DOWNLOAD_FILE_URL}/{key}", auth=auth
+            ) as response:
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    raise GbifApiError(
+                        f"GBIF download file fetch failed (key={key}): {exc}"
+                    ) from exc
+                for chunk in response.iter_bytes():
+                    tmp.write(chunk)
+
+        with gzip.open(tmp_path, mode="rt", encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f, delimiter="\t")
+            yield from reader
+    finally:
+        if owns_client:
+            http_client.close()
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `uv run pytest tests/packages/clients/test_gbif_client.py -v`
+Expected: PASS (all 9 tests).
+
+- [ ] **Step 5: Export it**
+
+Edit `packages/clients/gbif/__init__.py` — add `stream_download` to the
+import from `.client` and to `__all__`.
+
+Edit `packages/clients/__init__.py` — add `stream_download` to the import
+from `.gbif` and to `__all__`.
+
+- [ ] **Step 6: Run the full suite (client + unaffected packages)**
+
+Run: `uv run pytest tests/packages/clients/test_gbif_client.py tests/packages/core tests/packages/geo tests/packages/species/test_quality.py -q`
+Expected: all pass. (`species.gbif_occurrences` is still broken until Task 14 — expected.)
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add packages/clients/gbif/client.py packages/clients/gbif/__init__.py \
+        tests/packages/clients/test_gbif_client.py packages/clients/__init__.py
+git commit -m "feat: stream-parse GBIF Download API SIMPLE_CSV files
+
+Downloads can be hundreds of MB for a real AOI's 10-year window --
+stream to a temp file and parse it as a generator (csv.DictReader over
+a gzip stream) instead of loading it into memory."
+```
+
+---
+
+### Task 14: Rewrite the job orchestrator for the Download API
+
+**Files:**
+- Modify (full rewrite): `packages/species/gbif_occurrences.py`
+- Modify (full rewrite): `tests/packages/species/test_gbif_occurrences.py`
+
+**Interfaces:**
+- Consumes: `clients.build_predicate`, `clients.load_gbif_credentials`,
+  `clients.request_download`, `clients.wait_for_download`,
+  `clients.stream_download`, `clients.GbifApiError` (all from Tasks 12-13);
+  `clients.SpeciesOccurrencesRaw`, `clients.ZonesHex`, `clients.job_run`,
+  `clients.JobAlreadySucceeded`, `clients.upsert` (pre-existing);
+  `geo.point_to_h3_cell` (Task 3); `species.quality.quality_filter`
+  (Task 5, unchanged); `core.compute_idempotency_key` (pre-existing, already
+  has a `resolution` param — see spec's Idempotence section).
+- Produces: `species.update_gbif_occurrences(aoi_label: AoiLabel, engine: Engine | None = None) -> None`
+  (same public signature as before this pivot — nothing calling this
+  function needs to change).
+
+- [ ] **Step 1: Write the failing tests**
+
+Replace the entire contents of `tests/packages/species/test_gbif_occurrences.py`:
+
+```python
+"""Tests for species.gbif_occurrences.update_gbif_occurrences (Download API)."""
+
+import gzip
+import io
+import os
+import uuid
+from contextlib import contextmanager
+from datetime import date
+
+import httpx
+import pytest
+from sqlalchemy import create_engine, delete, func, select
+
+import species.gbif_occurrences as gbif_occurrences
+from clients import GbifApiError, JobAlreadySucceeded, SpeciesOccurrencesRaw
+
+GOLDEN_AOI = "idf"
+
+
+def test_update_gbif_occurrences_skips_when_already_succeeded(monkeypatch):
+    called = {"body": False}
+
+    @contextmanager
+    def fake_job_run(*args, idempotency_key="", **kwargs):
+        raise JobAlreadySucceeded(idempotency_key, uuid.uuid4())
+        called["body"] = True  # pragma: no cover - unreachable
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(gbif_occurrences, "job_run", fake_job_run)
+
+    gbif_occurrences.update_gbif_occurrences(GOLDEN_AOI)
+    assert called["body"] is False
+
+
+def test_rolling_window_covers_ten_years():
+    date_min, date_max = gbif_occurrences.rolling_window(2025)
+    assert date_min == date(2016, 1, 1)
+    assert date_max == date(2025, 12, 31)
+
+
+def test_normalize_csv_row_maps_gbif_id_to_key():
+    row = {
+        "gbifID": "1001",
+        "scientificName": "Vulpes vulpes",
+        "taxonKey": "5219243",
+        "decimalLatitude": "48.8566",
+        "decimalLongitude": "2.3522",
+        "eventDate": "2020-06-15",
+    }
+    normalized = gbif_occurrences._normalize_csv_row(row)
+    assert normalized == {
+        "key": "1001",
+        "scientificName": "Vulpes vulpes",
+        "taxonKey": 5219243,
+        "decimalLatitude": 48.8566,
+        "decimalLongitude": 2.3522,
+        "eventDate": "2020-06-15",
+    }
+
+
+def test_normalize_csv_row_handles_missing_optional_fields():
+    row = {"gbifID": "", "scientificName": "", "taxonKey": "", "decimalLatitude": "",
+           "decimalLongitude": "", "eventDate": ""}
+    normalized = gbif_occurrences._normalize_csv_row(row)
+    assert normalized == {
+        "key": None, "scientificName": None, "taxonKey": None,
+        "decimalLatitude": None, "decimalLongitude": None, "eventDate": None,
+    }
+
+
+def _force_default_res(aoi, resolution):
+    return aoi.__class__(**{**aoi.__dict__, "default_res": resolution})
+
+
+class _FakeScalarsResult:
+    def __init__(self, items):
+        self._items = items
+
+    def all(self):
+        return self._items
+
+
+class _FakeSession:
+    def __init__(self, zone_ids):
+        self._zone_ids = zone_ids
+        self.executed_statements: list[object] = []
+
+    def execute(self, stmt):
+        self.executed_statements.append(stmt)
+
+    def scalars(self, stmt):
+        return _FakeScalarsResult(self._zone_ids)
+
+
+def _fake_job_run_yielding(session):
+    @contextmanager
+    def fake_job_run(*args, idempotency_key="", **kwargs):
+        yield None, session
+
+    return fake_job_run
+
+
+_GOOD_CSV_ROW = {
+    "gbifID": "42",
+    "scientificName": "Vulpes vulpes",
+    "taxonKey": "5219243",
+    "decimalLatitude": "48.8566",
+    "decimalLongitude": "2.3522",
+    "eventDate": "2020-06-15",
+}
+
+_FAKE_CREDS = type("_Creds", (), {"username": "alice", "auth": httpx.BasicAuth("alice", "s")})()
+
+
+def _patch_download_pipeline(monkeypatch, rows, download_key="key123"):
+    """Patch the request/poll/stream trio so update_gbif_occurrences's HTTP
+    calls never happen -- `rows` is the list of raw CSV-row dicts `stream_download`
+    should yield."""
+    monkeypatch.setattr(gbif_occurrences, "load_gbif_credentials", lambda: _FAKE_CREDS)
+    monkeypatch.setattr(gbif_occurrences, "request_download", lambda *a, **k: download_key)
+    monkeypatch.setattr(gbif_occurrences, "wait_for_download", lambda *a, **k: None)
+    monkeypatch.setattr(gbif_occurrences, "stream_download", lambda *a, **k: iter(rows))
+
+
+def test_update_gbif_occurrences_skips_record_failing_quality_filter(monkeypatch):
+    captured_rows: list[dict[str, object]] = []
+
+    def fake_upsert(session, model, rows, update_columns=None):
+        captured_rows.extend(rows)
+
+    aoi = gbif_occurrences.load_aoi(GOLDEN_AOI)
+    session = _FakeSession(zone_ids={"expected-zone"})
+    monkeypatch.setattr(gbif_occurrences, "job_run", _fake_job_run_yielding(session))
+    monkeypatch.setattr(gbif_occurrences, "upsert", fake_upsert)
+    monkeypatch.setattr(gbif_occurrences, "biowatch_now", lambda: date(2025, 1, 1))
+    monkeypatch.setattr(gbif_occurrences, "load_aoi", lambda label: aoi)
+    monkeypatch.setattr(gbif_occurrences, "point_to_h3_cell", lambda lat, lon, res: "expected-zone")
+
+    bad_row = {"gbifID": "", "scientificName": "no id"}  # missing gbifID -> quality_filter -> None
+    _patch_download_pipeline(monkeypatch, [bad_row, _GOOD_CSV_ROW])
+
+    gbif_occurrences.update_gbif_occurrences(GOLDEN_AOI)
+
+    assert len(captured_rows) == 1
+    assert captured_rows[0]["gbif_occurrence_id"] == "42"
+
+
+def test_update_gbif_occurrences_skips_record_outside_valid_zone_ids(monkeypatch):
+    captured_rows: list[dict[str, object]] = []
+
+    def fake_upsert(session, model, rows, update_columns=None):
+        captured_rows.extend(rows)
+
+    aoi = gbif_occurrences.load_aoi(GOLDEN_AOI)
+    session = _FakeSession(zone_ids=set())  # nothing is a valid zone
+    monkeypatch.setattr(gbif_occurrences, "job_run", _fake_job_run_yielding(session))
+    monkeypatch.setattr(gbif_occurrences, "upsert", fake_upsert)
+    monkeypatch.setattr(gbif_occurrences, "biowatch_now", lambda: date(2025, 1, 1))
+    monkeypatch.setattr(gbif_occurrences, "load_aoi", lambda label: aoi)
+    monkeypatch.setattr(gbif_occurrences, "point_to_h3_cell", lambda lat, lon, res: "outside-zone")
+    _patch_download_pipeline(monkeypatch, [_GOOD_CSV_ROW])
+
+    gbif_occurrences.update_gbif_occurrences(GOLDEN_AOI)
+
+    assert captured_rows == []
+
+
+def test_update_gbif_occurrences_builds_predicate_with_convex_hull(monkeypatch):
+    """GBIF rejects the idf AOI's raw polygon (466 vertices) -- the convex
+    hull (22 vertices) must be what's sent, same reasoning as the old Search
+    API fix, now applied to the `within` predicate instead of the `geometry`
+    query param."""
+    captured = {}
+
+    aoi = gbif_occurrences.load_aoi(GOLDEN_AOI)
+    session = _FakeSession(zone_ids=set())
+    monkeypatch.setattr(gbif_occurrences, "job_run", _fake_job_run_yielding(session))
+    monkeypatch.setattr(gbif_occurrences, "biowatch_now", lambda: date(2025, 1, 1))
+    monkeypatch.setattr(gbif_occurrences, "load_aoi", lambda label: aoi)
+    monkeypatch.setattr(gbif_occurrences, "load_gbif_credentials", lambda: _FAKE_CREDS)
+
+    def fake_request_download(predicate, creator, auth, client=None):
+        captured["predicate"] = predicate
+        return "key123"
+
+    monkeypatch.setattr(gbif_occurrences, "request_download", fake_request_download)
+    monkeypatch.setattr(gbif_occurrences, "wait_for_download", lambda *a, **k: None)
+    monkeypatch.setattr(gbif_occurrences, "stream_download", lambda *a, **k: iter([]))
+
+    gbif_occurrences.update_gbif_occurrences(GOLDEN_AOI)
+
+    within = next(p for p in captured["predicate"]["predicates"] if p["type"] == "within")
+    assert within["geometry"] == aoi.geom.convex_hull.wkt
+    assert within["geometry"] != aoi.geom.wkt
+
+
+def test_update_gbif_occurrences_logs_and_reraises_gbif_api_error(monkeypatch):
+    aoi = gbif_occurrences.load_aoi(GOLDEN_AOI)
+    session = _FakeSession(zone_ids=set())
+    monkeypatch.setattr(gbif_occurrences, "job_run", _fake_job_run_yielding(session))
+    monkeypatch.setattr(gbif_occurrences, "biowatch_now", lambda: date(2025, 1, 1))
+    monkeypatch.setattr(gbif_occurrences, "load_aoi", lambda label: aoi)
+    monkeypatch.setattr(gbif_occurrences, "load_gbif_credentials", lambda: _FAKE_CREDS)
+
+    def fake_request_download(*a, **k):
+        raise GbifApiError("simulated GBIF outage")
+
+    monkeypatch.setattr(gbif_occurrences, "request_download", fake_request_download)
+
+    with pytest.raises(GbifApiError):
+        gbif_occurrences.update_gbif_occurrences(GOLDEN_AOI)
+
+
+def test_update_gbif_occurrences_upserts_in_batches(monkeypatch):
+    """Rows are flushed to `upsert` in bounded batches, not one call for the
+    whole stream -- covers the memory-safety fix from the final review."""
+    upsert_calls: list[int] = []
+
+    def fake_upsert(session, model, rows, update_columns=None):
+        upsert_calls.append(len(rows))
+
+    aoi = gbif_occurrences.load_aoi(GOLDEN_AOI)
+    session = _FakeSession(zone_ids={"expected-zone"})
+    monkeypatch.setattr(gbif_occurrences, "job_run", _fake_job_run_yielding(session))
+    monkeypatch.setattr(gbif_occurrences, "upsert", fake_upsert)
+    monkeypatch.setattr(gbif_occurrences, "biowatch_now", lambda: date(2025, 1, 1))
+    monkeypatch.setattr(gbif_occurrences, "load_aoi", lambda label: aoi)
+    monkeypatch.setattr(gbif_occurrences, "point_to_h3_cell", lambda lat, lon, res: "expected-zone")
+    monkeypatch.setattr(gbif_occurrences, "UPSERT_BATCH_SIZE", 2)
+
+    rows = [{**_GOOD_CSV_ROW, "gbifID": str(i)} for i in range(5)]
+    _patch_download_pipeline(monkeypatch, rows)
+
+    gbif_occurrences.update_gbif_occurrences(GOLDEN_AOI)
+
+    assert upsert_calls == [2, 2, 1]  # 5 rows, batch size 2 -> 2+2+1
+
+
+@pytest.mark.skipif(
+    "TEST_DATABASE_URL" not in os.environ,
+    reason="requires a live PostGIS database (set TEST_DATABASE_URL)",
+)
+def test_purges_rows_outside_window_scoped_to_aoi(monkeypatch):
+    """Spec-mandated purge test (missing in the previous iteration, flagged
+    by final review): out-of-window rows for this AOI are deleted, in-window
+    rows survive, and another AOI's rows are never touched."""
+    from clients.db import ZonesHex
+    from clients.db.init_db import init_db
+
+    engine = create_engine(os.environ["TEST_DATABASE_URL"], future=True)
+    init_db(engine)
+
+    with engine.begin() as conn:
+        conn.execute(delete(SpeciesOccurrencesRaw))
+        conn.execute(delete(ZonesHex).where(ZonesHex.zone_id.in_(["z-in", "z-out", "z-other"])))
+
+    from geo.h3_grid import generate_h3_grid
+
+    generate_h3_grid(GOLDEN_AOI, resolution=5, engine=engine)
+
+    aoi = gbif_occurrences.load_aoi(GOLDEN_AOI)
+    monkeypatch.setattr(gbif_occurrences, "load_aoi", lambda label: _force_default_res(aoi, 5))
+    monkeypatch.setattr(gbif_occurrences, "biowatch_now", lambda: date(2025, 1, 1))
+    _patch_download_pipeline(monkeypatch, [])  # no new fetch needed for this test
+
+    with engine.begin() as conn:
+        conn.execute(
+            SpeciesOccurrencesRaw.__table__.insert(),
+            [
+                {  # in-window, this AOI -> must survive
+                    "gbif_occurrence_id": "in-window", "event_date": date(2020, 1, 1),
+                    "gbif_taxon_key": None, "scientific_name": "A",
+                    "decimal_latitude": 1.0, "decimal_longitude": 1.0,
+                    "zone_id": "z-in", "aoi_id": GOLDEN_AOI,
+                },
+                {  # out-of-window, this AOI -> must be purged
+                    "gbif_occurrence_id": "out-of-window", "event_date": date(2000, 1, 1),
+                    "gbif_taxon_key": None, "scientific_name": "B",
+                    "decimal_latitude": 1.0, "decimal_longitude": 1.0,
+                    "zone_id": "z-out", "aoi_id": GOLDEN_AOI,
+                },
+                {  # out-of-window, OTHER AOI -> must survive (not this AOI's purge)
+                    "gbif_occurrence_id": "other-aoi-old", "event_date": date(2000, 1, 1),
+                    "gbif_taxon_key": None, "scientific_name": "C",
+                    "decimal_latitude": 1.0, "decimal_longitude": 1.0,
+                    "zone_id": "z-other", "aoi_id": "not-idf",
+                },
+            ],
+        )
+
+    gbif_occurrences.update_gbif_occurrences(GOLDEN_AOI, engine=engine)
+
+    with engine.connect() as conn:
+        remaining_ids = set(
+            conn.scalars(select(SpeciesOccurrencesRaw.gbif_occurrence_id)).all()
+        )
+
+    assert remaining_ids == {"in-window", "other-aoi-old"}
+
+
+@pytest.mark.skipif(
+    "TEST_DATABASE_URL" not in os.environ,
+    reason="requires a live PostGIS database (set TEST_DATABASE_URL)",
+)
+def test_update_gbif_occurrences_skips_rerun_same_year(monkeypatch):
+    """Job-level idempotence: rerunning for the same target year is a no-op skip."""
+    from clients.db import JobRun
+    from clients.db.init_db import init_db
+
+    engine = create_engine(os.environ["TEST_DATABASE_URL"], future=True)
+    init_db(engine)
+
+    with engine.begin() as conn:
+        conn.execute(delete(SpeciesOccurrencesRaw).where(SpeciesOccurrencesRaw.aoi_id == GOLDEN_AOI))
+        conn.execute(delete(JobRun).where(JobRun.job_name == "update_gbif_occurrences"))
+
+    from geo.h3_grid import generate_h3_grid
+
+    generate_h3_grid(GOLDEN_AOI, resolution=5, engine=engine)
+
+    aoi = gbif_occurrences.load_aoi(GOLDEN_AOI)
+    monkeypatch.setattr(gbif_occurrences, "load_aoi", lambda label: _force_default_res(aoi, 5))
+    monkeypatch.setattr(gbif_occurrences, "biowatch_now", lambda: date(2025, 1, 1))
+    _patch_download_pipeline(monkeypatch, [{**_GOOD_CSV_ROW, "gbifID": "1001"}])
+
+    gbif_occurrences.update_gbif_occurrences(GOLDEN_AOI, engine=engine)
+    gbif_occurrences.update_gbif_occurrences(GOLDEN_AOI, engine=engine)  # same year -> skip
+
+    with engine.connect() as conn:
+        count = conn.scalar(
+            select(func.count()).select_from(SpeciesOccurrencesRaw)
+            .where(SpeciesOccurrencesRaw.aoi_id == GOLDEN_AOI)
+        )
+        runs = conn.scalar(
+            select(func.count()).select_from(JobRun)
+            .where(JobRun.job_name == "update_gbif_occurrences")
+        )
+
+    assert count == 1
+    assert runs == 1
+
+
+@pytest.mark.skipif(
+    "TEST_DATABASE_URL" not in os.environ,
+    reason="requires a live PostGIS database (set TEST_DATABASE_URL)",
+)
+def test_update_gbif_occurrences_row_level_dedup_across_overlapping_windows(monkeypatch):
+    """Row-level dedup: two different job runs (different target years,
+    overlapping windows) both attempt to upsert the same occurrence -- must
+    not raise, must not duplicate, must not overwrite (DO NOTHING)."""
+    from clients.db import JobRun
+    from clients.db.init_db import init_db
+
+    engine = create_engine(os.environ["TEST_DATABASE_URL"], future=True)
+    init_db(engine)
+
+    with engine.begin() as conn:
+        conn.execute(delete(SpeciesOccurrencesRaw).where(SpeciesOccurrencesRaw.aoi_id == GOLDEN_AOI))
+        conn.execute(delete(JobRun).where(JobRun.job_name == "update_gbif_occurrences"))
+
+    from geo.h3_grid import generate_h3_grid
+
+    generate_h3_grid(GOLDEN_AOI, resolution=5, engine=engine)
+
+    aoi = gbif_occurrences.load_aoi(GOLDEN_AOI)
+    monkeypatch.setattr(gbif_occurrences, "load_aoi", lambda label: _force_default_res(aoi, 5))
+
+    original_row = {**_GOOD_CSV_ROW, "gbifID": "1001"}
+    monkeypatch.setattr(gbif_occurrences, "biowatch_now", lambda: date(2024, 1, 1))
+    _patch_download_pipeline(monkeypatch, [original_row])
+    gbif_occurrences.update_gbif_occurrences(GOLDEN_AOI, engine=engine)
+
+    conflicting_row = {**original_row, "scientificName": "SHOULD NOT OVERWRITE"}
+    monkeypatch.setattr(gbif_occurrences, "biowatch_now", lambda: date(2025, 1, 1))
+    _patch_download_pipeline(monkeypatch, [conflicting_row])
+    gbif_occurrences.update_gbif_occurrences(GOLDEN_AOI, engine=engine)  # must not raise
+
+    with engine.connect() as conn:
+        count = conn.scalar(
+            select(func.count()).select_from(SpeciesOccurrencesRaw)
+            .where(SpeciesOccurrencesRaw.gbif_occurrence_id == "1001")
+        )
+        successful_runs = conn.scalar(
+            select(func.count()).select_from(JobRun)
+            .where(JobRun.job_name == "update_gbif_occurrences", JobRun.status == "success")
+        )
+        row = conn.execute(
+            select(SpeciesOccurrencesRaw).where(SpeciesOccurrencesRaw.gbif_occurrence_id == "1001")
+        ).one()
+
+    assert successful_runs == 2
+    assert count == 1
+    assert row.scientific_name == "Vulpes vulpes"
+
+
+@pytest.mark.skipif(
+    "TEST_DATABASE_URL" not in os.environ,
+    reason="requires a live PostGIS database (set TEST_DATABASE_URL)",
+)
+def test_update_gbif_occurrences_new_run_when_resolution_changes(monkeypatch):
+    """Idempotency-key finding from final review: changing the AOI's
+    resolution for the same target year must NOT be skipped as a rerun."""
+    from clients.db import JobRun
+    from clients.db.init_db import init_db
+
+    engine = create_engine(os.environ["TEST_DATABASE_URL"], future=True)
+    init_db(engine)
+
+    with engine.begin() as conn:
+        conn.execute(delete(SpeciesOccurrencesRaw).where(SpeciesOccurrencesRaw.aoi_id == GOLDEN_AOI))
+        conn.execute(delete(JobRun).where(JobRun.job_name == "update_gbif_occurrences"))
+
+    from geo.h3_grid import generate_h3_grid
+
+    generate_h3_grid(GOLDEN_AOI, resolution=5, engine=engine)
+    generate_h3_grid(GOLDEN_AOI, resolution=6, engine=engine)
+
+    aoi = gbif_occurrences.load_aoi(GOLDEN_AOI)
+    monkeypatch.setattr(gbif_occurrences, "biowatch_now", lambda: date(2025, 1, 1))
+    _patch_download_pipeline(monkeypatch, [])
+
+    monkeypatch.setattr(gbif_occurrences, "load_aoi", lambda label: _force_default_res(aoi, 5))
+    gbif_occurrences.update_gbif_occurrences(GOLDEN_AOI, engine=engine)
+
+    monkeypatch.setattr(gbif_occurrences, "load_aoi", lambda label: _force_default_res(aoi, 6))
+    gbif_occurrences.update_gbif_occurrences(GOLDEN_AOI, engine=engine)  # must NOT skip
+
+    with engine.connect() as conn:
+        runs = conn.scalar(
+            select(func.count()).select_from(JobRun)
+            .where(JobRun.job_name == "update_gbif_occurrences", JobRun.status == "success")
+        )
+
+    assert runs == 2  # different resolution -> different idempotency_key -> both ran
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `uv run pytest tests/packages/species/test_gbif_occurrences.py -v`
+Expected: FAIL — `ImportError` (`gbif_occurrences.py` still imports
+`fetch_occurrences` from `clients`, which no longer exists after Task 12).
+
+- [ ] **Step 3: Implement**
+
+Replace the entire contents of `packages/species/gbif_occurrences.py`:
+
+```python
+"""update_gbif_occurrences job: GBIF Download API -> staging.species_occurrences_raw.
+
+Fetches GBIF occurrences for an AOI over a rolling 10-year window via one
+Occurrence Download request (predicate = AOI geometry + full date range --
+no per-year pagination, since the Download API has no offset cap, unlike
+the Search API this replaced), applies a quality filter, converts points to
+H3 `zone_id`, and upserts them into `staging.species_occurrences_raw`. Runs
+once a year: for year N, the window is [N-9, N].
+"""
+
+import logging
+from datetime import date
+
+from clients import (
+    GbifApiError,
+    JobAlreadySucceeded,
+    SpeciesOccurrencesRaw,
+    ZonesHex,
+    build_predicate,
+    job_run,
+    load_gbif_credentials,
+    request_download,
+    stream_download,
+    upsert,
+    wait_for_download,
+)
+from core import AOI, AoiLabel, biowatch_now, compute_idempotency_key, load_aoi
+from geo import point_to_h3_cell
+from sqlalchemy import Engine, delete, select
+
+from species.quality import quality_filter
+
+logger = logging.getLogger(__name__)
+
+GBIF_SOURCE_VERSION_PREFIX = "gbif-download-v1"
+WINDOW_YEARS = 10
+UPSERT_BATCH_SIZE = 5000
+
+
+def rolling_window(current_year: int) -> tuple[date, date]:
+    """Return (date_min, date_max) for the 10-year window ending at current_year."""
+    return date(current_year - (WINDOW_YEARS - 1), 1, 1), date(current_year, 12, 31)
+
+
+def _to_float(value: str | None) -> float | None:
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def _to_int(value: str | None) -> int | None:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_csv_row(row: dict) -> dict:
+    """
+    Normalize one SIMPLE_CSV row into the dict shape `quality_filter` expects
+    (the same field names the old Search API JSON records used) -- keeps
+    `quality_filter` itself untouched by this pivot.
+    """
+    return {
+        "key": row.get("gbifID") or None,
+        "scientificName": row.get("scientificName") or None,
+        "taxonKey": _to_int(row.get("taxonKey")),
+        "decimalLatitude": _to_float(row.get("decimalLatitude")),
+        "decimalLongitude": _to_float(row.get("decimalLongitude")),
+        "eventDate": row.get("eventDate") or None,
+    }
+
+
+def update_gbif_occurrences(aoi_label: AoiLabel, engine: Engine | None = None) -> None:
+    """
+    Fetch, filter, and store GBIF occurrences for an AOI's rolling 10-year window.
+
+    Idempotent: guarded by `job_run` (one run per AOI + target year N + AOI
+    version + resolution -- skip if already succeeded) and written via
+    `upsert(..., update_columns=[])` (`ON CONFLICT DO NOTHING` -- a GBIF
+    occurrence is an immutable historical record, re-running never needs to
+    overwrite an existing row).
+    """
+    aoi: AOI = load_aoi(aoi_label)
+    current_year = biowatch_now().year
+    date_min, date_max = rolling_window(current_year)
+
+    idempotency_key = compute_idempotency_key(
+        job_name="update_gbif_occurrences",
+        scope=aoi_label,
+        period=str(current_year),
+        source_version=f"{GBIF_SOURCE_VERSION_PREFIX}+aoi{aoi.version}",
+        resolution=aoi.default_res,
+    )
+    try:
+        with job_run(
+            job_name="update_gbif_occurrences",
+            scope=aoi_label,
+            idempotency_key=idempotency_key,
+            engine=engine,
+        ) as (_, session):
+            log_ctx = {"aoi": aoi_label, "year": current_year}
+            logger.info(
+                "purging staging rows outside the rolling window",
+                extra={"event": "gbif_occurrences.purge", "context": log_ctx},
+            )
+            session.execute(
+                delete(SpeciesOccurrencesRaw).where(
+                    SpeciesOccurrencesRaw.aoi_id == aoi_label,
+                    SpeciesOccurrencesRaw.event_date < date_min,
+                )
+            )
+
+            valid_zone_ids = set(
+                session.scalars(
+                    select(ZonesHex.zone_id).where(ZonesHex.aoi_id == aoi_label)
+                ).all()
+            )
+            # Same reasoning as the old Search API's `geometry` param: the
+            # exact polygon is too complex for GBIF, the convex hull is
+            # small and always contains it. Safe here too -- occurrences
+            # outside the AOI's real shape are still filtered by the
+            # zone-membership check below.
+            geometry_wkt = aoi.geom.convex_hull.wkt
+            predicate = build_predicate(geometry_wkt, date_min, date_max)
+            creds = load_gbif_credentials()
+
+            try:
+                download_key = request_download(predicate, creator=creds.username, auth=creds.auth)
+                logger.info(
+                    "GBIF download requested",
+                    extra={
+                        "event": "gbif_occurrences.download_requested",
+                        "context": {**log_ctx, "download_key": download_key},
+                    },
+                )
+                wait_for_download(download_key, auth=creds.auth)
+                logger.info(
+                    "GBIF download ready",
+                    extra={
+                        "event": "gbif_occurrences.download_ready",
+                        "context": {**log_ctx, "download_key": download_key},
+                    },
+                )
+
+                rows: list[dict[str, object]] = []
+                n_total = 0
+                for raw_row in stream_download(download_key, auth=creds.auth):
+                    record = _normalize_csv_row(raw_row)
+                    quality_row = quality_filter(record, date_min, date_max)
+                    if quality_row is None:
+                        continue
+                    zone_id = point_to_h3_cell(
+                        quality_row["decimal_latitude"],
+                        quality_row["decimal_longitude"],
+                        aoi.default_res,
+                    )
+                    if zone_id not in valid_zone_ids:
+                        continue
+                    rows.append({**quality_row, "zone_id": zone_id, "aoi_id": aoi_label})
+                    if len(rows) >= UPSERT_BATCH_SIZE:
+                        upsert(session=session, model=SpeciesOccurrencesRaw, rows=rows, update_columns=[])
+                        n_total += len(rows)
+                        rows = []
+                if rows:
+                    upsert(session=session, model=SpeciesOccurrencesRaw, rows=rows, update_columns=[])
+                    n_total += len(rows)
+
+                logger.info(
+                    "upserted GBIF occurrences",
+                    extra={
+                        "event": "gbif_occurrences.upserted",
+                        "context": {**log_ctx, "download_key": download_key, "n_rows": n_total},
+                    },
+                )
+            except GbifApiError:
+                logger.error(
+                    "GBIF download failed",
+                    extra={"event": "gbif_occurrences.download_error", "context": log_ctx},
+                )
+                raise
+
+    except JobAlreadySucceeded:
+        logger.info(
+            "GBIF occurrences already up to date, skipping",
+            extra={
+                "event": "gbif_occurrences.skip",
+                "context": {"aoi": aoi_label, "idempotency_key": idempotency_key},
+            },
+        )
+        return
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `uv run pytest tests/packages/species/test_gbif_occurrences.py -v`
+Expected: PASS (all non-DB-gated tests; DB-gated ones skip without
+`TEST_DATABASE_URL`).
+
+- [ ] **Step 5: Run the DB-gated tests too**
+
+Set `TEST_DATABASE_URL` (PowerShell:
+`$env:TEST_DATABASE_URL="postgresql+psycopg://biowatch:biowatch_dev@127.0.0.1:5433/biowatch_dev"`)
+and re-run: `uv run pytest tests/packages/species/test_gbif_occurrences.py -v`
+Expected: PASS (all tests, including the 4 DB-gated ones — the new purge
+test and the new resolution-change test are the ones added in this task).
+
+- [ ] **Step 6: Run the full suite**
+
+Run: `uv run pytest -q` (with `TEST_DATABASE_URL` still set, to exercise
+everything)
+Expected: all pass, aside from the already-known, out-of-scope
+`test_generate_h3_grid_is_idempotent` pollution issue if it's still present
+in the shared dev DB (unrelated to this task — see the ledger).
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add packages/species/gbif_occurrences.py tests/packages/species/test_gbif_occurrences.py
+git commit -m "feat: rewrite update_gbif_occurrences for the Download API
+
+Replaces the per-year Search API pagination loop with a single
+predicate-based download request covering the whole 10-year window.
+Also fixes two final-review findings: the purge now has a dedicated
+test (previously untested despite being the only destructive
+operation in the codebase), and the idempotency key now includes the
+AOI's resolution and version, so a grid/geometry change forces a
+fresh run instead of silently mixing stale zone_ids."
+```
+
+---
+
+### Task 15: Docs — README, CLAUDE.md, credentials setup
+
+**Files:**
+- Modify: `README.md`
+- Modify: `CLAUDE.md`
+
+**Interfaces:** none (documentation only).
+
+- [ ] **Step 1: Update README**
+
+In `README.md`'s `## CLI` section, next to the existing
+`update_gbif_occurrences` example line, add a short note:
+
+```
+Nécessite un compte GBIF (https://www.gbif.org) : ajoute `GBIF_USERNAME`
+et `GBIF_PASSWORD` dans `.env` avant de lancer ce job (voir
+`.env.example`). Ce job appelle l'API Download de GBIF (asynchrone) : il
+peut prendre plusieurs minutes selon le volume de l'AOI. Si la DB existante
+n'a pas encore le schéma `staging`, relancer `uv run biowatch-jobs init_db`
+avant.
+```
+
+- [ ] **Step 2: Update CLAUDE.md**
+
+In the "Layout" list (the `packages/*` bullet list under "Stack & structure
+logicielle"), add a line for `packages/species/` right after
+`packages/geo/`:
+
+```
+- `packages/species/` — logique métier biodiversité (ingestion GBIF,
+  agrégation par zone)
+```
+
+In the "Tables" markdown table (under "Modèle de données & vocabulaire
+métier"), add a row for the new staging table, right after the `zones_hex`
+row (or wherever fits the table's existing ordering):
+
+```
+| `staging.species_occurrences_raw` | Occurrences GBIF brutes par AOI (fenêtre glissante 10 ans) | PK `gbif_occurrence_id`, `zone_id`, `aoi_id`, `event_date` |
+```
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add README.md CLAUDE.md
+git commit -m "docs: document GBIF credentials setup and new species package/table"
+```
+
+---
+
+### Task 16: Coverage check (re-run after the pivot)
+
+**Files:** none (verification only; may add tests to existing files if a gap is found).
+
+- [ ] **Step 1: Measure coverage on the new/changed modules**
+
+Run (with `TEST_DATABASE_URL` set, so the DB-gated tests are included):
+```bash
+uv run pytest --cov=packages/species --cov=packages/clients/gbif --cov-report=term-missing \
+  tests/packages/species tests/packages/clients/test_gbif_client.py \
+  tests/packages/geo/test_h3_grid.py -q
+```
+
+- [ ] **Step 2: Close any gap below 90%**
+
+If a module is under 90%, read the `Missing` line numbers, add a targeted
+test case to the relevant file from Tasks 12-14 (mirror the existing test
+style — one case per branch). Re-run Step 1 until every listed module is
+≥90%. Pay particular attention to `wait_for_download`'s timeout branch and
+`stream_download`'s cleanup path — these are easy to under-test.
+
+- [ ] **Step 3: Run the entire repo suite one last time**
+
+Run: `uv run pytest -q` (both with and without `TEST_DATABASE_URL` set)
+Expected: all pass in both modes (DB-gated tests skip cleanly without it).
+
+---
+
+### Task 17: Real smoke test against the real GBIF Download API
+
+This validates the actual fix: does a full run of `update_gbif_occurrences
+--aoi idf` succeed end-to-end now, against real GBIF, with real credentials?
+Nothing in Tasks 12-16 makes a real network call — this is the only step
+that proves the Download API pivot actually resolves the original blocker.
+
+**Files:** none (manual verification — requires a real GBIF account).
+
+- [ ] **Step 1: Confirm credentials are set**
+
+Ensure `GBIF_USERNAME` and `GBIF_PASSWORD` are set in `.env` in this
+worktree (the user has a GBIF.org account for this — ask if the values
+aren't already there; do not proceed by inventing placeholder credentials,
+the request will simply fail auth).
+
+- [ ] **Step 2: Run the job for real against `idf`**
+
+Ensure the local Postgres container is up and `zones_hex` has `idf` at its
+`default_res` (already true from earlier setup in this session).
+
+Run: `uv run biowatch-jobs --debug update_gbif_occurrences --aoi idf`
+
+This will submit a real GBIF download for ~4.86M candidate occurrences
+(before quality filtering and zone clipping) — expect this to take a while
+(GBIF's own processing time for the download, which is outside this job's
+control, plus the transfer/parse of a large file). Do not treat a
+long-running command as stuck; check on it rather than assuming failure. If
+`GBIF_POLL_TIMEOUT_SECONDS` (1 hour) is exceeded, that itself is useful
+information to report, not necessarily a bug — GBIF processing time for a
+region this size at this word window is unknown until measured for real.
+
+- [ ] **Step 3: Check the outcome**
+
+- **Success:** `job.success` in the logs (or a completed `gbif_occurrences.upserted`
+  log line with a plausible `n_rows`). Verify:
+  `SELECT count(*) FROM staging.species_occurrences_raw WHERE aoi_id='idf';`
+  via `docker exec postgis psql -U biowatch -d biowatch_dev -c "..."` and
+  sanity-check a few rows (`scientific_name`, `event_date`) look real.
+- **Predicate rejected (400 naming a bad key):** the spec flagged this as a
+  real risk — the exact key spelling for the date-range predicate
+  (`EVENT_DATE`) was inferred from GBIF's naming convention, not confirmed
+  in the (JS-rendered, non-scrapable) Swagger UI. If this happens, read the
+  exact error, fix the key name in `build_predicate`, add a regression test
+  locking in the corrected value, and re-run this step — do not guess a
+  second time without re-verifying.
+- **Auth failure (401/403):** check the credentials are for the right
+  account and correctly loaded (`GBIF_USERNAME`, not the email address, per
+  GBIF's own documentation).
+- **Any other failure:** report the exact error — do not attempt a
+  speculative fix without understanding it first, same discipline as
+  Tasks 9-11.
+
+- [ ] **Step 4: Report the result**
+
+This step has no automated pass/fail — it's the real-world check nothing
+else in this plan can substitute for. Report row count, timing, and any
+error before considering this ticket's Download API pivot complete.
