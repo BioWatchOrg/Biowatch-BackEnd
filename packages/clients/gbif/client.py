@@ -7,11 +7,16 @@ status, and (see Task 13) stream-parse the resulting file. See
 top of it.
 """
 
+import csv
+import gzip
 import logging
 import os
+import tempfile
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import date
+from pathlib import Path
 
 import httpx
 from dotenv import load_dotenv
@@ -152,3 +157,44 @@ def wait_for_download(
     finally:
         if owns_client:
             http_client.close()
+
+
+def stream_download(
+    key: str,
+    auth: httpx.BasicAuth,
+    client: httpx.Client | None = None,
+) -> Iterator[dict]:
+    """
+    Download the finished SIMPLE_CSV(.gz) file and yield one dict per row.
+
+    Streams to a temp file on disk (the file can be hundreds of MB for a
+    large AOI/window), then parses it as gzip-compressed, tab-separated CSV
+    with a header row -- the whole file is never held in memory at once.
+    The temp file is deleted once the generator is exhausted (or closed).
+    """
+    owns_client = client is None
+    http_client = client or httpx.Client(timeout=GBIF_TIMEOUT_SECONDS, follow_redirects=True)
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".csv.gz", delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+            with http_client.stream(
+                "GET", f"{GBIF_DOWNLOAD_FILE_URL}/{key}", auth=auth
+            ) as response:
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    raise GbifApiError(
+                        f"GBIF download file fetch failed (key={key}): {exc}"
+                    ) from exc
+                for chunk in response.iter_bytes():
+                    tmp.write(chunk)
+
+        with gzip.open(tmp_path, mode="rt", encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f, delimiter="\t")
+            yield from reader
+    finally:
+        if owns_client:
+            http_client.close()
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
