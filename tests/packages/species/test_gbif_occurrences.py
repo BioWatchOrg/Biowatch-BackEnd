@@ -9,7 +9,7 @@ import pytest
 from sqlalchemy import create_engine, delete, func, select
 
 import species.gbif_occurrences as gbif_occurrences
-from clients import JobAlreadySucceeded, SpeciesOccurrencesRaw
+from clients import GbifApiError, JobAlreadySucceeded, SpeciesOccurrencesRaw
 
 GOLDEN_AOI = "idf"
 
@@ -38,6 +38,132 @@ def test_rolling_window_covers_ten_years():
 def _force_default_res(aoi, resolution):
     """Return an AOI copy with `default_res` overridden, matching a specific grid."""
     return aoi.__class__(**{**aoi.__dict__, "default_res": resolution})
+
+
+class _FakeScalarsResult:
+    """Stand-in for the object returned by `Session.scalars(...)`."""
+
+    def __init__(self, items):
+        self._items = items
+
+    def all(self):
+        return self._items
+
+
+class _FakeSession:
+    """Minimal fake session: enough for `session.execute` (delete/upsert) and
+    `session.scalars(select(ZonesHex.zone_id)...)` without touching a real DB.
+    """
+
+    def __init__(self, zone_ids):
+        self._zone_ids = zone_ids
+        self.executed_statements: list[object] = []
+
+    def execute(self, stmt):
+        self.executed_statements.append(stmt)
+
+    def scalars(self, stmt):
+        return _FakeScalarsResult(self._zone_ids)
+
+
+def _fake_job_run_yielding(session):
+    """Build a fake `job_run` that skips the real DB entirely and just yields
+    `(None, session)`, mirroring the real contextmanager's shape.
+    """
+
+    @contextmanager
+    def fake_job_run(*args, idempotency_key="", **kwargs):
+        yield None, session
+
+    return fake_job_run
+
+
+_GOOD_RECORD = {
+    "key": 42,
+    "scientificName": "Vulpes vulpes",
+    "taxonKey": 5219243,
+    "decimalLatitude": 48.8566,
+    "decimalLongitude": 2.3522,
+    "eventDate": "2020-06-15T00:00:00",
+}
+
+
+def test_update_gbif_occurrences_skips_record_failing_quality_filter(monkeypatch):
+    """A record that fails `quality_filter` (e.g. missing `key`) is dropped
+    before ever reaching the H3 zone lookup or the upsert -- covers the
+    `if quality_row is None: continue` branch.
+    """
+    captured_rows: list[dict[str, object]] = []
+
+    def fake_upsert(session, model, rows, update_columns=None):
+        captured_rows.extend(rows)
+
+    aoi = gbif_occurrences.load_aoi(GOLDEN_AOI)
+    session = _FakeSession(zone_ids={"expected-zone"})
+    monkeypatch.setattr(gbif_occurrences, "job_run", _fake_job_run_yielding(session))
+    monkeypatch.setattr(gbif_occurrences, "upsert", fake_upsert)
+    monkeypatch.setattr(gbif_occurrences, "biowatch_now", lambda: date(2025, 1, 1))
+    monkeypatch.setattr(gbif_occurrences, "load_aoi", lambda label: aoi)
+    monkeypatch.setattr(gbif_occurrences, "point_to_h3_cell", lambda lat, lon, res: "expected-zone")
+
+    bad_record = {"scientificName": "Missing key entirely"}  # no "key" -> quality_filter -> None
+
+    def fake_fetch_occurrences(geometry_wkt, year, client=None):
+        return iter([bad_record, _GOOD_RECORD] if year == 2020 else [])
+
+    monkeypatch.setattr(gbif_occurrences, "fetch_occurrences", fake_fetch_occurrences)
+
+    gbif_occurrences.update_gbif_occurrences(GOLDEN_AOI)
+
+    assert len(captured_rows) == 1
+    assert captured_rows[0]["gbif_occurrence_id"] == "42"
+
+
+def test_update_gbif_occurrences_skips_record_outside_valid_zone_ids(monkeypatch):
+    """A record that passes `quality_filter` but whose H3 cell isn't part of
+    the AOI's grid (`valid_zone_ids`) is dropped -- covers the
+    `if zone_id not in valid_zone_ids: continue` branch.
+    """
+    captured_rows: list[dict[str, object]] = []
+
+    def fake_upsert(session, model, rows, update_columns=None):
+        captured_rows.extend(rows)
+
+    aoi = gbif_occurrences.load_aoi(GOLDEN_AOI)
+    session = _FakeSession(zone_ids=set())  # nothing is a valid zone
+    monkeypatch.setattr(gbif_occurrences, "job_run", _fake_job_run_yielding(session))
+    monkeypatch.setattr(gbif_occurrences, "upsert", fake_upsert)
+    monkeypatch.setattr(gbif_occurrences, "biowatch_now", lambda: date(2025, 1, 1))
+    monkeypatch.setattr(gbif_occurrences, "load_aoi", lambda label: aoi)
+    monkeypatch.setattr(gbif_occurrences, "point_to_h3_cell", lambda lat, lon, res: "outside-zone")
+
+    def fake_fetch_occurrences(geometry_wkt, year, client=None):
+        return iter([_GOOD_RECORD] if year == 2020 else [])
+
+    monkeypatch.setattr(gbif_occurrences, "fetch_occurrences", fake_fetch_occurrences)
+
+    gbif_occurrences.update_gbif_occurrences(GOLDEN_AOI)
+
+    assert captured_rows == []
+
+
+def test_update_gbif_occurrences_logs_and_reraises_gbif_api_error(monkeypatch):
+    """A `GbifApiError` raised while fetching a year's occurrences is logged
+    and re-raised, aborting the job -- covers the `except GbifApiError:` branch.
+    """
+    aoi = gbif_occurrences.load_aoi(GOLDEN_AOI)
+    session = _FakeSession(zone_ids=set())
+    monkeypatch.setattr(gbif_occurrences, "job_run", _fake_job_run_yielding(session))
+    monkeypatch.setattr(gbif_occurrences, "biowatch_now", lambda: date(2025, 1, 1))
+    monkeypatch.setattr(gbif_occurrences, "load_aoi", lambda label: aoi)
+
+    def fake_fetch_occurrences(geometry_wkt, year, client=None):
+        raise GbifApiError("simulated GBIF outage")
+
+    monkeypatch.setattr(gbif_occurrences, "fetch_occurrences", fake_fetch_occurrences)
+
+    with pytest.raises(GbifApiError):
+        gbif_occurrences.update_gbif_occurrences(GOLDEN_AOI)
 
 
 @pytest.mark.skipif(
