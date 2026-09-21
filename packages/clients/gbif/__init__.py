@@ -1,3 +1,19 @@
-from .client import GBIF_PAGE_LIMIT, GbifApiError, fetch_occurrences
+from .client import (
+    GbifApiError,
+    GbifCredentials,
+    GbifDownloadTimeoutError,
+    build_predicate,
+    load_gbif_credentials,
+    request_download,
+    wait_for_download,
+)
 
-__all__ = ["fetch_occurrences", "GbifApiError", "GBIF_PAGE_LIMIT"]
+__all__ = [
+    "build_predicate",
+    "load_gbif_credentials",
+    "request_download",
+    "wait_for_download",
+    "GbifApiError",
+    "GbifCredentials",
+    "GbifDownloadTimeoutError",
+]

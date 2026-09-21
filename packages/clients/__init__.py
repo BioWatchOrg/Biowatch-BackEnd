@@ -1,6 +1,14 @@
 from .logs import request_id_var, run_id_var, setup_logging
 
-from .gbif import GBIF_PAGE_LIMIT, GbifApiError, fetch_occurrences
+from .gbif import (
+    GbifApiError,
+    GbifCredentials,
+    GbifDownloadTimeoutError,
+    build_predicate,
+    load_gbif_credentials,
+    request_download,
+    wait_for_download,
+)
 
 from .db import (
     Base,
@@ -45,7 +53,11 @@ __all__ = [
     "setup_logging",
     "run_id_var",
     "request_id_var",
-    "fetch_occurrences",
+    "build_predicate",
+    "load_gbif_credentials",
+    "request_download",
+    "wait_for_download",
     "GbifApiError",
-    "GBIF_PAGE_LIMIT",
+    "GbifCredentials",
+    "GbifDownloadTimeoutError",
 ]
