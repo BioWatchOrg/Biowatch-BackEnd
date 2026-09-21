@@ -49,6 +49,14 @@ uv run biowatch-jobs generate_h3_grid --aoi idf --resolution 8
     uv run biowatch-jobs generate_h3_grid --aoi idf --resolution 5
     uv run biowatch-jobs update_gbif_occurrences --aoi idf
 ````
+
+**Note sur `update_gbif_occurrences`** : Nécessite un compte GBIF (https://www.gbif.org) : ajoute `GBIF_USERNAME`
+et `GBIF_PASSWORD` dans `.env` avant de lancer ce job (voir
+`.env.example`). Ce job appelle l'API Download de GBIF (asynchrone) : il
+peut prendre plusieurs minutes selon le volume de l'AOI. Si la DB existante
+n'a pas encore le schéma `staging`, relancer `uv run biowatch-jobs init_db`
+avant.
+
 ### Enregistrer un nouveau job
 Il faut enregistrer le nouveau job dans : apps/jobs/definitions.py
 

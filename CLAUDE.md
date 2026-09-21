@@ -88,6 +88,7 @@ Layout (chaque dossier est un package Python installé en éditable) :
 - `packages/scoring/` — calcul des sous-indices et du score écologique
 - `packages/ml/` — entraînement, datasets, inférence
 - `packages/geo/` — H3, intersections, conversions GeoJSON / WKT / PostGIS
+- `packages/species/` — logique métier biodiversité (ingestion GBIF, agrégation par zone)
 
 Quand tu proposes du code, **respecter cette séparation**. Pas de logique scoring dans `apps/api`, pas d'accès DB direct dans `packages/scoring`, etc.
 
@@ -132,6 +133,7 @@ Base géospatiale structurée autour d'un index spatial central : **H3**. Chaque
 | Table | Rôle | Champs clés |
 | --- | --- | --- |
 | `zones_hex` | Référence géo (source de vérité spatiale) | id H3, résolution, géométrie, centroïde, bbox |
+| `staging.species_occurrences_raw` | Occurrences GBIF brutes par AOI (fenêtre glissante 10 ans) | PK `gbif_occurrence_id`, `zone_id`, `aoi_id`, `event_date` |
 | `satellite_features_by_zone` | Features satellites par zone × période | NDVI, NDWI, NDBI, SWIR, métriques qualité |
 | `osm_features_by_zone` | Pression humaine | ratio surface bâtie, densité routière, occupation urbaine |
 | `protected_areas_by_zone` | Aires protégées applicables à une zone | type de protection, validité temporelle, taux de couverture |
