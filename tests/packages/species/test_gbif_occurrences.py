@@ -1,10 +1,13 @@
-"""Tests for species.gbif_occurrences.update_gbif_occurrences."""
+"""Tests for species.gbif_occurrences.update_gbif_occurrences (Download API)."""
 
+import gzip
+import io
 import os
 import uuid
 from contextlib import contextmanager
 from datetime import date
 
+import httpx
 import pytest
 from sqlalchemy import create_engine, delete, func, select
 
@@ -35,14 +38,41 @@ def test_rolling_window_covers_ten_years():
     assert date_max == date(2025, 12, 31)
 
 
+def test_normalize_csv_row_maps_gbif_id_to_key():
+    row = {
+        "gbifID": "1001",
+        "scientificName": "Vulpes vulpes",
+        "taxonKey": "5219243",
+        "decimalLatitude": "48.8566",
+        "decimalLongitude": "2.3522",
+        "eventDate": "2020-06-15",
+    }
+    normalized = gbif_occurrences._normalize_csv_row(row)
+    assert normalized == {
+        "key": "1001",
+        "scientificName": "Vulpes vulpes",
+        "taxonKey": 5219243,
+        "decimalLatitude": 48.8566,
+        "decimalLongitude": 2.3522,
+        "eventDate": "2020-06-15",
+    }
+
+
+def test_normalize_csv_row_handles_missing_optional_fields():
+    row = {"gbifID": "", "scientificName": "", "taxonKey": "", "decimalLatitude": "",
+           "decimalLongitude": "", "eventDate": ""}
+    normalized = gbif_occurrences._normalize_csv_row(row)
+    assert normalized == {
+        "key": None, "scientificName": None, "taxonKey": None,
+        "decimalLatitude": None, "decimalLongitude": None, "eventDate": None,
+    }
+
+
 def _force_default_res(aoi, resolution):
-    """Return an AOI copy with `default_res` overridden, matching a specific grid."""
     return aoi.__class__(**{**aoi.__dict__, "default_res": resolution})
 
 
 class _FakeScalarsResult:
-    """Stand-in for the object returned by `Session.scalars(...)`."""
-
     def __init__(self, items):
         self._items = items
 
@@ -51,10 +81,6 @@ class _FakeScalarsResult:
 
 
 class _FakeSession:
-    """Minimal fake session: enough for `session.execute` (delete/upsert) and
-    `session.scalars(select(ZonesHex.zone_id)...)` without touching a real DB.
-    """
-
     def __init__(self, zone_ids):
         self._zone_ids = zone_ids
         self.executed_statements: list[object] = []
@@ -67,10 +93,6 @@ class _FakeSession:
 
 
 def _fake_job_run_yielding(session):
-    """Build a fake `job_run` that skips the real DB entirely and just yields
-    `(None, session)`, mirroring the real contextmanager's shape.
-    """
-
     @contextmanager
     def fake_job_run(*args, idempotency_key="", **kwargs):
         yield None, session
@@ -78,21 +100,29 @@ def _fake_job_run_yielding(session):
     return fake_job_run
 
 
-_GOOD_RECORD = {
-    "key": 42,
+_GOOD_CSV_ROW = {
+    "gbifID": "42",
     "scientificName": "Vulpes vulpes",
-    "taxonKey": 5219243,
-    "decimalLatitude": 48.8566,
-    "decimalLongitude": 2.3522,
-    "eventDate": "2020-06-15T00:00:00",
+    "taxonKey": "5219243",
+    "decimalLatitude": "48.8566",
+    "decimalLongitude": "2.3522",
+    "eventDate": "2020-06-15",
 }
+
+_FAKE_CREDS = type("_Creds", (), {"username": "alice", "auth": httpx.BasicAuth("alice", "s")})()
+
+
+def _patch_download_pipeline(monkeypatch, rows, download_key="key123"):
+    """Patch the request/poll/stream trio so update_gbif_occurrences's HTTP
+    calls never happen -- `rows` is the list of raw CSV-row dicts `stream_download`
+    should yield."""
+    monkeypatch.setattr(gbif_occurrences, "load_gbif_credentials", lambda: _FAKE_CREDS)
+    monkeypatch.setattr(gbif_occurrences, "request_download", lambda *a, **k: download_key)
+    monkeypatch.setattr(gbif_occurrences, "wait_for_download", lambda *a, **k: None)
+    monkeypatch.setattr(gbif_occurrences, "stream_download", lambda *a, **k: iter(rows))
 
 
 def test_update_gbif_occurrences_skips_record_failing_quality_filter(monkeypatch):
-    """A record that fails `quality_filter` (e.g. missing `key`) is dropped
-    before ever reaching the H3 zone lookup or the upsert -- covers the
-    `if quality_row is None: continue` branch.
-    """
     captured_rows: list[dict[str, object]] = []
 
     def fake_upsert(session, model, rows, update_columns=None):
@@ -106,12 +136,8 @@ def test_update_gbif_occurrences_skips_record_failing_quality_filter(monkeypatch
     monkeypatch.setattr(gbif_occurrences, "load_aoi", lambda label: aoi)
     monkeypatch.setattr(gbif_occurrences, "point_to_h3_cell", lambda lat, lon, res: "expected-zone")
 
-    bad_record = {"scientificName": "Missing key entirely"}  # no "key" -> quality_filter -> None
-
-    def fake_fetch_occurrences(geometry_wkt, year, client=None):
-        return iter([bad_record, _GOOD_RECORD] if year == 2020 else [])
-
-    monkeypatch.setattr(gbif_occurrences, "fetch_occurrences", fake_fetch_occurrences)
+    bad_row = {"gbifID": "", "scientificName": "no id"}  # missing gbifID -> quality_filter -> None
+    _patch_download_pipeline(monkeypatch, [bad_row, _GOOD_CSV_ROW])
 
     gbif_occurrences.update_gbif_occurrences(GOLDEN_AOI)
 
@@ -120,10 +146,6 @@ def test_update_gbif_occurrences_skips_record_failing_quality_filter(monkeypatch
 
 
 def test_update_gbif_occurrences_skips_record_outside_valid_zone_ids(monkeypatch):
-    """A record that passes `quality_filter` but whose H3 cell isn't part of
-    the AOI's grid (`valid_zone_ids`) is dropped -- covers the
-    `if zone_id not in valid_zone_ids: continue` branch.
-    """
     captured_rows: list[dict[str, object]] = []
 
     def fake_upsert(session, model, rows, update_columns=None):
@@ -136,63 +158,150 @@ def test_update_gbif_occurrences_skips_record_outside_valid_zone_ids(monkeypatch
     monkeypatch.setattr(gbif_occurrences, "biowatch_now", lambda: date(2025, 1, 1))
     monkeypatch.setattr(gbif_occurrences, "load_aoi", lambda label: aoi)
     monkeypatch.setattr(gbif_occurrences, "point_to_h3_cell", lambda lat, lon, res: "outside-zone")
-
-    def fake_fetch_occurrences(geometry_wkt, year, client=None):
-        return iter([_GOOD_RECORD] if year == 2020 else [])
-
-    monkeypatch.setattr(gbif_occurrences, "fetch_occurrences", fake_fetch_occurrences)
+    _patch_download_pipeline(monkeypatch, [_GOOD_CSV_ROW])
 
     gbif_occurrences.update_gbif_occurrences(GOLDEN_AOI)
 
     assert captured_rows == []
 
 
-def test_update_gbif_occurrences_queries_gbif_with_convex_hull_not_raw_polygon(monkeypatch):
-    """GBIF rejects the idf AOI's raw polygon (466 vertices, ~16KB request
-    line) with a 400 -- confirmed against the real API. The convex hull (22
-    vertices) is what must be sent instead; the exact polygon is still used
-    for the zones_hex membership check, so no correctness is lost.
-    """
-    captured_geometries: list[str] = []
+def test_update_gbif_occurrences_builds_predicate_with_convex_hull(monkeypatch):
+    """GBIF rejects the idf AOI's raw polygon (466 vertices) -- the convex
+    hull (22 vertices) must be what's sent, same reasoning as the old Search
+    API fix, now applied to the `within` predicate instead of the `geometry`
+    query param."""
+    captured = {}
 
     aoi = gbif_occurrences.load_aoi(GOLDEN_AOI)
-    # zone_ids is irrelevant here -- this test only observes what geometry_wkt
-    # reaches `fetch_occurrences`, not what ends up persisted.
     session = _FakeSession(zone_ids=set())
     monkeypatch.setattr(gbif_occurrences, "job_run", _fake_job_run_yielding(session))
     monkeypatch.setattr(gbif_occurrences, "biowatch_now", lambda: date(2025, 1, 1))
     monkeypatch.setattr(gbif_occurrences, "load_aoi", lambda label: aoi)
+    monkeypatch.setattr(gbif_occurrences, "load_gbif_credentials", lambda: _FAKE_CREDS)
 
-    def fake_fetch_occurrences(geometry_wkt, year, client=None):
-        captured_geometries.append(geometry_wkt)
-        return iter([])
+    def fake_request_download(predicate, creator, auth, client=None):
+        captured["predicate"] = predicate
+        return "key123"
 
-    monkeypatch.setattr(gbif_occurrences, "fetch_occurrences", fake_fetch_occurrences)
+    monkeypatch.setattr(gbif_occurrences, "request_download", fake_request_download)
+    monkeypatch.setattr(gbif_occurrences, "wait_for_download", lambda *a, **k: None)
+    monkeypatch.setattr(gbif_occurrences, "stream_download", lambda *a, **k: iter([]))
 
     gbif_occurrences.update_gbif_occurrences(GOLDEN_AOI)
 
-    assert captured_geometries, "fetch_occurrences was never called"
-    assert all(g == aoi.geom.convex_hull.wkt for g in captured_geometries)
-    assert all(g != aoi.geom.wkt for g in captured_geometries)
+    within = next(p for p in captured["predicate"]["predicates"] if p["type"] == "within")
+    assert within["geometry"] == aoi.geom.convex_hull.wkt
+    assert within["geometry"] != aoi.geom.wkt
 
 
 def test_update_gbif_occurrences_logs_and_reraises_gbif_api_error(monkeypatch):
-    """A `GbifApiError` raised while fetching a year's occurrences is logged
-    and re-raised, aborting the job -- covers the `except GbifApiError:` branch.
-    """
     aoi = gbif_occurrences.load_aoi(GOLDEN_AOI)
     session = _FakeSession(zone_ids=set())
     monkeypatch.setattr(gbif_occurrences, "job_run", _fake_job_run_yielding(session))
     monkeypatch.setattr(gbif_occurrences, "biowatch_now", lambda: date(2025, 1, 1))
     monkeypatch.setattr(gbif_occurrences, "load_aoi", lambda label: aoi)
+    monkeypatch.setattr(gbif_occurrences, "load_gbif_credentials", lambda: _FAKE_CREDS)
 
-    def fake_fetch_occurrences(geometry_wkt, year, client=None):
+    def fake_request_download(*a, **k):
         raise GbifApiError("simulated GBIF outage")
 
-    monkeypatch.setattr(gbif_occurrences, "fetch_occurrences", fake_fetch_occurrences)
+    monkeypatch.setattr(gbif_occurrences, "request_download", fake_request_download)
 
     with pytest.raises(GbifApiError):
         gbif_occurrences.update_gbif_occurrences(GOLDEN_AOI)
+
+
+def test_update_gbif_occurrences_upserts_in_batches(monkeypatch):
+    """Rows are flushed to `upsert` in bounded batches, not one call for the
+    whole stream -- covers the memory-safety fix from the final review."""
+    upsert_calls: list[int] = []
+
+    def fake_upsert(session, model, rows, update_columns=None):
+        upsert_calls.append(len(rows))
+
+    aoi = gbif_occurrences.load_aoi(GOLDEN_AOI)
+    session = _FakeSession(zone_ids={"expected-zone"})
+    monkeypatch.setattr(gbif_occurrences, "job_run", _fake_job_run_yielding(session))
+    monkeypatch.setattr(gbif_occurrences, "upsert", fake_upsert)
+    monkeypatch.setattr(gbif_occurrences, "biowatch_now", lambda: date(2025, 1, 1))
+    monkeypatch.setattr(gbif_occurrences, "load_aoi", lambda label: aoi)
+    monkeypatch.setattr(gbif_occurrences, "point_to_h3_cell", lambda lat, lon, res: "expected-zone")
+    monkeypatch.setattr(gbif_occurrences, "UPSERT_BATCH_SIZE", 2)
+
+    rows = [{**_GOOD_CSV_ROW, "gbifID": str(i)} for i in range(5)]
+    _patch_download_pipeline(monkeypatch, rows)
+
+    gbif_occurrences.update_gbif_occurrences(GOLDEN_AOI)
+
+    assert upsert_calls == [2, 2, 1]  # 5 rows, batch size 2 -> 2+2+1
+
+
+@pytest.mark.skipif(
+    "TEST_DATABASE_URL" not in os.environ,
+    reason="requires a live PostGIS database (set TEST_DATABASE_URL)",
+)
+def test_purges_rows_outside_window_scoped_to_aoi(monkeypatch):
+    """Spec-mandated purge test (missing in the previous iteration, flagged
+    by final review): out-of-window rows for this AOI are deleted, in-window
+    rows survive, and another AOI's rows are never touched."""
+    from clients.db import JobRun, ZonesHex
+    from clients.db.init_db import init_db
+
+    engine = create_engine(os.environ["TEST_DATABASE_URL"], future=True)
+    init_db(engine)
+
+    with engine.begin() as conn:
+        conn.execute(delete(SpeciesOccurrencesRaw))
+        conn.execute(delete(ZonesHex).where(ZonesHex.zone_id.in_(["z-in", "z-out", "z-other"])))
+        # Without this, a `success` JobRun row left behind by a previous run
+        # of this exact test (same aoi/year/resolution -> same deterministic
+        # idempotency_key) makes `job_run()` raise `JobAlreadySucceeded` and
+        # skip the purge entirely on the next run -- same cleanup pattern the
+        # other DB-gated tests below already use.
+        conn.execute(delete(JobRun).where(JobRun.job_name == "update_gbif_occurrences"))
+
+    from geo.h3_grid import generate_h3_grid
+
+    generate_h3_grid(GOLDEN_AOI, resolution=5, engine=engine)
+
+    aoi = gbif_occurrences.load_aoi(GOLDEN_AOI)
+    monkeypatch.setattr(gbif_occurrences, "load_aoi", lambda label: _force_default_res(aoi, 5))
+    monkeypatch.setattr(gbif_occurrences, "biowatch_now", lambda: date(2025, 1, 1))
+    _patch_download_pipeline(monkeypatch, [])  # no new fetch needed for this test
+
+    with engine.begin() as conn:
+        conn.execute(
+            SpeciesOccurrencesRaw.__table__.insert(),
+            [
+                {  # in-window, this AOI -> must survive
+                    "gbif_occurrence_id": "in-window", "event_date": date(2020, 1, 1),
+                    "gbif_taxon_key": None, "scientific_name": "A",
+                    "decimal_latitude": 1.0, "decimal_longitude": 1.0,
+                    "zone_id": "z-in", "aoi_id": GOLDEN_AOI,
+                },
+                {  # out-of-window, this AOI -> must be purged
+                    "gbif_occurrence_id": "out-of-window", "event_date": date(2000, 1, 1),
+                    "gbif_taxon_key": None, "scientific_name": "B",
+                    "decimal_latitude": 1.0, "decimal_longitude": 1.0,
+                    "zone_id": "z-out", "aoi_id": GOLDEN_AOI,
+                },
+                {  # out-of-window, OTHER AOI -> must survive (not this AOI's purge)
+                    "gbif_occurrence_id": "other-aoi-old", "event_date": date(2000, 1, 1),
+                    "gbif_taxon_key": None, "scientific_name": "C",
+                    "decimal_latitude": 1.0, "decimal_longitude": 1.0,
+                    "zone_id": "z-other", "aoi_id": "not-idf",
+                },
+            ],
+        )
+
+    gbif_occurrences.update_gbif_occurrences(GOLDEN_AOI, engine=engine)
+
+    with engine.connect() as conn:
+        remaining_ids = set(
+            conn.scalars(select(SpeciesOccurrencesRaw.gbif_occurrence_id)).all()
+        )
+
+    assert remaining_ids == {"in-window", "other-aoi-old"}
 
 
 @pytest.mark.skipif(
@@ -200,16 +309,7 @@ def test_update_gbif_occurrences_logs_and_reraises_gbif_api_error(monkeypatch):
     reason="requires a live PostGIS database (set TEST_DATABASE_URL)",
 )
 def test_update_gbif_occurrences_skips_rerun_same_year(monkeypatch):
-    """Job-level idempotence: rerunning for the *same* target year is a no-op skip.
-
-    Both calls compute the identical idempotency_key (same aoi + same target
-    year), so the second call's `job_run` raises `JobAlreadySucceeded` before
-    its body runs again -- no second fetch, no second upsert attempt. This
-    proves job-level idempotence only; it does NOT exercise the `ON CONFLICT
-    DO NOTHING` row-level dedup path, since the body never re-executes. See
-    `test_update_gbif_occurrences_row_level_dedup_across_overlapping_windows`
-    for that.
-    """
+    """Job-level idempotence: rerunning for the same target year is a no-op skip."""
     from clients.db import JobRun
     from clients.db.init_db import init_db
 
@@ -217,62 +317,33 @@ def test_update_gbif_occurrences_skips_rerun_same_year(monkeypatch):
     init_db(engine)
 
     with engine.begin() as conn:
-        conn.execute(
-            delete(SpeciesOccurrencesRaw).where(SpeciesOccurrencesRaw.aoi_id == GOLDEN_AOI)
-        )
+        conn.execute(delete(SpeciesOccurrencesRaw).where(SpeciesOccurrencesRaw.aoi_id == GOLDEN_AOI))
         conn.execute(delete(JobRun).where(JobRun.job_name == "update_gbif_occurrences"))
 
     from geo.h3_grid import generate_h3_grid
 
     generate_h3_grid(GOLDEN_AOI, resolution=5, engine=engine)
 
-    fake_records = {
-        2020: [
-            {
-                "key": 1001,
-                "scientificName": "Vulpes vulpes",
-                "taxonKey": 5219243,
-                "decimalLatitude": 48.8566,
-                "decimalLongitude": 2.3522,
-                "eventDate": "2020-06-15T00:00:00",
-            }
-        ]
-    }
-
-    def fake_fetch_occurrences(geometry_wkt, year, client=None):
-        return iter(fake_records.get(year, []))
-
-    monkeypatch.setattr(gbif_occurrences, "fetch_occurrences", fake_fetch_occurrences)
-    monkeypatch.setattr(gbif_occurrences, "biowatch_now", lambda: date(2025, 1, 1))
-
-    # Force AOI resolution to match the res-5 grid just generated.
     aoi = gbif_occurrences.load_aoi(GOLDEN_AOI)
     monkeypatch.setattr(gbif_occurrences, "load_aoi", lambda label: _force_default_res(aoi, 5))
+    monkeypatch.setattr(gbif_occurrences, "biowatch_now", lambda: date(2025, 1, 1))
+    _patch_download_pipeline(monkeypatch, [{**_GOOD_CSV_ROW, "gbifID": "1001"}])
 
     gbif_occurrences.update_gbif_occurrences(GOLDEN_AOI, engine=engine)
     gbif_occurrences.update_gbif_occurrences(GOLDEN_AOI, engine=engine)  # same year -> skip
 
     with engine.connect() as conn:
         count = conn.scalar(
-            select(func.count())
-            .select_from(SpeciesOccurrencesRaw)
+            select(func.count()).select_from(SpeciesOccurrencesRaw)
             .where(SpeciesOccurrencesRaw.aoi_id == GOLDEN_AOI)
         )
         runs = conn.scalar(
-            select(func.count())
-            .select_from(JobRun)
+            select(func.count()).select_from(JobRun)
             .where(JobRun.job_name == "update_gbif_occurrences")
         )
-        row = conn.execute(
-            select(SpeciesOccurrencesRaw).where(
-                SpeciesOccurrencesRaw.gbif_occurrence_id == "1001"
-            )
-        ).one()
 
     assert count == 1
-    assert runs == 1  # 2nd call skipped at job_run entry -- no new run recorded
-    assert row.scientific_name == "Vulpes vulpes"
-    assert row.event_date == date(2020, 6, 15)
+    assert runs == 1
 
 
 @pytest.mark.skipif(
@@ -280,19 +351,9 @@ def test_update_gbif_occurrences_skips_rerun_same_year(monkeypatch):
     reason="requires a live PostGIS database (set TEST_DATABASE_URL)",
 )
 def test_update_gbif_occurrences_row_level_dedup_across_overlapping_windows(monkeypatch):
-    """Row-level dedup: two *different* job runs (adjacent target years whose
-    rolling windows overlap) both re-fetch and attempt to upsert the same
-    historical GBIF occurrence.
-
-    Target years differ (2024 then 2025) so each call computes a *different*
-    idempotency_key -- `job_run` does NOT skip the second call, it genuinely
-    re-executes the body and re-attempts the insert. The occurrence's PK
-    (`gbif_occurrence_id`) collides with the row from the first run, so this
-    exercises the actual `upsert(..., update_columns=[])` -> `ON CONFLICT DO
-    NOTHING` path: no exception should surface, no duplicate row should
-    appear, and (since DO NOTHING discards rather than merges) the row's data
-    must still be the *first* run's data, not the second run's.
-    """
+    """Row-level dedup: two different job runs (different target years,
+    overlapping windows) both attempt to upsert the same occurrence -- must
+    not raise, must not duplicate, must not overwrite (DO NOTHING)."""
     from clients.db import JobRun
     from clients.db.init_db import init_db
 
@@ -300,9 +361,7 @@ def test_update_gbif_occurrences_row_level_dedup_across_overlapping_windows(monk
     init_db(engine)
 
     with engine.begin() as conn:
-        conn.execute(
-            delete(SpeciesOccurrencesRaw).where(SpeciesOccurrencesRaw.aoi_id == GOLDEN_AOI)
-        )
+        conn.execute(delete(SpeciesOccurrencesRaw).where(SpeciesOccurrencesRaw.aoi_id == GOLDEN_AOI))
         conn.execute(delete(JobRun).where(JobRun.job_name == "update_gbif_occurrences"))
 
     from geo.h3_grid import generate_h3_grid
@@ -312,55 +371,70 @@ def test_update_gbif_occurrences_row_level_dedup_across_overlapping_windows(monk
     aoi = gbif_occurrences.load_aoi(GOLDEN_AOI)
     monkeypatch.setattr(gbif_occurrences, "load_aoi", lambda label: _force_default_res(aoi, 5))
 
-    original_record = {
-        "key": 1001,
-        "scientificName": "Vulpes vulpes",
-        "taxonKey": 5219243,
-        "decimalLatitude": 48.8566,
-        "decimalLongitude": 2.3522,
-        "eventDate": "2020-06-15T00:00:00",
-    }
-
-    # Run 1: target year 2024 -> window [2015, 2024] covers eventDate 2020-06-15.
-    def fake_fetch_run1(geometry_wkt, year, client=None):
-        return iter([original_record] if year == 2020 else [])
-
-    monkeypatch.setattr(gbif_occurrences, "fetch_occurrences", fake_fetch_run1)
+    original_row = {**_GOOD_CSV_ROW, "gbifID": "1001"}
     monkeypatch.setattr(gbif_occurrences, "biowatch_now", lambda: date(2024, 1, 1))
+    _patch_download_pipeline(monkeypatch, [original_row])
     gbif_occurrences.update_gbif_occurrences(GOLDEN_AOI, engine=engine)
 
-    # Run 2: target year 2025 -> different idempotency_key (different `period`),
-    # so job_run does NOT skip. Window [2016, 2025] also covers 2020-06-15, so
-    # the same gbif_occurrence_id=1001 is re-fetched and re-attempted -- with
-    # *different* data this time, to prove DO NOTHING discards the conflicting
-    # attempt instead of silently merging/overwriting.
-    conflicting_record = {**original_record, "scientificName": "SHOULD NOT OVERWRITE"}
-
-    def fake_fetch_run2(geometry_wkt, year, client=None):
-        return iter([conflicting_record] if year == 2020 else [])
-
-    monkeypatch.setattr(gbif_occurrences, "fetch_occurrences", fake_fetch_run2)
+    conflicting_row = {**original_row, "scientificName": "SHOULD NOT OVERWRITE"}
     monkeypatch.setattr(gbif_occurrences, "biowatch_now", lambda: date(2025, 1, 1))
+    _patch_download_pipeline(monkeypatch, [conflicting_row])
     gbif_occurrences.update_gbif_occurrences(GOLDEN_AOI, engine=engine)  # must not raise
 
     with engine.connect() as conn:
         count = conn.scalar(
-            select(func.count())
-            .select_from(SpeciesOccurrencesRaw)
+            select(func.count()).select_from(SpeciesOccurrencesRaw)
             .where(SpeciesOccurrencesRaw.gbif_occurrence_id == "1001")
         )
         successful_runs = conn.scalar(
-            select(func.count())
-            .select_from(JobRun)
+            select(func.count()).select_from(JobRun)
             .where(JobRun.job_name == "update_gbif_occurrences", JobRun.status == "success")
         )
         row = conn.execute(
-            select(SpeciesOccurrencesRaw).where(
-                SpeciesOccurrencesRaw.gbif_occurrence_id == "1001"
-            )
+            select(SpeciesOccurrencesRaw).where(SpeciesOccurrencesRaw.gbif_occurrence_id == "1001")
         ).one()
 
-    assert successful_runs == 2  # both runs genuinely executed (distinct idempotency_key)
-    assert count == 1  # PK conflict on the 2nd upsert -> DO NOTHING, no duplicate row
-    assert row.scientific_name == "Vulpes vulpes"  # original data untouched, not overwritten
-    assert row.event_date == date(2020, 6, 15)
+    assert successful_runs == 2
+    assert count == 1
+    assert row.scientific_name == "Vulpes vulpes"
+
+
+@pytest.mark.skipif(
+    "TEST_DATABASE_URL" not in os.environ,
+    reason="requires a live PostGIS database (set TEST_DATABASE_URL)",
+)
+def test_update_gbif_occurrences_new_run_when_resolution_changes(monkeypatch):
+    """Idempotency-key finding from final review: changing the AOI's
+    resolution for the same target year must NOT be skipped as a rerun."""
+    from clients.db import JobRun
+    from clients.db.init_db import init_db
+
+    engine = create_engine(os.environ["TEST_DATABASE_URL"], future=True)
+    init_db(engine)
+
+    with engine.begin() as conn:
+        conn.execute(delete(SpeciesOccurrencesRaw).where(SpeciesOccurrencesRaw.aoi_id == GOLDEN_AOI))
+        conn.execute(delete(JobRun).where(JobRun.job_name == "update_gbif_occurrences"))
+
+    from geo.h3_grid import generate_h3_grid
+
+    generate_h3_grid(GOLDEN_AOI, resolution=5, engine=engine)
+    generate_h3_grid(GOLDEN_AOI, resolution=6, engine=engine)
+
+    aoi = gbif_occurrences.load_aoi(GOLDEN_AOI)
+    monkeypatch.setattr(gbif_occurrences, "biowatch_now", lambda: date(2025, 1, 1))
+    _patch_download_pipeline(monkeypatch, [])
+
+    monkeypatch.setattr(gbif_occurrences, "load_aoi", lambda label: _force_default_res(aoi, 5))
+    gbif_occurrences.update_gbif_occurrences(GOLDEN_AOI, engine=engine)
+
+    monkeypatch.setattr(gbif_occurrences, "load_aoi", lambda label: _force_default_res(aoi, 6))
+    gbif_occurrences.update_gbif_occurrences(GOLDEN_AOI, engine=engine)  # must NOT skip
+
+    with engine.connect() as conn:
+        runs = conn.scalar(
+            select(func.count()).select_from(JobRun)
+            .where(JobRun.job_name == "update_gbif_occurrences", JobRun.status == "success")
+        )
+
+    assert runs == 2  # different resolution -> different idempotency_key -> both ran
