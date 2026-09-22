@@ -3154,14 +3154,14 @@ that proves the Download API pivot actually resolves the original blocker.
 
 **Files:** none (manual verification — requires a real GBIF account).
 
-- [ ] **Step 1: Confirm credentials are set**
+- [x] **Step 1: Confirm credentials are set**
 
 Ensure `GBIF_USERNAME` and `GBIF_PASSWORD` are set in `.env` in this
 worktree (the user has a GBIF.org account for this — ask if the values
 aren't already there; do not proceed by inventing placeholder credentials,
 the request will simply fail auth).
 
-- [ ] **Step 2: Run the job for real against `idf`**
+- [x] **Step 2: Run the job for real against `idf`**
 
 Ensure the local Postgres container is up and `zones_hex` has `idf` at its
 `default_res` (already true from earlier setup in this session).
@@ -3177,7 +3177,7 @@ long-running command as stuck; check on it rather than assuming failure. If
 information to report, not necessarily a bug — GBIF processing time for a
 region this size at this word window is unknown until measured for real.
 
-- [ ] **Step 3: Check the outcome**
+- [x] **Step 3: Check the outcome**
 
 - **Success:** `job.success` in the logs (or a completed `gbif_occurrences.upserted`
   log line with a plausible `n_rows`). Verify:
@@ -3198,8 +3198,20 @@ region this size at this word window is unknown until measured for real.
   speculative fix without understanding it first, same discipline as
   Tasks 9-11.
 
-- [ ] **Step 4: Report the result**
+- [x] **Step 4: Report the result**
 
 This step has no automated pass/fail — it's the real-world check nothing
 else in this plan can substitute for. Report row count, timing, and any
 error before considering this ticket's Download API pivot complete.
+
+**Result (real run against the live GBIF API, 2026-09-22):** SUCCESS.
+4,084,550 rows stored for `aoi_id='idf'`. `event_date` spans 2017-01-01
+to 2026-09-07 (matches the expected 10-year rolling window). 16,832
+distinct H3 zones, 20,095 distinct species. Wall-clock ~23-24 minutes
+per run (GBIF's own processing time dominates). Two real bugs found and
+fixed during this run: GBIF serves SIMPLE_CSV downloads as a ZIP archive
+(not gzip) regardless of requested format; a test
+(`test_load_gbif_credentials_raises_on_missing_username`) was silently
+relying on the ambient `.env` not containing real credentials, fixed by
+isolating it from `load_dotenv`. Both fixes have regression tests and
+were re-verified end-to-end against the real API.

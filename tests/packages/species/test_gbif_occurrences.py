@@ -1,7 +1,5 @@
 """Tests for species.gbif_occurrences.update_gbif_occurrences (Download API)."""
 
-import gzip
-import io
 import os
 import uuid
 from contextlib import contextmanager
@@ -234,6 +232,45 @@ def test_update_gbif_occurrences_upserts_in_batches(monkeypatch):
     gbif_occurrences.update_gbif_occurrences(GOLDEN_AOI)
 
     assert upsert_calls == [2, 2, 1]  # 5 rows, batch size 2 -> 2+2+1
+
+
+def test_update_gbif_occurrences_logs_full_funnel_counts(monkeypatch, caplog):
+    """Observability finding from final review: the final log line must
+    report streamed -> rejected (quality) -> rejected (outside zones) ->
+    stored, not just the stored count."""
+
+    def fake_upsert(session, model, rows, update_columns=None):
+        pass
+
+    aoi = gbif_occurrences.load_aoi(GOLDEN_AOI)
+    session = _FakeSession(zone_ids={"expected-zone"})
+    monkeypatch.setattr(gbif_occurrences, "job_run", _fake_job_run_yielding(session))
+    monkeypatch.setattr(gbif_occurrences, "upsert", fake_upsert)
+    monkeypatch.setattr(gbif_occurrences, "biowatch_now", lambda: date(2025, 1, 1))
+    monkeypatch.setattr(gbif_occurrences, "load_aoi", lambda label: aoi)
+    monkeypatch.setattr(
+        gbif_occurrences,
+        "point_to_h3_cell",
+        lambda lat, lon, res: "outside-zone" if lon == 3.0 else "expected-zone",
+    )
+
+    bad_quality_row = {"gbifID": "", "scientificName": "no id"}
+    outside_zone_row = {**_GOOD_CSV_ROW, "gbifID": "99", "decimalLongitude": "3.0"}
+    good_row = {**_GOOD_CSV_ROW, "gbifID": "42"}
+    _patch_download_pipeline(monkeypatch, [bad_quality_row, outside_zone_row, good_row])
+
+    with caplog.at_level("INFO"):
+        gbif_occurrences.update_gbif_occurrences(GOLDEN_AOI)
+
+    upserted_records = [
+        r for r in caplog.records if getattr(r, "event", None) == "gbif_occurrences.upserted"
+    ]
+    assert len(upserted_records) == 1
+    context = upserted_records[0].context
+    assert context["n_streamed"] == 3
+    assert context["n_rejected_quality"] == 1
+    assert context["n_outside_zones"] == 1
+    assert context["n_rows"] == 1
 
 
 @pytest.mark.skipif(

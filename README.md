@@ -57,6 +57,9 @@ peut prendre plusieurs minutes selon le volume de l'AOI. Si la DB existante
 n'a pas encore le schéma `staging`, relancer `uv run biowatch-jobs init_db`
 avant.
 
+Volumétrie observée pour `idf` : ~4.08M lignes stockées, ~23-24 min de
+traitement (temps de traitement GBIF, hors contrôle de ce job).
+
 ### Enregistrer un nouveau job
 Il faut enregistrer le nouveau job dans : apps/jobs/definitions.py
 

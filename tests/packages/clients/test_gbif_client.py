@@ -68,6 +68,17 @@ def test_load_gbif_credentials_raises_on_missing_username(monkeypatch):
         load_gbif_credentials()
 
 
+def test_gbif_credentials_repr_omits_password():
+    """Latent logging footgun from final review: repr()/str() must never
+    leak the password (e.g. via a stray logger.debug(creds) or an exception
+    traceback capturing local variables)."""
+    creds = GbifCredentials(username="alice", password="super-secret")
+
+    assert "super-secret" not in repr(creds)
+    assert "super-secret" not in str(creds)
+    assert repr(creds) == "GbifCredentials(username='alice')"
+
+
 def test_request_download_returns_key(monkeypatch):
     captured = {}
 

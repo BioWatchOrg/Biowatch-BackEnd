@@ -45,7 +45,10 @@ volume).
   complète (10 ans en une fois, plus de boucle par année) → poll
   `GET /occurrence/download/{key}` jusqu'à `SUCCEEDED`/échec → téléchargement
   du fichier résultat.
-- **Format** : `SIMPLE_CSV` (tsv.gz, une ligne par occurrence). Pas `DWCA`
+- **Format** : `SIMPLE_CSV` (zip contenant un fichier `.csv` (tab-séparé),
+  une ligne par occurrence — **confirmé contre l'API réelle (Task 17) : GBIF
+  sert toujours un zip, y compris pour SIMPLE_CSV, jamais un flux gzip
+  brut**). Pas `DWCA`
   (zip + XML Darwin Core Archive, parsing plus lourd pour aucun champ
   supplémentaire utile ici). Colonnes confirmées dans la doc GBIF :
   `gbifID`, `scientificName`, `taxonKey`, `decimalLatitude`,
@@ -77,7 +80,7 @@ volume).
   pas seulement `aoi_label` + année. Sans ça, un changement de géométrie ou
   de résolution de l'AOI à l'intérieur d'une même année ne redéclenche pas
   le job.
-- **Mémoire** : le flux SIMPLE_CSV est **streamé** (gzip + csv, ligne par
+- **Mémoire** : le flux SIMPLE_CSV est **streamé** (zip + csv, ligne par
   ligne) et upserté par lots de taille bornée — pas de liste Python de
   millions de lignes en mémoire (le problème ne se posait pas en v2 tant que
   le plafond à 100k limitait accidentellement le volume par requête ; il se
@@ -186,7 +189,7 @@ granularité par zone.
 
 - **Client GBIF Download** (`packages/clients/gbif`) : mock `httpx` — requête
   de download (corps du prédicat correct), poll (transitions de statut,
-  timeout), téléchargement + streaming du fichier (gzip+csv), erreurs HTTP
+  timeout), téléchargement + streaming du fichier (zip+csv), erreurs HTTP
   typées à chaque étape.
 - **Filtre qualité** : inchangé (déjà fait, testé, 100% coverage) — juste
   vérifier que la normalisation CSV→dict alimente `quality_filter` sans le

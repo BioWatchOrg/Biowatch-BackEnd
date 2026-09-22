@@ -15,7 +15,7 @@ import tempfile
 import time
 import zipfile
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
@@ -49,7 +49,7 @@ class GbifCredentials:
     Basic Auth uses the *username* (not the email) and password."""
 
     username: str
-    password: str
+    password: str = field(repr=False)
 
     @property
     def auth(self) -> httpx.BasicAuth:

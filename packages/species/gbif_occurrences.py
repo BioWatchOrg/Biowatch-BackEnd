@@ -101,22 +101,6 @@ def update_gbif_occurrences(aoi_label: AoiLabel, engine: Engine | None = None) -
             engine=engine,
         ) as (_, session):
             log_ctx = {"aoi": aoi_label, "year": current_year}
-            logger.info(
-                "purging staging rows outside the rolling window",
-                extra={"event": "gbif_occurrences.purge", "context": log_ctx},
-            )
-            session.execute(
-                delete(SpeciesOccurrencesRaw).where(
-                    SpeciesOccurrencesRaw.aoi_id == aoi_label,
-                    SpeciesOccurrencesRaw.event_date < date_min,
-                )
-            )
-
-            valid_zone_ids = set(
-                session.scalars(
-                    select(ZonesHex.zone_id).where(ZonesHex.aoi_id == aoi_label)
-                ).all()
-            )
             # Same reasoning as the old Search API's `geometry` param: the
             # exact polygon is too complex for GBIF, the convex hull is
             # small and always contains it. Safe here too -- occurrences
@@ -127,6 +111,13 @@ def update_gbif_occurrences(aoi_label: AoiLabel, engine: Engine | None = None) -
             creds = load_gbif_credentials()
 
             try:
+                # No DB reads/writes happen between here and wait_for_download
+                # returning -- GBIF's own processing time (tens of minutes for
+                # a large AOI) would otherwise hold this job_run's transaction
+                # open idle-in-transaction for the whole wait. The purge and
+                # zone-fetch (below) still run inside this same transaction,
+                # just after the wait instead of before it, so a later
+                # failure still rolls them back together with the upserts.
                 download_key = request_download(predicate, creator=creds.username, auth=creds.auth)
                 logger.info(
                     "GBIF download requested",
@@ -144,12 +135,34 @@ def update_gbif_occurrences(aoi_label: AoiLabel, engine: Engine | None = None) -
                     },
                 )
 
+                logger.info(
+                    "purging staging rows outside the rolling window",
+                    extra={"event": "gbif_occurrences.purge", "context": log_ctx},
+                )
+                session.execute(
+                    delete(SpeciesOccurrencesRaw).where(
+                        SpeciesOccurrencesRaw.aoi_id == aoi_label,
+                        SpeciesOccurrencesRaw.event_date < date_min,
+                    )
+                )
+
+                valid_zone_ids = set(
+                    session.scalars(
+                        select(ZonesHex.zone_id).where(ZonesHex.aoi_id == aoi_label)
+                    ).all()
+                )
+
                 rows: list[dict[str, object]] = []
                 n_total = 0
+                n_streamed = 0
+                n_rejected_quality = 0
+                n_outside_zones = 0
                 for raw_row in stream_download(download_key, auth=creds.auth):
+                    n_streamed += 1
                     record = _normalize_csv_row(raw_row)
                     quality_row = quality_filter(record, date_min, date_max)
                     if quality_row is None:
+                        n_rejected_quality += 1
                         continue
                     zone_id = point_to_h3_cell(
                         quality_row["decimal_latitude"],
@@ -157,6 +170,7 @@ def update_gbif_occurrences(aoi_label: AoiLabel, engine: Engine | None = None) -
                         aoi.default_res,
                     )
                     if zone_id not in valid_zone_ids:
+                        n_outside_zones += 1
                         continue
                     rows.append({**quality_row, "zone_id": zone_id, "aoi_id": aoi_label})
                     if len(rows) >= UPSERT_BATCH_SIZE:
@@ -171,7 +185,14 @@ def update_gbif_occurrences(aoi_label: AoiLabel, engine: Engine | None = None) -
                     "upserted GBIF occurrences",
                     extra={
                         "event": "gbif_occurrences.upserted",
-                        "context": {**log_ctx, "download_key": download_key, "n_rows": n_total},
+                        "context": {
+                            **log_ctx,
+                            "download_key": download_key,
+                            "n_streamed": n_streamed,
+                            "n_rejected_quality": n_rejected_quality,
+                            "n_outside_zones": n_outside_zones,
+                            "n_rows": n_total,
+                        },
                     },
                 )
             except GbifApiError:
