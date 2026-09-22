@@ -250,3 +250,6 @@ docker-data/
 *.out
 
 *.parquet
+
+# macOS
+.DS_Store
