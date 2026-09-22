@@ -20,11 +20,26 @@ declare -a SCRIPT_ARGS=()
 # complémentaire pour identifier la session courante ; jamais de preuve
 # à lui seul.
 #
-# Nommé par utilisateur invoquant, et non par un chemin fixe : /tmp est en
-# sticky bit, donc un fichier laissé par un autre membre serait à la fois
-# impossible à écraser et lu tel quel — l'indice porterait sur SA session.
-# ${SUDO_USER:-...} donne le même nom avant et après l'élévation.
-SSH_CONN_HINT="/tmp/.biowatch-ssh-conn-${SUDO_USER:-$(id -un)}"
+# Aucun fichier intermédiaire : sudo purge SSH_CONNECTION, mais la variable
+# reste dans l'environnement du shell de login, que root peut lire dans
+# /proc. Passer par /tmp exposait une écriture à chemin prévisible dans un
+# répertoire monde-inscriptible, avant l'élévation — et pouvait renvoyer une
+# valeur périmée. Lire l'ancêtre donne la session réellement en cours.
+ssh_connection_of_caller() {
+  local pid="$PPID" env_line
+  while [[ -n "$pid" && "$pid" -gt 1 ]]; do
+    if [[ -r "/proc/${pid}/environ" ]]; then
+      env_line="$(tr '\0' '\n' < "/proc/${pid}/environ" 2>/dev/null \
+                  | grep -m1 '^SSH_CONNECTION=' || true)"
+      if [[ -n "$env_line" ]]; then
+        printf '%s' "${env_line#SSH_CONNECTION=}"
+        return 0
+      fi
+    fi
+    pid="$(awk '{print $4}' "/proc/${pid}/stat" 2>/dev/null || true)"
+  done
+  return 1
+}
 
 # --- sortie ------------------------------------------------------------------
 
@@ -74,13 +89,8 @@ init_script() {
   return 0
 }
 
-# Se relance sous root. SSH_CONNECTION ne survivant pas à sudo (env_reset),
-# on le dépose sur disque avant l'élévation plutôt que de dépendre d'une
-# politique sudoers permissive qui ferait échouer l'appel.
 require_root() {
   if [[ $EUID -ne 0 ]]; then
-    printf '%s' "${SSH_CONNECTION:-}" > "$SSH_CONN_HINT" 2>/dev/null || true
-    chmod 600 "$SSH_CONN_HINT" 2>/dev/null || true
     log "élévation via sudo…"
     exec sudo bash "$SCRIPT_PATH" "${SCRIPT_ARGS[@]}"
   fi
@@ -289,7 +299,7 @@ EOF
   ok "connexion(s) établie(s) sur le port ${port} :"
   sed 's/^/            /' <<<"$conns"
 
-  [[ -r "$SSH_CONN_HINT" ]] && hint="$(cat "$SSH_CONN_HINT" 2>/dev/null || true)"
+  hint="$(ssh_connection_of_caller || true)"
   if [[ -n "$hint" ]]; then
     local srv_port; srv_port="$(awk '{print $4}' <<<"$hint")"
     if [[ "$srv_port" == "$port" ]]; then

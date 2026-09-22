@@ -83,11 +83,20 @@ validate_keys() {
   fi
 
   if [[ -n "$BREAKGLASS_ACCOUNT" ]]; then
-    if [[ ! -f "${LIB_DIR}/keys/${BREAKGLASS_KEY_OWNER}.pub" ]]; then
-      err "compte de secours '${BREAKGLASS_ACCOUNT}' configuré mais"
-      err "keys/${BREAKGLASS_KEY_OWNER}.pub est absent"
+    if (( ${#BREAKGLASS_KEY_OWNERS[@]} == 0 )); then
+      err "compte de secours '${BREAKGLASS_ACCOUNT}' configuré sans aucune clé"
       bad=1
+    elif (( ${#BREAKGLASS_KEY_OWNERS[@]} == 1 )); then
+      warn "une seule clé sur le compte de secours (${BREAKGLASS_KEY_OWNERS[0]}) :"
+      warn "l'accès de secours dépend de la disponibilité d'une seule personne"
     fi
+    local o
+    for o in "${BREAKGLASS_KEY_OWNERS[@]}"; do
+      if [[ ! -f "${LIB_DIR}/keys/${o}.pub" ]]; then
+        err "compte de secours : keys/${o}.pub est absent"
+        bad=1
+      fi
+    done
   fi
 
   (( bad == 0 )) || die "corrige les clés — aucun compte n'a été touché."
@@ -283,7 +292,14 @@ if [[ -n "$BREAKGLASS_ACCOUNT" ]]; then
   if id -u "$BREAKGLASS_ACCOUNT" >/dev/null 2>&1; then
     # Sans clé, ce compte deviendra inutilisable dès que le mot de passe
     # sera coupé — un filet de sécurité qui ne rattrape rien.
-    install_key "$BREAKGLASS_ACCOUNT" "${LIB_DIR}/keys/${BREAKGLASS_KEY_OWNER}.pub"
+    # Plusieurs clés autorisées : concaténées en un seul authorized_keys.
+    bg_keys="$(mktemp)"
+    for owner in "${BREAKGLASS_KEY_OWNERS[@]}"; do
+      cat "${LIB_DIR}/keys/${owner}.pub" >> "$bg_keys"
+    done
+    install_key "$BREAKGLASS_ACCOUNT" "$bg_keys"
+    rm -f "$bg_keys"
+    log "clés de secours : ${BREAKGLASS_KEY_OWNERS[*]}"
     run usermod --append --groups "$SSH_GROUP" "$BREAKGLASS_ACCOUNT"
     done_ok "${BREAKGLASS_ACCOUNT} conservé comme accès de secours"
   else

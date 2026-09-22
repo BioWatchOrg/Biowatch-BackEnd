@@ -46,7 +46,15 @@ MEMBERS_PENDING=(
 # inutilisable après durcissement, donc inutile comme filet.
 # Mettre BREAKGLASS_ACCOUNT="" pour ne pas conserver de compte de secours.
 BREAKGLASS_ACCOUNT="ubuntu"
-BREAKGLASS_KEY_OWNER="simonr"   # dont la clé publique sera installée
+
+# Clés autorisées sur le compte de secours. En lister PLUSIEURS : un accès
+# de secours utilisable par une seule personne ne sauve l'équipe que si
+# cette personne est disponible — exactement la dépendance à un expert
+# unique que proscrit le CLAUDE.md.
+BREAKGLASS_KEY_OWNERS=(
+  simonr
+  nicolasd
+)
 
 # --- Firewall ----------------------------------------------------------------
 
