@@ -39,6 +39,11 @@ def test_build_predicate_combines_geometry_and_date_range():
 
 
 def test_load_gbif_credentials_reads_env_vars(monkeypatch):
+    # Isolate from the real .env file (this worktree genuinely has
+    # GBIF_USERNAME/GBIF_PASSWORD set for Task 17's real smoke test) so this
+    # test's own monkeypatch.setenv calls are the only source of truth for
+    # os.environ, regardless of what's on disk.
+    monkeypatch.setattr("clients.gbif.client.load_dotenv", lambda *a, **k: None)
     monkeypatch.setenv("GBIF_USERNAME", "alice")
     monkeypatch.setenv("GBIF_PASSWORD", "secret")
 
@@ -50,6 +55,12 @@ def test_load_gbif_credentials_reads_env_vars(monkeypatch):
 
 
 def test_load_gbif_credentials_raises_on_missing_username(monkeypatch):
+    # Same isolation as above -- without this, load_gbif_credentials()'s own
+    # load_dotenv(override=False) call repopulates GBIF_USERNAME from the
+    # real .env file after delenv removes it from os.environ, silently
+    # defeating this test on any machine with real GBIF credentials
+    # configured (as this worktree now has, for Task 17).
+    monkeypatch.setattr("clients.gbif.client.load_dotenv", lambda *a, **k: None)
     monkeypatch.delenv("GBIF_USERNAME", raising=False)
     monkeypatch.setenv("GBIF_PASSWORD", "secret")
 
