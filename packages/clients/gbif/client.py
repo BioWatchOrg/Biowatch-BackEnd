@@ -8,11 +8,12 @@ top of it.
 """
 
 import csv
-import gzip
+import io
 import logging
 import os
 import tempfile
 import time
+import zipfile
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import date
@@ -165,18 +166,21 @@ def stream_download(
     client: httpx.Client | None = None,
 ) -> Iterator[dict]:
     """
-    Download the finished SIMPLE_CSV(.gz) file and yield one dict per row.
+    Download the finished SIMPLE_CSV file and yield one dict per row.
 
-    Streams to a temp file on disk (the file can be hundreds of MB for a
-    large AOI/window), then parses it as gzip-compressed, tab-separated CSV
-    with a header row -- the whole file is never held in memory at once.
-    The temp file is deleted once the generator is exhausted (or closed).
+    GBIF always serves the finished download as a ZIP archive (regardless of
+    the requested format) containing a single tab-separated file with a
+    header row -- confirmed against the real API (Task 17), not just the
+    Swagger docs. Streams the zip to a temp file on disk (it can be hundreds
+    of MB for a large AOI/window), then parses the one member inside -- the
+    whole file is never held in memory at once. The temp file is deleted
+    once the generator is exhausted (or closed).
     """
     owns_client = client is None
     http_client = client or httpx.Client(timeout=GBIF_TIMEOUT_SECONDS, follow_redirects=True)
     tmp_path: Path | None = None
     try:
-        with tempfile.NamedTemporaryFile(suffix=".csv.gz", delete=False) as tmp:
+        with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
             tmp_path = Path(tmp.name)
             with http_client.stream(
                 "GET", f"{GBIF_DOWNLOAD_FILE_URL}/{key}", auth=auth
@@ -190,9 +194,16 @@ def stream_download(
                 for chunk in response.iter_bytes():
                     tmp.write(chunk)
 
-        with gzip.open(tmp_path, mode="rt", encoding="utf-8", newline="") as f:
-            reader = csv.DictReader(f, delimiter="\t")
-            yield from reader
+        with zipfile.ZipFile(tmp_path) as zf:
+            names = zf.namelist()
+            if not names:
+                raise GbifApiError(f"GBIF download {key} zip archive is empty")
+            with (
+                zf.open(names[0]) as raw,
+                io.TextIOWrapper(raw, encoding="utf-8", newline="") as f,
+            ):
+                reader = csv.DictReader(f, delimiter="\t")
+                yield from reader
     finally:
         if owns_client:
             http_client.close()

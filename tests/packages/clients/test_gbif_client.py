@@ -1,9 +1,9 @@
 """Tests for clients.gbif.client — GBIF Occurrence Download API."""
 
 import csv
-import gzip
 import io
 import tempfile
+import zipfile
 from datetime import date
 
 import httpx
@@ -148,17 +148,27 @@ def test_wait_for_download_raises_on_timeout(monkeypatch):
         wait_for_download("key123", auth=httpx.BasicAuth("a", "b"))
 
 
-def _gzipped_tsv(rows: list[dict[str, str]]) -> bytes:
+def _zipped_tsv(rows: list[dict[str, str]], *, member_name: str = "key123.csv") -> bytes:
+    """
+    Build a ZIP archive matching what GBIF's real Download API actually
+    returns for a finished download (confirmed against the real API in
+    Task 17): a single tab-separated member with a header row -- NOT a bare
+    gzip stream, which is what this module originally (and wrongly) assumed.
+    """
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=list(rows[0]), delimiter="\t")
     writer.writeheader()
     writer.writerows(rows)
-    return gzip.compress(buf.getvalue().encode("utf-8"))
+
+    zip_buf = io.BytesIO()
+    with zipfile.ZipFile(zip_buf, mode="w") as zf:
+        zf.writestr(member_name, buf.getvalue())
+    return zip_buf.getvalue()
 
 
 def test_stream_download_yields_parsed_rows(monkeypatch, tmp_path):
     monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
-    body = _gzipped_tsv(
+    body = _zipped_tsv(
         [
             {"gbifID": "1001", "scientificName": "Vulpes vulpes", "taxonKey": "5219243",
              "decimalLatitude": "48.8566", "decimalLongitude": "2.3522", "eventDate": "2020-06-15"},
@@ -189,6 +199,52 @@ def test_stream_download_yields_parsed_rows(monkeypatch, tmp_path):
 
     assert [r["gbifID"] for r in rows] == ["1001", "1002"]
     assert rows[0]["scientificName"] == "Vulpes vulpes"
+
+
+def test_stream_download_parses_zip_archive_not_gzip(monkeypatch, tmp_path):
+    """
+    Regression test for Task 17: the real GBIF Download API serves the
+    finished download as a ZIP archive (e.g. member name
+    "0001109-260921141020460.csv"), not a bare gzip stream -- confirmed
+    against the real API, where the original gzip-based implementation
+    failed immediately with `gzip.BadGzipFile: Not a gzipped file (b'PK')`
+    (the zip magic bytes). This locks in the corrected zip-based parsing so
+    it can't silently regress back to the gzip assumption.
+    """
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+    download_key = "0001109-260921141020460"
+    body = _zipped_tsv(
+        [
+            {"gbifID": "2001", "scientificName": "Anthus campestris", "taxonKey": "2490274",
+             "decimalLatitude": "43.48563", "decimalLongitude": "5.13173", "eventDate": "2020-06-01"},
+        ],
+        member_name=f"{download_key}.csv",
+    )
+    assert body[:2] == b"PK"  # sanity: this is a real zip, not a gzip stream
+
+    class _FakeStreamResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def raise_for_status(self):
+            pass
+
+        def iter_bytes(self):
+            yield body
+
+    def fake_stream(self, method, url, auth=None, **kwargs):
+        return _FakeStreamResponse()
+
+    monkeypatch.setattr(httpx.Client, "stream", fake_stream)
+
+    rows = list(stream_download(download_key, auth=httpx.BasicAuth("a", "b")))
+
+    assert len(rows) == 1
+    assert rows[0]["gbifID"] == "2001"
+    assert rows[0]["scientificName"] == "Anthus campestris"
 
 
 def test_stream_download_raises_on_http_error(monkeypatch, tmp_path):
