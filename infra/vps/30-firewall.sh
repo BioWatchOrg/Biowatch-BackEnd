@@ -46,12 +46,18 @@ else
   dry "ufw serait installé puis interrogé ici"
 fi
 
-# sshd écoute aussi en IPv6 ([::]:port). Si UFW filtre l'IPv4 seule, une
-# règle IPv6 manquante bloque les clients qui résolvent en AAAA.
+# Sans IPV6=yes, UFW ne génère AUCUNE règle ip6tables : tout le trafic IPv6
+# suit la politique par défaut du noyau, généralement ACCEPT. Le firewall
+# annoncerait « deny incoming » alors que chaque port resterait atteignable
+# en IPv6 — le critère « tous les autres ports bloqués » (#28) serait faux
+# sans que rien ne le signale. Une erreur, pas un avertissement.
 if grep -qE '^\s*IPV6\s*=\s*yes' /etc/default/ufw 2>/dev/null; then
   ok "UFW gère IPv6"
 else
-  warn "IPV6 n'est pas à yes dans /etc/default/ufw — les clients IPv6 seront filtrés"
+  err "IPV6 n'est pas à yes dans /etc/default/ufw."
+  err "UFW ne filtrerait alors que l'IPv4, en laissant tous les ports"
+  err "ouverts en IPv6. Corrige /etc/default/ufw puis relance."
+  die "filtrage IPv6 absent — rien n'a été activé"
 fi
 
 # ── Filet ────────────────────────────────────────────────────────────────
@@ -103,7 +109,24 @@ enable_ufw() {
   # --force évite l'invite « may disrupt existing ssh connections », qui
   # bloquerait indéfiniment un script non interactif.
   run ufw --force enable
-  assert_listening "$SSH_PORT"
+
+  # Surtout PAS assert_listening ici : elle sonde la boucle locale, que
+  # /etc/ufw/before.rules accepte inconditionnellement (-i lo -j ACCEPT).
+  # Elle réussirait donc même si la règle SSH externe était absente, et
+  # afficherait un OK qui ne prouve rien du firewall.
+  #
+  # Ce qu'on peut vérifier localement, c'est la présence des règles dans
+  # les deux familles. La joignabilité réelle ne se prouve que depuis
+  # l'extérieur — d'où le nc affiché en fin de script.
+  if (( DRY_RUN )); then
+    dry "vérifier la présence des règles ${SSH_PORT}/tcp en v4 et v6"
+    return 0
+  fi
+  local rules
+  rules="$(ufw status | grep -c "^${SSH_PORT}/tcp")"
+  (( rules >= 2 )) \
+    || die "règles SSH incomplètes (${rules} trouvée(s), 2 attendues : v4 + v6)"
+  ok "règles ${SSH_PORT}/tcp présentes en v4 et v6 — joignabilité à confirmer depuis l'extérieur"
 }
 
 # ── Déroulé ──────────────────────────────────────────────────────────────
