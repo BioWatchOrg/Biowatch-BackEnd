@@ -97,8 +97,17 @@ Ne rien faire pendant 10 minutes. Le filet restaure la configuration
 précédente et redémarre `sshd` tout seul. Reconnecte-toi ensuite sur
 l'ancien port, relis `/var/log/biowatch-vps-setup.log`, corrige, recommence.
 
-Le filet n'est pas armé pendant `10-users-and-keys.sh` : ce script ne retire
-aucun accès, il ne peut pas verrouiller.
+### Limite du filet
+
+La restauration ne défait que ce qui est passé par les sauvegardes de fichiers.
+Elle **ne supprime pas les comptes déjà créés**. Si `10-users-and-keys.sh`
+échoue après avoir créé des comptes — par exemple à l'étape sudoers — le
+message d'erreur annonce un retour en arrière, mais les comptes créés
+subsistent avec leur clé et un accès SSH fonctionnel.
+
+Ce n'est pas une faille : ces comptes sont ceux qu'on voulait créer, et rejouer
+le script termine le travail. Mais ne lis pas « état restauré » comme « rien
+n'a changé » — vérifie avec `./00-diagnose.sh`.
 
 Les sauvegardes sont dans `/root/biowatch-vps-backups/<horodatage>/`, en
 arborescence miroir. Restauration manuelle :
