@@ -154,7 +154,10 @@ Depuis ton poste, HORS du VPS. Le premier doit répondre, les autres non :
     nc -zv -w5 <IP_DU_VPS> ${SSH_PORT_LEGACY}         # attendu : échec / timeout
     nc -zv -w5 <IP_DU_VPS> 5432             # attendu : échec / timeout
 
-C'était le dernier script. #22 et #28 sont couvertes.
+#22 et #28 sont couvertes. Reste les comptes de service (#25) :
+
+    ./40-service-users.sh --dry-run
+    ./40-service-users.sh
 
 fail2ban a été écarté délibérément et reporté sur #26 — voir la section
 dédiée du README.

@@ -1,6 +1,7 @@
-# Configuration VPS — durcissement SSH et firewall
+# Configuration VPS — durcissement SSH, firewall et comptes de service
 
-Scripts couvrant les issues **#22** (accès SSH sécurisés) et **#28** (firewall UFW).
+Scripts couvrant les issues **#22** (accès SSH sécurisés), **#28** (firewall UFW)
+et **#25** (comptes de service et isolation).
 
 Cible : Ubuntu 26.04 LTS, `sshd` démarré par **activation socket**.
 
@@ -22,6 +23,7 @@ cette preuve, et arment une restauration automatique en cas d'oubli.
 | `10-users-and-keys.sh` | #22 | Comptes, clés, sudo, ouvre 50022 **en plus** du 22 | aucun, purement additif |
 | `20-harden-ssh.sh` | #22 | Coupe mot de passe, root, port 22 | ⚠️ porte de non-retour |
 | `30-firewall.sh` | #28 | UFW deny incoming | ⚠️ |
+| `40-service-users.sh` | #25 | Comptes `biowatch-api`, `biowatch-jobs`, `deploy` et leurs répertoires | aucun, ne touche ni SSH ni réseau |
 
 Chaque script accepte `--dry-run`. **Toujours l'utiliser en première passe.**
 
@@ -36,8 +38,11 @@ voir [`keys/README.md`](keys/README.md). Sans au moins une clé déposée,
 
 ## Déroulé
 
+Sur le VPS, les scripts sont copiés dans `/opt/biowatch-infra/vps/`
+(`root:biowatch-ssh`, 750). `/opt/biowatch` est réservé au code déployé (#25).
+
 ```bash
-# sur le VPS, dans infra/vps/
+# sur le VPS, dans /opt/biowatch-infra/vps/
 ./00-diagnose.sh
 
 ./10-users-and-keys.sh --dry-run
@@ -147,12 +152,72 @@ les comptes en place ne sont pas modifiés, aucun accès n'est retiré.
 **#22 ne peut pas être fermée** tant que `MEMBERS_PENDING` n'est pas vide : le
 critère « connexion SSH testée pour chaque utilisateur » ne serait pas atteint.
 
+## Comptes de service (#25)
+
+```bash
+./40-service-users.sh --dry-run
+./40-service-users.sh
+```
+
+| Compte | Rôle | Écrit dans | Lit |
+|---|---|---|---|
+| `deploy` | Dépose le code | `/opt/biowatch`, `/var/lib/biowatch/deploy` | — |
+| `biowatch-api` | Exécute l'API | `/var/lib/biowatch/api`, `/var/log/biowatch/api` | `/opt/biowatch` |
+| `biowatch-jobs` | Exécute les jobs | `/var/lib/biowatch/jobs`, `/var/log/biowatch/jobs` | `/opt/biowatch` |
+
+Aucun de ces comptes n'a de shell (`nologin`), de mot de passe, de clé SSH, de
+sudo, ni n'appartient à `biowatch-ssh`, `sudo`, `adm`, `docker` ou `lxd`.
+**Ne jamais les ajouter au groupe `docker`** : il équivaut à root.
+
+`/opt/biowatch` est en `2750 deploy:biowatch` : le bit setgid fait hériter du
+groupe `biowatch` tout ce que `deploy` y crée, lisible par l'API et les jobs,
+jamais inscriptible. Un service compromis ne peut pas réécrire le code.
+
+Déployer se fait depuis une session membre : `sudo -u deploy <commande>`.
+
+Le script ne se contente pas de créer : il **prouve** l'isolation en tentant
+réellement chaque accès sous chaque identité (lister, créer un fichier), et
+échoue si un seul résultat diffère de l'attendu. Pas de `test -r` : sur
+Ubuntu 26.04, rust-coreutils l'évalue sans les groupes secondaires et le
+verdict serait faux.
+
+### Secrets
+
+`/etc/biowatch/` est en `700 root`. Les secrets y sont lus par systemd
+(`EnvironmentFile=`), qui s'exécute en root **avant** de changer d'identité :
+chaque service reçoit ses variables sans pouvoir lire son fichier, ni celui
+d'un autre.
+
+### Modèle d'unité systemd
+
+Le critère « services exécutés avec le bon user » se ferme quand les unités de
+l'API et des jobs existent et déclarent leur compte :
+
+```ini
+[Service]
+User=biowatch-api
+Group=biowatch-api
+EnvironmentFile=/etc/biowatch/api.env
+WorkingDirectory=/opt/biowatch/app
+# Le venv est construit par deploy : pas de « uv run », qui tenterait
+# d'écrire dans /opt/biowatch.
+ExecStart=/opt/biowatch/app/.venv/bin/python -m ...
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/biowatch/api /var/log/biowatch/api
+```
+
+Contrôle sur la machine : `systemctl show -p User <unité>` et
+`ps -o user,cmd -C python`.
+
 ## Portée
 
-Ces scripts ne traitent **que** #22 et #28. Les comptes de service de #25
-(`biowatch-api`, `biowatch-jobs`, `deploy`) ne sont pas créés ici — mais la
-directive `AllowGroups biowatch-ssh` garantit d'avance qu'ils n'auront aucun
-accès SSH, ce qui satisfait par construction l'un des critères de #25.
+Ces scripts traitent #22, #28 et #25. `AllowGroups biowatch-ssh` (posé par
+`20-harden-ssh.sh`) interdit d'avance toute connexion SSH aux comptes de
+service ; `40-service-users.sh` le vérifie et prévient s'il est absent.
 
 Les ports 80 et 443 sont ouverts par anticipation pour #26. Sans processus à
 l'écoute derrière, un port ouvert n'offre aucune surface d'attaque.
