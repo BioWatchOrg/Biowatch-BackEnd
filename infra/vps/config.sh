@@ -16,7 +16,7 @@ SSH_PORT_LEGACY=22
 
 # Seuls les membres de ce groupe peuvent ouvrir une session SSH
 # (directive AllowGroups). Garantit par construction que les comptes de
-# service créés par #25 (biowatch-api, biowatch-jobs) n'auront jamais
+# service de #25 (biowatch-api, biowatch-jobs, deploy) n'auront jamais
 # d'accès SSH, sans qu'on ait à y penser.
 SSH_GROUP="biowatch-ssh"
 
@@ -55,6 +55,32 @@ BREAKGLASS_KEY_OWNERS=(
   simonr
   nicolasd
 )
+
+# --- Comptes de service (#25) ------------------------------------------------
+
+# Comptes qui EXÉCUTENT le code. Lecture seule sur le code déployé, écriture
+# uniquement dans leur propre répertoire d'état et de logs.
+SERVICE_RUNTIME_ACCOUNTS=(
+  biowatch-api
+  biowatch-jobs
+)
+
+# Seul compte autorisé à écrire le code déployé. N'exécute aucun service et
+# n'a pas sudo : un membre déploie via « sudo -u deploy ».
+DEPLOY_ACCOUNT="deploy"
+
+# Groupe des comptes d'exécution : c'est lui qui donne la lecture sur APP_DIR.
+SERVICE_GROUP="biowatch"
+
+APP_DIR="/opt/biowatch"                 # code déployé   deploy:biowatch 2750
+SERVICE_STATE_ROOT="/var/lib/biowatch"  # home + état    <compte> 750
+SERVICE_LOG_ROOT="/var/log/biowatch"    # logs           <compte> 750
+SERVICE_CONFIG_DIR="/etc/biowatch"      # secrets        root 700, lus par systemd
+
+# Groupes qui donnent root (sudo, docker, lxd), la lecture des logs système
+# (adm) ou un accès SSH. Aucun compte de service ne doit y figurer :
+# 40-service-users.sh refuse de terminer s'il en trouve un.
+SERVICE_FORBIDDEN_GROUPS=(sudo adm docker lxd "$SSH_GROUP")
 
 # --- Firewall ----------------------------------------------------------------
 
