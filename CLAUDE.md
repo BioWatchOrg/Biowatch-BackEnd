@@ -99,6 +99,13 @@ DB, logs...), consulter `docs/shared-functions.md` — catalogue des fonctions p
 existe déjà. Ce fichier doit être mis à jour à chaque MR qui ajoute une fonction publique dans
 un de ces packages.
 
+### Décisions d'architecture
+
+`docs/architecture-decisions.md` trace les choix d'architecture non triviaux avec leur
+raisonnement (ex. Firebase managé vs auto-hébergé, accès Firestore direct depuis le frontend).
+Consulter ce fichier avant de rouvrir un débat déjà tranché — une décision n'est à reconsidérer
+que si son contexte a changé (voir la section "Remise en cause" de chaque entrée).
+
 ### Frontend (rappel)
 
 Séparer composants UI, pages, routes, services API, store Zustand, modèles TypeScript, hooks, composants cartographiques, utilitaires. Pas de mélange affichage / appels API / logique métier.
