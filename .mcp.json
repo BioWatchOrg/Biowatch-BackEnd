@@ -3,6 +3,10 @@
     "biowatch-notion": {
       "command": "uv",
       "args": ["run", "python", ".claude/notion.py"]
+    },
+    "notion": {
+      "type": "http",
+      "url": "https://mcp.notion.com/mcp"
     }
   }
 }
