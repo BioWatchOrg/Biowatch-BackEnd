@@ -88,6 +88,20 @@ for u in "${MEMBERS_PENDING[@]}"; do
   printf '  %-14s en attente de clé (non créé)\n' "$u"
 done
 
+step "Comptes de service (#25)"
+for u in "${SERVICE_RUNTIME_ACCOUNTS[@]}" "$DEPLOY_ACCOUNT"; do
+  if id -u "$u" >/dev/null 2>&1; then
+    printf '  %-14s uid=%-5s shell=%-18s mdp=%s  groupes=%s\n' "$u" \
+      "$(id -u "$u")" "$(getent passwd "$u" | cut -d: -f7)" \
+      "$(passwd -S "$u" | awk '{print $2}')" "$(id -nG "$u")"
+  else
+    printf '  %-14s %sabsent%s\n' "$u" "$C_YEL" "$C_RST"
+  fi
+done
+for d in "$APP_DIR" "$SERVICE_STATE_ROOT"/* "$SERVICE_LOG_ROOT"/* "$SERVICE_CONFIG_DIR"; do
+  [[ -e "$d" ]] && printf '  %s\n' "$(stat -c '%A %U:%G %n' "$d")"
+done
+
 step "Groupe ${SSH_GROUP}"
 getent group "$SSH_GROUP" | sed 's/^/  /' || printf '  (inexistant)\n'
 

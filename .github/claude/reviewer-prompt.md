@@ -37,6 +37,11 @@ Focus on what actually matters in this diff, not a generic pass:
 - **Conventions** — respects the module separation and patterns from `CLAUDE.md` relevant to the
   touched files (e.g. no scoring logic in `apps/api`, no direct DB access outside
   `packages/clients`, no business logic in `apps/api` beyond exposing precomputed results).
+- **Module dependency direction** — per `CLAUDE.md` → "Règle de dépendance entre modules", check
+  new imports against the fixed graph (`core` ← `geo`/`clients` ← `scoring` ← `ml`; `apps/api` →
+  `core`/`geo`/`clients` only; `apps/jobs` → anything). Flag any import that goes against this
+  direction (e.g. `packages/clients` importing `packages/scoring`) or any `packages/*` module
+  importing from `apps/*`.
 - **Reuse of common foundations (job/pipeline PRs)** — a job must use `packages/core` for
   temporal bucketing and idempotency key generation, and `packages/geo` for H3/spatial logic,
   instead of reimplementing this logic locally. Flag any such reimplementation.
