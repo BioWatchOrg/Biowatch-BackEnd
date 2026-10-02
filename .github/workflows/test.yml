@@ -5,22 +5,8 @@ on:
     branches-ignore:
       - 'main'
     types: [opened, synchronize, reopened]
-    paths:
-      - "apps/**"
-      - "packages/**"
-      - "tests/**"
-      - "pyproject.toml"
-      - "uv.lock"
-      - ".github/workflows/test.yml"
   push:
     branches: [dev]
-    paths:
-      - "apps/**"
-      - "packages/**"
-      - "tests/**"
-      - "pyproject.toml"
-      - "uv.lock"
-      - ".github/workflows/test.yml"
 
 permissions:
   contents: read
@@ -34,13 +20,33 @@ jobs:
         with:
           fetch-depth: 0
 
+      # The job must always run and report a status - "test" is a required check,
+      # and GitHub leaves required checks stuck pending forever if the triggering
+      # workflow never runs (e.g. a path filter on `on:` skips it entirely). So the
+      # trigger has no path filter; relevance is decided here instead, and every
+      # step below is skipped (not the job) when it doesn't apply.
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            relevant:
+              - "apps/**"
+              - "packages/**"
+              - "tests/**"
+              - "pyproject.toml"
+              - "uv.lock"
+              - ".github/workflows/test.yml"
+
       - uses: astral-sh/setup-uv@v3
+        if: steps.filter.outputs.relevant == 'true'
         with:
           enable-cache: true
 
       - run: uv sync --frozen
+        if: steps.filter.outputs.relevant == 'true'
 
       - name: Run tests with coverage
+        if: steps.filter.outputs.relevant == 'true'
         run: |
           uv run pytest --cov=apps --cov=packages --cov-report=xml --cov-report=term
           uv run coverage report --format=total --precision=4 > coverage-total.txt
@@ -48,7 +54,7 @@ jobs:
       # Publishes today's coverage as tomorrow's baseline. Only on dev — branch
       # pipelines are the only point that "knows" the coverage of dev HEAD.
       - name: Publish coverage baseline (dev only)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+        if: steps.filter.outputs.relevant == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/dev'
         uses: actions/upload-artifact@v4
         with:
           name: coverage-baseline
@@ -59,7 +65,7 @@ jobs:
       # any bump counts (see CLAUDE.md → Exigences de qualité). PRs that don't touch
       # apps/ or packages/ (config/docs/test-only) are exempt.
       - name: Coverage must increase vs dev baseline
-        if: github.event_name == 'pull_request'
+        if: steps.filter.outputs.relevant == 'true' && github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
