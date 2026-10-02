@@ -26,6 +26,10 @@ logger = logging.getLogger(__name__)
 
 TOKEN_URL = "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token"
 
+# Refresh this many seconds *before* the token actually expires, instead of
+# waiting for it to expire and getting a 401. 120s is a safety margin: it
+# covers the time between "we checked the token is still valid" and "the HTTP
+# request using it actually reaches the server".
 _REFRESH_MARGIN_SECONDS = 120.0
 
 _token_lock = threading.Lock()
@@ -101,7 +105,15 @@ def get_access_token(client: httpx.Client) -> str:
     Thread-safe: callers running zone extractions concurrently (job-level
     `max_workers`) share one cached token instead of each fetching their own.
     """
+    # `_cached_token` is a module-level variable (not an attribute on some
+    # object) because every caller in the process should share the exact same
+    # cached token — there's nothing to instantiate here, just functions.
+    # `global` is required to *reassign* it (reading it wouldn't need it).
     global _cached_token
+    # The lock matters once the job calls this from several worker threads at
+    # once (`max_workers`): without it, two threads could both see an expired
+    # token at the same time and both fire a refresh request, or one thread
+    # could read `_cached_token` while another is only half-done writing it.
     with _token_lock:
         token = _cached_token
         stale = token is None or time.monotonic() >= (token.expires_at - _REFRESH_MARGIN_SECONDS)

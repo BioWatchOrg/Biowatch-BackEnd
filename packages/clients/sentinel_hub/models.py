@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ZoneStatistics:
     """
     Aggregated Sentinel-2 L2A indices and quality metrics for one zone over one
@@ -22,7 +22,9 @@ class ZoneStatistics:
     cloud_score: float
 
 
-@dataclass(frozen=True, slots=True)
+# Leading "_": internal to this package, not re-exported from __init__.py —
+# callers outside sentinel_hub never see this type, only the `str` token.
+@dataclass(frozen=True)
 class _CachedToken:
     """Internal: an access token paired with its expiry, on the monotonic clock."""
 
