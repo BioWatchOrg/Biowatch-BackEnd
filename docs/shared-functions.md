@@ -71,6 +71,26 @@ packages (voir CLAUDE.md, "Documentation").
   `SatelliteFeaturesByZone`, `OsmFeaturesByZone`, `ProtectedAreasByZone`,
   `SpeciesFeaturesByZone`, `StressScoreByZone`, `JobRun`, `JobRunZoneError`.
 
+### `clients.sentinel_hub`
+- `fetch_zone_statistics(geometry, time_range, max_cloud_coverage=80, client=None) -> ZoneStatistics`
+  — appelle la Statistical API de Sentinel Hub (Copernicus Data Space Ecosystem) pour une
+  géométrie (GeoJSON Polygon/MultiPolygon EPSG:4326, ex. `geo.h3.cell_to_geojson`) et une
+  période (`(start, end)` ISO 8601, dérivée par l'appelant d'un `bucket_id` mensuel). Une
+  seule requête HTTP calcule NDVI, NDWI, NDBI, SWIR et un masque qualité (nuages via `SCL` +
+  pixels valides) — ne jamais faire un appel par indice. Passer un `httpx.Client` partagé
+  pour enchaîner plusieurs zones (réutilise la connexion et le token OAuth caché).
+- `ZoneStatistics` (dataclass : `ndvi_mean`, `ndwi_mean`, `ndbi_mean`, `swir_mean` — `float |
+  None` si aucun pixel valide sur la période —, `obs_count`, `valid_pixel_ratio`,
+  `cloud_score`).
+- `SentinelHubAuthError` (échec OAuth2 auprès de l'identity server CDSE),
+  `SentinelHubRequestError` (échec de la requête Statistical API, ou réponse inattendue).
+- Auth : OAuth2 client credentials contre
+  `identity.dataspace.copernicus.eu` (`SENTINEL_HUB_CLIENT_ID`/`SENTINEL_HUB_CLIENT_SECRET`
+  en env). Token caché en mémoire (thread-safe) et rafraîchi avec une marge de sécurité avant
+  expiration — jamais de durée de vie codée en dur, CDSE ne la documente pas comme fixe.
+- Retry avec backoff exponentiel **uniquement sur HTTP 429** (respecte `Retry-After`) ; les
+  autres `4xx` (evalscript invalide, auth refusée, quota) remontent immédiatement.
+
 ### `clients.logs`
 - `setup_logging(service="biowatch", level=None) -> None` — configure le logger racine en
   JSON structuré (un seul appel, à l'entrypoint du process — jamais dans un `__init__.py`).
