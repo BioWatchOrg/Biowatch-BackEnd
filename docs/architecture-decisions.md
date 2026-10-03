@@ -104,3 +104,72 @@ nécessaire (cf. `CLAUDE.md`, section Architecture : "Auth : déléguée").
 
 À réévaluer si le projet dépasse le stade POC/MVP pour viser une mise en production
 commerciale avec des exigences de conformité RGPD strictes — pas avant.
+
+---
+
+## ADR-003 — Extraction Sentinel-2 : Statistical API synchrone (par zone) plutôt que Batch
+
+**Statut** : actif
+
+**Contexte**
+
+Le job `extract_sentinel_2` (#36) a besoin, pour chaque cellule H3 d'une AOI et chaque bucket
+mensuel, des indices agrégés (NDVI, NDWI, NDBI, SWIR) et de métriques qualité (nuages, pixels
+valides). Copernicus Data Space Ecosystem propose deux façons d'obtenir ces statistiques sans
+télécharger d'imagerie brute :
+
+- la **Statistical API** synchrone : une requête HTTP = une géométrie = une réponse JSON
+  immédiate avec les stats agrégées ;
+- la **Batch Statistical API** : on soumet plusieurs géométries en un seul envoi, le calcul est
+  fait de façon asynchrone côté Copernicus, le résultat est déposé dans du stockage objet
+  (S3-compatible) à récupérer ensuite.
+
+Pour une AOI comme `idf` en résolution H3 8 (`packages/core/aoi/aoi_registry.json`), interroger
+cellule par cellule représente environ 16 000 requêtes synchrones par run mensuel (Île-de-France
+≈ 12 000 km², une cellule H3 res-8 ≈ 0,74 km²).
+
+**Décision**
+
+On utilise la Statistical API synchrone, une requête HTTP par cellule H3 par bucket
+(`packages/clients/sentinel_hub/statistics.py`), malgré le volume de requêtes que ça représente.
+On écarte explicitement deux alternatives : récupérer l'imagerie brute de toute l'AOI en une
+fois et calculer les statistiques zonales nous-mêmes (Process API), et la Batch Statistical API.
+
+**Pourquoi**
+
+- La Batch Statistical API est en **beta** chez Copernicus — pas de garantie de stabilité du
+  contrat, pas une base fiable pour un job de production.
+- Elle livre son résultat de façon **asynchrone vers du stockage objet (S3)**, ce qui
+  réintroduit une dépendance S3 que le projet a explicitement choisi de ne pas ajouter sans
+  besoin documenté (`CLAUDE.md` : stockage raster local VPS par défaut, migration S3 uniquement
+  sur besoin documenté — aucun n'existe ici).
+- Elle ajoute de la complexité opérationnelle (soumettre un batch, attendre/poller la fin du
+  calcul, télécharger et parser un fichier de résultats) là où une requête synchrone par zone
+  s'intègre naturellement dans le mécanisme d'idempotence et de reprise par zone déjà prévu
+  (`job_run` + `job_run_zone_errors`).
+- L'alternative "tout télécharger et trier nous-mêmes" (Process API + calcul raster maison)
+  réintroduirait une stack de traitement raster lourde (`rasterio`/GDAL/`rasterstats`) que le
+  choix initial de la Statistical API visait précisément à éviter (pipeline direct API →
+  PostGIS, sans parquet ni raster intermédiaire), et transférerait beaucoup plus d'octets sur le
+  réseau (pixels bruts vs. petit JSON de stats agrégées par requête).
+- Le volume de requêtes (~16 000/run pour `idf` en résolution 8) est réel mais acceptable parce
+  que c'est un **job batch mensuel** exécuté via systemd timer, sans contrainte de latence
+  utilisateur — l'idempotence par zone rend une interruption ou une relance sans risque.
+
+**Limites assumées**
+
+- Durée d'exécution de l'ordre de 1 à 2h par run mensuel pour une AOI comme `idf` avec
+  `max_workers=5` — acceptable pour un job de fond, pas pour un usage temps réel.
+- Cette approche ne scale pas indéfiniment : ajouter beaucoup d'AOI supplémentaires, monter en
+  résolution H3 (9, 10...), ou passer à une cadence plus fréquente que mensuelle
+  multiplierait le nombre de requêtes et pourrait devenir un vrai goulot d'étranglement.
+- Le job reste dépendant du rate-limit synchrone de Sentinel Hub, géré par retry + backoff sur
+  429 (`packages/clients/sentinel_hub/statistics.py`), pas par une stratégie de récupération des
+  données fondamentalement différente.
+
+**Remise en cause**
+
+À réévaluer si le volume de requêtes devient un vrai problème opérationnel (ajout d'AOI,
+résolution H3 plus fine, cadence plus fréquente que mensuelle) — dans ce cas, réévaluer la Batch
+Statistical API une fois sortie de beta (le stockage S3 deviendrait alors un besoin documenté et
+justifié), plutôt que de construire un pipeline raster maison.
