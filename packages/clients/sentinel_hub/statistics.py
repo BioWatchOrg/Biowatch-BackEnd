@@ -4,6 +4,9 @@ Sentinel Hub Statistical API client (Copernicus Data Space Ecosystem).
 One request per zone per time range computes NDVI, NDWI, NDBI, SWIR and a
 cloud/valid-pixel mask in a single evalscript — never one request per index,
 to stay well inside both the rate limit and the free processing-unit quota.
+
+Detailed walkthrough of the evalscript and an example API response:
+https://app.notion.com/p/Extraction-Sentinel-2-3ee50bea018d80919b5ac91d3031f345
 """
 
 import logging
