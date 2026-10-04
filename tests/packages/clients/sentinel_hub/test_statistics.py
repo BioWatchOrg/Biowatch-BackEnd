@@ -19,12 +19,15 @@ def _full_statistics_response(**overrides: dict) -> dict:
             stats["mean"] = mean
         return {"bands": {"B0": {"stats": stats}}}
 
+    # No "dataMask" entry: the API consumes an output literally named
+    # "dataMask" as the mask applied to every other output and never echoes
+    # it back as a queryable output itself (confirmed against a real
+    # response — see statistics._parse_statistics).
     outputs = {
         "ndvi": band(0.42),
         "ndwi": band(-0.31),
         "ndbi": band(0.05),
         "swir": band(1820.0),
-        "dataMask": band(0.9),
     }
     outputs.update(overrides)
     return {"data": [{"interval": {}, "outputs": outputs}]}
@@ -128,13 +131,30 @@ def test_creates_and_closes_own_client_when_not_provided(credentials, monkeypatc
 
 
 def test_fully_masked_zone_has_null_means(credentials):
+    # Every pixel masked out: the anchor ("ndvi") has samples but none valid
+    # (no "mean" key — nothing to average), so valid_pixel_ratio is derived
+    # from its own sampleCount/noDataCount being equal.
     response = _full_statistics_response(
-        ndvi={"bands": {"B0": {"stats": {"sampleCount": 0, "noDataCount": 1000}}}},
-        dataMask={"bands": {"B0": {"stats": {"sampleCount": 1000, "noDataCount": 1000, "mean": 0.0}}}},
+        ndvi={"bands": {"B0": {"stats": {"sampleCount": 1000, "noDataCount": 1000}}}},
     )
     client = _client(lambda request: httpx.Response(200, json=response))
 
     result = statistics.fetch_zone_statistics(GEOMETRY, TIME_RANGE, client=client)
     assert result.ndvi_mean is None
+    assert result.obs_count == 1000
     assert result.valid_pixel_ratio == 0.0
     assert result.cloud_score == 1.0
+
+
+def test_valid_pixel_ratio_derived_from_anchor_sample_and_no_data_count(credentials):
+    """valid_pixel_ratio is 1 - noDataCount/sampleCount read off the "ndvi"
+    output's own stats, not a separate "dataMask" output (never returned)."""
+    response = _full_statistics_response(
+        ndvi={"bands": {"B0": {"stats": {"mean": 0.42, "sampleCount": 1000, "noDataCount": 250}}}},
+    )
+    client = _client(lambda request: httpx.Response(200, json=response))
+
+    result = statistics.fetch_zone_statistics(GEOMETRY, TIME_RANGE, client=client)
+    assert result.obs_count == 1000
+    assert result.valid_pixel_ratio == pytest.approx(0.75)
+    assert result.cloud_score == pytest.approx(0.25)

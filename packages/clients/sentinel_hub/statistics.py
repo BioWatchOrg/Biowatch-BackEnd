@@ -221,7 +221,8 @@ def _band_stats(outputs: dict[str, Any], output_id: str) -> dict[str, Any]:
         return dict(outputs[output_id]["bands"]["B0"]["stats"])
     except (KeyError, TypeError) as e:
         raise SentinelHubRequestError(
-            f"Réponse Statistical API inattendue : sortie '{output_id}' absente ou mal formée."
+            f"Réponse Statistical API inattendue : sortie '{output_id}' absente ou mal formée. "
+            f"Contenu brut reçu pour cette sortie : {outputs.get(output_id)!r}"
         ) from e
 
 
@@ -241,9 +242,17 @@ def _parse_statistics(payload: dict[str, Any]) -> ZoneStatistics:
         )
     outputs = intervals[0]["outputs"]
 
-    data_mask_stats = _band_stats(outputs, "dataMask")
-    obs_count = int(data_mask_stats.get("sampleCount", 0))
-    valid_pixel_ratio = float(data_mask_stats.get("mean", 0.0))
+    # The evalscript output literally named "dataMask" is consumed by the API
+    # as the validity mask applied to every OTHER output's statistics — it is
+    # never echoed back as a queryable output itself (confirmed against a
+    # real response: `outputs.get("dataMask")` is None). sampleCount/
+    # noDataCount are identical across ndvi/ndwi/ndbi/swir (the same mask is
+    # applied to all of them), so any one of them gives us the valid-pixel
+    # accounting; "ndvi" is used as the anchor.
+    anchor_stats = _band_stats(outputs, "ndvi")
+    obs_count = int(anchor_stats.get("sampleCount", 0))
+    no_data_count = int(anchor_stats.get("noDataCount", 0))
+    valid_pixel_ratio = 1.0 - (no_data_count / obs_count) if obs_count else 0.0
 
     return ZoneStatistics(
         ndvi_mean=_optional_mean(outputs, "ndvi"),
