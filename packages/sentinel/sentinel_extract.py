@@ -123,9 +123,17 @@ def extract_sentinel_data_by_aoi(
                 )
 
                 start_date, end_date = get_bucket_range(bucket_id)
+                # Sentinel Hub's aggregationInterval="P1M" needs a full
+                # calendar month to fit inside [from, to] to produce one
+                # interval. `end_date` is the bucket's last INCLUDED day
+                # (get_bucket_range), so stopping at its 23:59:59 is exactly
+                # one second short of a full month — the API then returns
+                # zero intervals for every single request. Use the exclusive
+                # upper bound (start of the day after end_date) instead.
+                next_day = end_date + datetime.timedelta(days=1)
                 time_range = (
                     f"{start_date.isoformat()}T00:00:00Z",
-                    f"{end_date.isoformat()}T23:59:59Z",
+                    f"{next_day.isoformat()}T00:00:00Z",
                 )
 
                 cells = compute_h3_cells(aoi_label, resolution)

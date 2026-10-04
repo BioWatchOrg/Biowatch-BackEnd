@@ -24,9 +24,16 @@ packages (voir CLAUDE.md, "Documentation").
   renommée car le nom laissait penser à l'inverse : elle produit un bucket_id à partir d'une
   date, elle n'en extrait pas les composants.)
 - `get_bucket_range(bucket) -> tuple[date, date]` — bornes `(start, end)` d'un bucket, **toutes
-  les deux incluses** (le bucket couvre `[start, end]`, pas `[start, end)`). À convertir en ISO
-  8601 pour une API externe en mettant l'heure de fin à `23:59:59` (pas `00:00:00`), sinon la
-  dernière journée du bucket est exclue.
+  les deux incluses** (le bucket couvre `[start, end]`, pas `[start, end)`). Conversion ISO 8601
+  pour une API externe : dépend du type de filtre côté API.
+  - Filtre par simple inclusion de date (`WHERE created_at <= end`) : mettre l'heure de fin à
+    `23:59:59`, pas `00:00:00`, sinon la dernière journée du bucket est exclue.
+  - Agrégation par intervalle calendaire (ex. Sentinel Hub `aggregationInterval="P1M"`) :
+    `23:59:59` est **faux** — l'intervalle a besoin d'un mois calendaire complet pour rentrer
+    dans `[from, to]`, et s'arrêter à `23:59:59` le laisse une seconde trop court, ce qui fait
+    silencieusement renvoyer zéro intervalle sur **chaque** requête (bug réel rencontré en prod
+    sur `packages/sentinel/sentinel_extract.py`). Utiliser la borne **exclusive** à la place :
+    début du jour suivant `end`.
 - `related_bucket_ids(bucket) -> list[BucketId]` — tous les buckets (année, bimestre, mois)
   qui couvrent la même période que `bucket`. Utile pour retrouver des features à une
   granularité différente.
