@@ -9,7 +9,7 @@ from .time_bucket import (
     UnsupportedDateType,
     biowatch_now,
     get_bucket_range,
-    parse_bucket_id,
+    format_bucket_id,
     related_bucket_ids,
 )
 
@@ -28,7 +28,7 @@ __all__ = [
     "UnsupportedBucketFormat",
     "UnsupportedDateType",
     "biowatch_now",
-    "parse_bucket_id",
+    "format_bucket_id",
     "related_bucket_ids",
     "get_bucket_range",
 ]

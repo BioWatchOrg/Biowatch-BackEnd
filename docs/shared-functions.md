@@ -18,9 +18,15 @@ packages (voir CLAUDE.md, "Documentation").
 
 ### `core.time_bucket`
 - `biowatch_now() -> date` — date du jour en Europe/Paris.
-- `bucket_id(value=None, format=BucketFormat.MONTHLY) -> BucketId` — normalise une date en
-  identifiant de période (`"2024"`, `"2024-03"`, `"2024-b02"`). `value` accepte `date`,
-  `datetime`, une string ISO 8601, ou `None` (= aujourd'hui).
+- `format_bucket_id(value=None, format=BucketFormat.MONTHLY) -> BucketId` — normalise une date
+  en identifiant de période (`"2024"`, `"2024-03"`, `"2024-b02"`). `value` accepte `date`,
+  `datetime`, une string ISO 8601, ou `None` (= aujourd'hui). (Anciennement nommée `bucket_id` —
+  renommée car le nom laissait penser à l'inverse : elle produit un bucket_id à partir d'une
+  date, elle n'en extrait pas les composants.)
+- `get_bucket_range(bucket) -> tuple[date, date]` — bornes `(start, end)` d'un bucket, **toutes
+  les deux incluses** (le bucket couvre `[start, end]`, pas `[start, end)`). À convertir en ISO
+  8601 pour une API externe en mettant l'heure de fin à `23:59:59` (pas `00:00:00`), sinon la
+  dernière journée du bucket est exclue.
 - `related_bucket_ids(bucket) -> list[BucketId]` — tous les buckets (année, bimestre, mois)
   qui couvrent la même période que `bucket`. Utile pour retrouver des features à une
   granularité différente.
