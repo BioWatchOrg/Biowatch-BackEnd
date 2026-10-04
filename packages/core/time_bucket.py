@@ -67,7 +67,7 @@ def _format_to_str(dt: date, format: BucketFormat) -> str:
         raise UnsupportedBucketFormat(f"Unsupported bucket format: {format}")
 
 
-def parse_bucket_id(
+def format_bucket_id(
     value: datetime | date | str | None = None,
     format: BucketFormat = BucketFormat.MONTHLY,
 ) -> BucketId:

@@ -9,7 +9,7 @@ from core import (
     UnsupportedBucketFormat,
     UnsupportedDateType,
     biowatch_now,
-    parse_bucket_id,
+    format_bucket_id,
     related_bucket_ids,
 )
 
@@ -17,11 +17,11 @@ from core import (
 
 
 def test_monthly_format():
-    assert parse_bucket_id(date(2024, 3, 15), BucketFormat.MONTHLY) == "2024-03"
+    assert format_bucket_id(date(2024, 3, 15), BucketFormat.MONTHLY) == "2024-03"
 
 
 def test_monthly_is_default_format():
-    assert parse_bucket_id(date(2024, 3, 15)) == "2024-03"
+    assert format_bucket_id(date(2024, 3, 15)) == "2024-03"
 
 
 @pytest.mark.parametrize(
@@ -30,27 +30,27 @@ def test_monthly_is_default_format():
 )
 def test_monthly_end_of_month_stays_in_month(day):
     # 2024 is a leap year -> Feb 29 exists
-    assert parse_bucket_id(date(2024, 1, day), BucketFormat.MONTHLY) == "2024-01"
+    assert format_bucket_id(date(2024, 1, day), BucketFormat.MONTHLY) == "2024-01"
 
 
 def test_monthly_feb_non_leap_year():
-    assert parse_bucket_id(date(2023, 2, 28), BucketFormat.MONTHLY) == "2023-02"
+    assert format_bucket_id(date(2023, 2, 28), BucketFormat.MONTHLY) == "2023-02"
 
 
 def test_monthly_feb_leap_year():
-    assert parse_bucket_id(date(2024, 2, 29), BucketFormat.MONTHLY) == "2024-02"
+    assert format_bucket_id(date(2024, 2, 29), BucketFormat.MONTHLY) == "2024-02"
 
 
 # --- Yearly ----------------------------------------------------------------
 
 
 def test_yearly_format():
-    assert parse_bucket_id(date(2024, 7, 6), BucketFormat.YEARLY) == "2024"
+    assert format_bucket_id(date(2024, 7, 6), BucketFormat.YEARLY) == "2024"
 
 
 def test_year_change_boundary():
-    dec = parse_bucket_id(date(2023, 12, 31), BucketFormat.YEARLY)
-    jan = parse_bucket_id(date(2024, 1, 1), BucketFormat.YEARLY)
+    dec = format_bucket_id(date(2023, 12, 31), BucketFormat.YEARLY)
+    jan = format_bucket_id(date(2024, 1, 1), BucketFormat.YEARLY)
     assert dec == "2023"
     assert jan == "2024"
     assert dec != jan
@@ -77,19 +77,19 @@ def test_year_change_boundary():
     ],
 )
 def test_bimonthly_pairs(month, expected):
-    assert parse_bucket_id(date(2024, month, 15), BucketFormat.BIMONTHLY) == expected
+    assert format_bucket_id(date(2024, month, 15), BucketFormat.BIMONTHLY) == expected
 
 
 def test_bimonthly_jan_feb_same_bucket():
-    assert parse_bucket_id(date(2024, 1, 1), BucketFormat.BIMONTHLY) == parse_bucket_id(
+    assert format_bucket_id(date(2024, 1, 1), BucketFormat.BIMONTHLY) == format_bucket_id(
         date(2024, 2, 28), BucketFormat.BIMONTHLY
     )
 
 
 def test_bimonthly_does_not_collide_with_monthly():
     # bimonthly is prefixed with 'b' so it never equals a monthly id
-    monthly = parse_bucket_id(date(2024, 3, 1), BucketFormat.MONTHLY)
-    bimonthly = parse_bucket_id(date(2024, 3, 1), BucketFormat.BIMONTHLY)
+    monthly = format_bucket_id(date(2024, 3, 1), BucketFormat.MONTHLY)
+    bimonthly = format_bucket_id(date(2024, 3, 1), BucketFormat.BIMONTHLY)
     assert monthly == "2024-03"
     assert bimonthly == "2024-b02"
     assert monthly != bimonthly
@@ -99,21 +99,21 @@ def test_bimonthly_does_not_collide_with_monthly():
 
 
 def test_accepts_datetime():
-    assert parse_bucket_id(datetime(2024, 3, 15, 23, 59), BucketFormat.MONTHLY) == "2024-03"
+    assert format_bucket_id(datetime(2024, 3, 15, 23, 59), BucketFormat.MONTHLY) == "2024-03"
 
 
 def test_accepts_iso_string():
-    assert parse_bucket_id("2024-03-15", BucketFormat.MONTHLY) == "2024-03"
+    assert format_bucket_id("2024-03-15", BucketFormat.MONTHLY) == "2024-03"
 
 
 def test_accepts_iso_datetime_string():
-    assert parse_bucket_id("2024-03-15T23:59:00", BucketFormat.MONTHLY) == "2024-03"
+    assert format_bucket_id("2024-03-15T23:59:00", BucketFormat.MONTHLY) == "2024-03"
 
 
 def test_equivalent_inputs_produce_same_bucket():
-    d = parse_bucket_id(date(2024, 3, 15))
-    dt = parse_bucket_id(datetime(2024, 3, 15, 12, 0))
-    s = parse_bucket_id("2024-03-15")
+    d = format_bucket_id(date(2024, 3, 15))
+    dt = format_bucket_id(datetime(2024, 3, 15, 12, 0))
+    s = format_bucket_id("2024-03-15")
     assert d == dt == s
 
 
@@ -121,7 +121,7 @@ def test_equivalent_inputs_produce_same_bucket():
 
 
 def test_is_deterministic():
-    assert parse_bucket_id(date(2024, 3, 15)) == parse_bucket_id(date(2024, 3, 15))
+    assert format_bucket_id(date(2024, 3, 15)) == format_bucket_id(date(2024, 3, 15))
 
 
 # --- Errors ----------------------------------------------------------------
@@ -130,24 +130,24 @@ def test_is_deterministic():
 @pytest.mark.parametrize("bad", ["not-a-date", "2024-13-01", "2024/03/15", ""])
 def test_invalid_iso_string_raises(bad):
     with pytest.raises(InvalidDateString):
-        parse_bucket_id(bad, BucketFormat.MONTHLY)
+        format_bucket_id(bad, BucketFormat.MONTHLY)
 
 
 def test_invalid_iso_string_is_a_value_error():
     # InvalidDateString subclasses ValueError -> generic handlers still catch it
     with pytest.raises(ValueError):
-        parse_bucket_id("not-a-date", BucketFormat.MONTHLY)
+        format_bucket_id("not-a-date", BucketFormat.MONTHLY)
 
 
 @pytest.mark.parametrize("bad", [42, 3.14, ["2024-01-01"], {"y": 2024}])
 def test_unsupported_type_raises(bad):
     with pytest.raises(UnsupportedDateType):
-        parse_bucket_id(bad, BucketFormat.MONTHLY)
+        format_bucket_id(bad, BucketFormat.MONTHLY)
 
 
 def test_unsupported_format_raises():
     with pytest.raises(UnsupportedBucketFormat):
-        parse_bucket_id(date(2024, 3, 15), "weekly")  # type: ignore[arg-type]  # not a BucketFormat member
+        format_bucket_id(date(2024, 3, 15), "weekly")  # type: ignore[arg-type]  # not a BucketFormat member
 
 
 # --- biowatch_now ----------------------------------------------------------
@@ -158,7 +158,7 @@ def test_biowatch_now_returns_a_date():
 
 
 def test_none_falls_back_to_current_date():
-    assert parse_bucket_id(None) == parse_bucket_id(biowatch_now())
+    assert format_bucket_id(None) == format_bucket_id(biowatch_now())
 
 
 # --- related_bucket_ids ----------------------------------------------------
@@ -237,4 +237,4 @@ def test_related_bucket_ids_rejects_malformed(bad):
 
 
 def test_no_arg_defaults_to_current_date():
-    assert parse_bucket_id() == parse_bucket_id(biowatch_now())
+    assert format_bucket_id() == format_bucket_id(biowatch_now())
