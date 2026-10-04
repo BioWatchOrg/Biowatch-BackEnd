@@ -101,6 +101,29 @@ def test_happy_path_upserts_every_cell(fake_job_run, fake_upsert, fake_record_zo
     assert fake_record_zone_error == []
 
 
+def test_time_range_covers_a_full_calendar_month(
+    fake_job_run, fake_upsert, fake_record_zone_error, fake_cells, monkeypatch
+):
+    """
+    Regression test: aggregationInterval="P1M" on the Sentinel Hub side needs
+    a full calendar month to fit inside [from, to] to produce an interval. A
+    `to` of "2026-02-28T23:59:59Z" is one second short of a full February and
+    made every single request come back with zero intervals in production —
+    `to` must be the exclusive start of the next day/month instead.
+    """
+    seen_time_ranges = []
+
+    def _fetch(geometry, time_range, client):
+        seen_time_ranges.append(time_range)
+        return _zone_stat()
+
+    monkeypatch.setattr(sentinel_extract, "fetch_zone_statistics", _fetch)
+
+    sentinel_extract.extract_sentinel_data_by_aoi("idf", "2026-02", 8, "1.0.0")
+
+    assert seen_time_ranges == [("2026-02-01T00:00:00Z", "2026-03-01T00:00:00Z")] * 3
+
+
 def test_job_already_succeeded_is_a_noop(fake_cells, monkeypatch):
     @contextmanager
     def _raise_already_succeeded(**kwargs):
