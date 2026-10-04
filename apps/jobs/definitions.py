@@ -14,7 +14,7 @@ from clients import init_db
 from geo import generate_h3_grid
 
 from jobs.registry import Job, register
-from sentinel import extract_sentinel_data_by_aoi
+from sentinel import DEFAULT_MAX_WORKERS, extract_sentinel_data_by_aoi
 
 
 def _configure_generate_h3_grid(parser: ArgumentParser) -> None:
@@ -64,6 +64,7 @@ def _run_extract_sentinel(args: Namespace) -> None:
         bucket=args.bucket_id,
         resolution=args.h3_res,
         source_version=args.source_version,
+        max_workers=args.max_workers,
     )
 
 
@@ -89,6 +90,12 @@ def _configure_extract_sentinel(parser: ArgumentParser) -> None:
         required=True,
         default=datetime.datetime.now().strftime("%Y-%m"),
         help="Version de la source (par défaut : la version actuelle).",
+    )
+    parser.add_argument(
+        "--max_workers",
+        type=int,
+        default=DEFAULT_MAX_WORKERS,
+        help=f"Requêtes Sentinel Hub en parallèle (défaut : {DEFAULT_MAX_WORKERS}).",
     )
 
 
