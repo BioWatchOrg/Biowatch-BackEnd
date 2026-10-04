@@ -68,7 +68,7 @@ def _fetch_cell_row(
         "obs_count": zone_stat.obs_count,
         "valid_pixel_ratio": zone_stat.valid_pixel_ratio,
         "cloud_score": zone_stat.cloud_score,
-        "is_valid_data": zone_stat.valid_pixel_ratio > VALID_PIXEL_RATIO_THRESHOLD,
+        "is_valid_data": zone_stat.valid_pixel_ratio >= VALID_PIXEL_RATIO_THRESHOLD,
         "computed_at": datetime.datetime.now(
             datetime.timezone.utc
         ),  # TODO : vérifier si je dois transformer la données en string

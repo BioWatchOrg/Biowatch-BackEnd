@@ -212,3 +212,25 @@ def test_fetch_cell_row_shape_and_is_valid_data_flag(monkeypatch):
     assert row["source_version"] == "1.0.0"
     assert row["is_valid_data"] is False  # 0.05 is below the 0.1 threshold
     assert "computed_at" in row
+
+
+def test_fetch_cell_row_valid_pixel_ratio_threshold_is_inclusive(monkeypatch):
+    """Décision produit : valid_pixel_ratio >= 10% (pas de rejet strict pile à 10%)."""
+    monkeypatch.setattr(sentinel_extract, "cell_to_geojson", lambda cell: {"cell": cell})
+    monkeypatch.setattr(
+        sentinel_extract,
+        "fetch_zone_statistics",
+        lambda geometry, time_range, client: _zone_stat(
+            sentinel_extract.VALID_PIXEL_RATIO_THRESHOLD
+        ),
+    )
+
+    row = sentinel_extract._fetch_cell_row(
+        cell="cellX",
+        time_range=("2026-02-01T00:00:00Z", "2026-02-28T23:59:59Z"),
+        bucket_id="2026-02",
+        source_version="1.0.0",
+        client=None,
+    )
+
+    assert row["is_valid_data"] is True
