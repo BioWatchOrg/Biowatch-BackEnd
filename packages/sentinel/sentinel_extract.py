@@ -1,13 +1,18 @@
+import contextvars
 import datetime
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import httpx
 
 from clients import (
     JobAlreadySucceeded,
     SatelliteFeaturesByZone,
+    SentinelHubAuthError,
+    SentinelHubRequestError,
     fetch_zone_statistics,
     job_run,
+    record_zone_error,
     upsert,
 )
 from core import (
@@ -25,10 +30,50 @@ SENTINEL_JOB_NAME = "extract_sentinel_data"  # Nom du job pour idempotency_key
 VALID_PIXEL_RATIO_THRESHOLD = (
     0.1  # Seuil de validité des pixels pour considérer les données comme valides
 )
+DEFAULT_MAX_WORKERS = 5
+
+
+def _fetch_cell_row(
+    cell: str,
+    time_range: tuple[str, str],
+    bucket_id: BucketId,
+    source_version: str,
+    client: httpx.Client,
+) -> dict[str, object]:
+    """
+    Fetch one H3 cell's statistics and shape it into an upsert-ready row.
+
+    Pure w.r.t. the DB: raises on failure (SentinelHubAuthError,
+    SentinelHubRequestError, or an httpx transport error) rather than writing
+    anything itself — the caller decides what a failure means (abort the run,
+    or record a per-zone error and move on).
+    """
+    geometry = cell_to_geojson(cell)
+    zone_stat = fetch_zone_statistics(geometry=geometry, time_range=time_range, client=client)
+    return {
+        "zone_id": cell,
+        "bucket_id": bucket_id,
+        "source_version": source_version,
+        "ndvi": zone_stat.ndvi_mean,
+        "ndwi": zone_stat.ndwi_mean,
+        "ndbi": zone_stat.ndbi_mean,
+        "swir": zone_stat.swir_mean,
+        "obs_count": zone_stat.obs_count,
+        "valid_pixel_ratio": zone_stat.valid_pixel_ratio,
+        "cloud_score": zone_stat.cloud_score,
+        "is_valid_data": zone_stat.valid_pixel_ratio > VALID_PIXEL_RATIO_THRESHOLD,
+        "computed_at": datetime.datetime.now(
+            datetime.timezone.utc
+        ),  # TODO : vérifier si je dois transformer la données en string
+    }
 
 
 def extract_sentinel_data_by_aoi(
-    aoi_label: AoiLabel, bucket: str, resolution: int, source_version: str
+    aoi_label: AoiLabel,
+    bucket: str,
+    resolution: int,
+    source_version: str,
+    max_workers: int = DEFAULT_MAX_WORKERS,
 ) -> None:
     """
     Extrait les données Sentinel pour une AOI donnée et les persiste dans la base de données.
@@ -38,6 +83,7 @@ def extract_sentinel_data_by_aoi(
         bucket (str): L'ID du bucket de temps (ex: "2026-02").
         resolution (int, optional): La résolution H3. Par défaut : le default_res de l'AOI.
         source_version (str): La version de la source.
+        max_workers (int): Nombre de requêtes Sentinel Hub en parallèle (défaut : 5).
     """
     # `bucket` is already a bucket_id string (e.g. "2026-02") from the CLI —
     # nothing to compute here. `get_bucket_range` below validates its format
@@ -56,7 +102,7 @@ def extract_sentinel_data_by_aoi(
             scope=aoi_label,
             idempotency_key=idempotency_key,
             bucket_id=bucket_id,
-        ) as (_, session):
+        ) as (run, session):
             with httpx.Client(timeout=30.0) as client:
                 # run_id is injected into every log below by ContextFilter (job_run).
                 log_ctx = {
@@ -90,30 +136,48 @@ def extract_sentinel_data_by_aoi(
                         },
                     },
                 )
-                rows: list[dict[str, object]] = []
-                for cell in cells:
-                    geometry = cell_to_geojson(cell)
 
-                    zone_stat = fetch_zone_statistics(
-                        geometry=geometry, time_range=time_range, client=client
-                    )
-                    row: dict[str, object] = {
-                        "zone_id": cell,
-                        "bucket_id": bucket_id,
-                        "source_version": source_version,
-                        "ndvi": zone_stat.ndvi_mean,
-                        "ndwi": zone_stat.ndwi_mean,
-                        "ndbi": zone_stat.ndbi_mean,
-                        "swir": zone_stat.swir_mean,
-                        "obs_count": zone_stat.obs_count,
-                        "valid_pixel_ratio": zone_stat.valid_pixel_ratio,
-                        "cloud_score": zone_stat.cloud_score,
-                        "is_valid_data": zone_stat.valid_pixel_ratio > VALID_PIXEL_RATIO_THRESHOLD,
-                        "computed_at": datetime.datetime.now(
-                            datetime.timezone.utc
-                        ),  # TODO : vérifier si je dois transformer la données en string
+                rows: list[dict[str, object]] = []
+                # Copy the current context (carries run_id_var, set by job_run)
+                # so worker threads log with the same run_id as the main
+                # thread — a plain ThreadPoolExecutor does not inherit it.
+                ctx = contextvars.copy_context()
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = {
+                        executor.submit(
+                            ctx.run,
+                            _fetch_cell_row,
+                            cell,
+                            time_range,
+                            bucket_id,
+                            source_version,
+                            client,
+                        ): cell
+                        for cell in cells
                     }
-                    rows.append(row)
+                    for future in as_completed(futures):
+                        cell = futures[future]
+                        try:
+                            rows.append(future.result())
+                        except SentinelHubAuthError:
+                            # An auth failure (bad/expired credentials, CDSE
+                            # outage) hits every zone identically — it's not a
+                            # per-zone problem. Cancel whatever hasn't started
+                            # yet instead of burning through every remaining
+                            # cell to get the exact same failure, and abort the
+                            # whole run (job_run marks it `failed`, not `partial`).
+                            for pending in futures:
+                                pending.cancel()
+                            raise
+                        except (SentinelHubRequestError, httpx.HTTPError) as e:
+                            record_zone_error(run.run_id, cell, str(e))
+                            logger.warning(
+                                "zone extraction failed, recorded for targeted retry",
+                                extra={
+                                    "event": "sentinel.zone_error",
+                                    "context": {**log_ctx, "zone_id": cell, "error": str(e)},
+                                },
+                            )
 
                 upsert(session, SatelliteFeaturesByZone, rows)
 
@@ -121,7 +185,7 @@ def extract_sentinel_data_by_aoi(
                     "computed and upserted Sentinel data",
                     extra={
                         "event": "sentinel.upsert",
-                        "context": {**log_ctx, "n_cells": len(cells)},
+                        "context": {**log_ctx, "n_cells": len(cells), "n_rows": len(rows)},
                     },
                 )
 
