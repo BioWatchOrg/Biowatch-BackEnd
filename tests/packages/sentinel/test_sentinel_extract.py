@@ -10,6 +10,7 @@ module's own orchestration: per-zone error isolation, the auth-error fast
 abort, and context propagation into the worker threads.
 """
 
+import time
 import uuid
 from contextlib import contextmanager
 from unittest.mock import MagicMock
@@ -168,7 +169,15 @@ def test_auth_error_aborts_the_whole_run_instead_of_recording_per_zone(
 
 def test_run_id_propagates_into_worker_threads(fake_upsert, fake_record_zone_error, fake_cells, monkeypatch):
     """A plain ThreadPoolExecutor does not inherit contextvars — this checks
-    the explicit contextvars.copy_context() propagation actually works."""
+    the explicit contextvars.copy_context() propagation actually works.
+
+    The sleep is deliberate, not padding: it forces the 3 workers to overlap
+    in time. Without it, each call could start and finish before the next one
+    begins, which would hide a regression where a single Context object gets
+    entered concurrently from more than one thread (contextvars.Context.run
+    raises RuntimeError in that case — see the real crash this test guards
+    against, hit when running extract_sentinel against a real AOI).
+    """
     expected_run_id = uuid.uuid4()
     seen_run_ids = []
 
@@ -183,6 +192,7 @@ def test_run_id_propagates_into_worker_threads(fake_upsert, fake_record_zone_err
     monkeypatch.setattr(sentinel_extract, "job_run", _fake_job_run_setting_context)
 
     def _fetch(geometry, time_range, client):
+        time.sleep(0.05)
         seen_run_ids.append(run_id_var.get())
         return _zone_stat()
 

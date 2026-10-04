@@ -147,11 +147,16 @@ def extract_sentinel_data_by_aoi(
                 # Copy the current context (carries run_id_var, set by job_run)
                 # so worker threads log with the same run_id as the main
                 # thread — a plain ThreadPoolExecutor does not inherit it.
-                ctx = contextvars.copy_context()
+                # A fresh Context *per submission*, not one shared across all
+                # of them: `Context.run()` raises RuntimeError if the same
+                # Context object is entered from more than one thread at once
+                # — with max_workers > 1 that happens as soon as two cells run
+                # concurrently. Each copy carries the same values (nothing
+                # mutates run_id_var between cells), just not the same object.
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
                     futures = {
                         executor.submit(
-                            ctx.run,
+                            contextvars.copy_context().run,
                             _fetch_cell_row,
                             cell,
                             time_range,
