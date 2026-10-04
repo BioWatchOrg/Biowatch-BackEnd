@@ -3,21 +3,20 @@ import logging
 
 import httpx
 
-from packages.clients import (
+from clients import (
     JobAlreadySucceeded,
     SatelliteFeaturesByZone,
     fetch_zone_statistics,
     job_run,
     upsert,
 )
-from packages.core import (
+from core import (
     AoiLabel,
     BucketId,
     compute_idempotency_key,
     get_bucket_range,
-    parse_bucket_id,
 )
-from packages.geo import cell_to_geojson, compute_h3_cells
+from geo import cell_to_geojson, compute_h3_cells
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +39,10 @@ def extract_sentinel_data_by_aoi(
         resolution (int, optional): La résolution H3. Par défaut : le default_res de l'AOI.
         source_version (str): La version de la source.
     """
-    bucket_id: BucketId = parse_bucket_id(bucket)
+    # `bucket` is already a bucket_id string (e.g. "2026-02") from the CLI —
+    # nothing to compute here. `get_bucket_range` below validates its format
+    # and raises if it's malformed, so there's no need to re-check it twice.
+    bucket_id: BucketId = bucket
     idempotency_key = compute_idempotency_key(
         job_name=SENTINEL_JOB_NAME,
         scope=aoi_label,

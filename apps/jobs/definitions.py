@@ -14,7 +14,7 @@ from clients import init_db
 from geo import generate_h3_grid
 
 from jobs.registry import Job, register
-from packages.sentinel import extract_sentinel_data_by_aoi
+from sentinel import extract_sentinel_data_by_aoi
 
 
 def _configure_generate_h3_grid(parser: ArgumentParser) -> None:
