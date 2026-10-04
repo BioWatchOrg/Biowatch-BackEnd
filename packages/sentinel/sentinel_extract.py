@@ -23,7 +23,6 @@ logger = logging.getLogger(__name__)
 
 
 SENTINEL_JOB_NAME = "extract_sentinel_data"  # Nom du job pour idempotency_key
-BATCH_SIZE = 100  # Nombre de cellules H3 à traiter par batch pour les requêtes Sentinel
 VALID_PIXEL_RATIO_THRESHOLD = (
     0.1  # Seuil de validité des pixels pour considérer les données comme valides
 )
