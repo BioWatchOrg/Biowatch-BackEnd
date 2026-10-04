@@ -32,6 +32,13 @@ VALID_PIXEL_RATIO_THRESHOLD = (
 )
 DEFAULT_MAX_WORKERS = 5
 
+# Version du pipeline d'extraction (evalscript, seuils qualité, formules des
+# indices) — PAS une date. À incrémenter à la main quand l'un de ces éléments
+# change, pour que satellite_features_by_zone garde les anciennes lignes
+# (UNIQUE(zone_id, bucket_id, source_version)) au lieu de les écraser
+# silencieusement avec un résultat calculé différemment.
+EXTRACTION_PIPELINE_VERSION = "1.0.0"
+
 
 def _fetch_cell_row(
     cell: str,
@@ -72,7 +79,7 @@ def extract_sentinel_data_by_aoi(
     aoi_label: AoiLabel,
     bucket: str,
     resolution: int,
-    source_version: str,
+    source_version: str = EXTRACTION_PIPELINE_VERSION,
     max_workers: int = DEFAULT_MAX_WORKERS,
 ) -> None:
     """
@@ -82,7 +89,8 @@ def extract_sentinel_data_by_aoi(
         aoi_label (str): Le label de l'AOI (voir packages/core/aoi/aoi_registry.json).
         bucket (str): L'ID du bucket de temps (ex: "2026-02").
         resolution (int, optional): La résolution H3. Par défaut : le default_res de l'AOI.
-        source_version (str): La version de la source.
+        source_version (str): Version du pipeline d'extraction, pas une date — voir
+            EXTRACTION_PIPELINE_VERSION. Par défaut : la version courante du code.
         max_workers (int): Nombre de requêtes Sentinel Hub en parallèle (défaut : 5).
     """
     # `bucket` is already a bucket_id string (e.g. "2026-02") from the CLI —

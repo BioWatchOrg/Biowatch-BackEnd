@@ -7,14 +7,13 @@ sous-commande CLI vers une fonction de `packages/*`. L'idempotence et le
 Importer ce module a pour effet de peupler le registre (`register(...)`).
 """
 
-import datetime
 from argparse import ArgumentParser, Namespace
 
 from clients import init_db
 from geo import generate_h3_grid
 
 from jobs.registry import Job, register
-from sentinel import DEFAULT_MAX_WORKERS, extract_sentinel_data_by_aoi
+from sentinel import DEFAULT_MAX_WORKERS, EXTRACTION_PIPELINE_VERSION, extract_sentinel_data_by_aoi
 
 
 def _configure_generate_h3_grid(parser: ArgumentParser) -> None:
@@ -87,9 +86,9 @@ def _configure_extract_sentinel(parser: ArgumentParser) -> None:
     )
     parser.add_argument(
         "--source_version",
-        required=True,
-        default=datetime.datetime.now().strftime("%Y-%m"),
-        help="Version de la source (par défaut : la version actuelle).",
+        default=EXTRACTION_PIPELINE_VERSION,
+        help="Version du pipeline d'extraction, pas une date "
+        f"(défaut : {EXTRACTION_PIPELINE_VERSION}, la version courante du code).",
     )
     parser.add_argument(
         "--max_workers",
