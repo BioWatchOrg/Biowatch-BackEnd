@@ -191,12 +191,13 @@ def extract_sentinel_data_by_aoi(
 
     except JobAlreadySucceeded:
         logger.info(
-            "grid already generated, skipping",
+            "sentinel data already extracted, skipping",
             extra={
-                "event": "h3_grid.skip",
+                "event": "sentinel.skip",
                 "context": {
                     "aoi": aoi_label,
                     "resolution": resolution,
+                    "bucket": bucket_id,
                     "idempotency_key": idempotency_key,
                 },
             },
