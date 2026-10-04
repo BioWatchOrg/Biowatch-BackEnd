@@ -1,6 +1,6 @@
 import enum
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, TypeAlias
 from zoneinfo import ZoneInfo
 
@@ -67,7 +67,7 @@ def _format_to_str(dt: date, format: BucketFormat) -> str:
         raise UnsupportedBucketFormat(f"Unsupported bucket format: {format}")
 
 
-def bucket_id(
+def parse_bucket_id(
     value: datetime | date | str | None = None,
     format: BucketFormat = BucketFormat.MONTHLY,
 ) -> BucketId:
@@ -141,3 +141,33 @@ def related_bucket_ids(bucket: BucketId) -> list[BucketId]:
     assert index is not None
     bimester = (index - 1) // 2 + 1
     return [bucket, f"{year}-b{bimester:02d}", year_id]
+
+
+def get_bucket_range(bucket: BucketId) -> tuple[date, date]:
+    """
+    Return the start and end dates of a bucket.
+
+    Both bounds are inclusive: the bucket covers [start, end] (end is the
+    bucket's last calendar day, not the first day of the next bucket).
+    """
+    format, year, index = _parse_bucket_id(bucket)
+    if format is BucketFormat.YEARLY:
+        return date(year, 1, 1), date(year, 12, 31)
+    if format is BucketFormat.BIMONTHLY:
+        assert index is not None
+        start_month = (index - 1) * 2 + 1
+        start_date = date(year, start_month, 1)
+        if start_month == 11:
+            end_date = date(year + 1, 1, 1) - timedelta(days=1)
+        else:
+            end_date = date(year, start_month + 2, 1) - timedelta(days=1)
+        return start_date, end_date
+    if format is BucketFormat.MONTHLY:
+        assert index is not None
+        start_date = date(year, index, 1)
+        if index == 12:
+            end_date = date(year + 1, 1, 1) - timedelta(days=1)
+        else:
+            end_date = date(year, index + 1, 1) - timedelta(days=1)
+        return start_date, end_date
+    raise UnsupportedBucketFormat(f"Unsupported bucket format: {format}")
