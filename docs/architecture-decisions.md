@@ -137,8 +137,10 @@ fois et calculer les statistiques zonales nous-mêmes (Process API), et la Batch
 
 **Pourquoi**
 
-- La Batch Statistical API est en **beta** chez Copernicus — pas de garantie de stabilité du
-  contrat, pas une base fiable pour un job de production.
+- La Batch Statistical API est réservée aux comptes **"Copernicus Service account"** — un type de
+  compte à part, avec des critères d'éligibilité, pas accessible par défaut sur un compte
+  gratuit/étudiant (confirmé sur la doc officielle, au-delà du simple statut beta évoqué
+  initialement).
 - Elle livre son résultat de façon **asynchrone vers du stockage objet (S3)**, ce qui
   réintroduit une dépendance S3 que le projet a explicitement choisi de ne pas ajouter sans
   besoin documenté (`CLAUDE.md` : stockage raster local VPS par défaut, migration S3 uniquement
@@ -158,8 +160,9 @@ fois et calculer les statistiques zonales nous-mêmes (Process API), et la Batch
 
 **Limites assumées**
 
-- Durée d'exécution de l'ordre de 1 à 2h par run mensuel pour une AOI comme `idf` avec
-  `max_workers=5` — acceptable pour un job de fond, pas pour un usage temps réel.
+- Durée d'exécution initialement estimée à 1-2h par run mensuel pour une AOI comme `idf` avec
+  `max_workers=5` — **revue à la baisse après test réel** (voir update 2026-10-06 ci-dessous) :
+  le vrai débit autorisé par le compte CDSE gratuit est beaucoup plus restrictif que prévu.
 - Cette approche ne scale pas indéfiniment : ajouter beaucoup d'AOI supplémentaires, monter en
   résolution H3 (9, 10...), ou passer à une cadence plus fréquente que mensuelle
   multiplierait le nombre de requêtes et pourrait devenir un vrai goulot d'étranglement.
@@ -167,9 +170,35 @@ fois et calculer les statistiques zonales nous-mêmes (Process API), et la Batch
   429 (`packages/clients/sentinel_hub/statistics.py`), pas par une stratégie de récupération des
   données fondamentalement différente.
 
+**Update 2026-10-06 — le goulot d'étranglement s'est matérialisé en test réel**
+
+Premier run complet sur `idf` en résolution 8 (18 307 cellules, `--max_workers 1`) : environ
+24 requêtes passent en ~6s, puis un `429` avec un `Retry-After` de 133s. Extrapolé sur 18 307
+cellules, ça donne de l'ordre de **24 à 28h** pour un run complet — bien au-delà de l'estimation
+initiale de 1-2h. Ce n'est pas un bug côté client (le retry + backoff sur 429 fonctionne
+correctement, voir `packages/clients/sentinel_hub/statistics.py`), c'est le vrai débit autorisé
+par le compte CDSE gratuit.
+
+Recherche faite sur les options disponibles :
+- Les limites de débit sont **ajustables par compte sur demande au support Copernicus**, pas par
+  changement de plan automatique (`documentation.dataspace.copernicus.eu/APIs/SentinelHub/Overview/RateLimiting.html`)
+  — une demande a été envoyée au support en expliquant l'usage (projet étudiant, calcul mensuel
+  sur l'Île-de-France).
+- La Batch Statistical API résoudrait structurellement le problème (pas de rate-limit par
+  minute, facturé en processing units, jusqu'à 700 000 géométries par envoi) mais reste
+  verrouillée aux comptes "Copernicus Service account" — éligibilité à vérifier, pas acquise par
+  défaut sur un compte gratuit/étudiant.
+- Aucune autre API Sentinel Hub n'évite le problème (Process API a une famille de rate-limiting
+  similaire, en pire puisqu'il faudrait en plus télécharger et traiter du raster).
+
+En attendant une réponse du support, le job n'est pas bloqué — juste lent. C'est compatible avec
+l'exécution en job de fond/nocturne déjà prévue par l'architecture (`CLAUDE.md`), et l'idempotence
+par zone permet d'interrompre et reprendre un run sans perte ni doublon.
+
 **Remise en cause**
 
-À réévaluer si le volume de requêtes devient un vrai problème opérationnel (ajout d'AOI,
-résolution H3 plus fine, cadence plus fréquente que mensuelle) — dans ce cas, réévaluer la Batch
-Statistical API une fois sortie de beta (le stockage S3 deviendrait alors un besoin documenté et
-justifié), plutôt que de construire un pipeline raster maison.
+Ce seuil est désormais **atteint en pratique**, pas seulement hypothétique (voir update
+2026-10-06). Prochaine étape dès que le support Copernicus répond : si un quota plus élevé est
+accordé, cette ADR reste valable telle quelle (juste un débit différent). Si l'éligibilité à la
+Batch Statistical API est obtenue, réévaluer complètement cette décision — le stockage S3
+deviendrait alors un besoin documenté et justifié, contrairement à aujourd'hui.
