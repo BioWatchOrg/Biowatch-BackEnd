@@ -195,10 +195,67 @@ En attendant une réponse du support, le job n'est pas bloqué — juste lent. C
 l'exécution en job de fond/nocturne déjà prévue par l'architecture (`CLAUDE.md`), et l'idempotence
 par zone permet d'interrompre et reprendre un run sans perte ni doublon.
 
+**Update 2026-10-09 — réponse du support Copernicus : refus, pistes restantes évaluées**
+
+Le support Copernicus a répondu : **refus explicite** de la demande de quota. Citation : *"every
+registered CDSE account is subject to the same quota limitations [...] we can't simply increase
+it per nature of the project."* Les paliers de rate-limit sont fixes par compte, pas négociables
+au cas par cas — ce n'est pas un refus ponctuel, c'est une politique. Cette piste est **fermée**.
+
+Deux options alternatives ont été évaluées et écartées avant de se résoudre à accepter le run
+long :
+
+- **Changer d'API Sentinel Hub (Process API, Catalog API...) sur le même compte** : écarté.
+  Confirmé par le support *et* par la doc technique (`docs.sentinel-hub.com/api/latest/api/overview/rate-limiting/`)
+  que le rate-limit est attaché au **compte**, pas à l'API appelée — toutes les API d'un même
+  compte partagent le même palier. Pire : la Statistical API déclenche en interne une
+  sous-requête par date d'observation dans la période demandée, ce qui la rend **structurellement
+  plus coûteuse en quota** que Process/Catalog pour un volume de travail équivalent. Changer d'API
+  reviendrait à retomber sur le même mur, probablement plus vite, en plus de perdre le travail
+  déjà stabilisé sur `packages/clients/sentinel_hub/`.
+- **Une seule requête globale sur toute l'AOI au lieu d'une requête par cellule H3** : écarté, et
+  pas qu'une question de performance — c'est une rupture fonctionnelle. Le coût en PU dépend de
+  la surface totale et de la résolution, pas du nombre de requêtes : regrouper ne réduit pas le
+  volume total de PU, ça le concentre en un seul appel (risque de dépassement de PU/minute d'un
+  coup, ou de timeout). Plus fondamentalement, la Statistical API synchrone ne renvoie qu'**un
+  seul résultat agrégé par requête, quelle que soit la taille de la géométrie envoyée** — une
+  requête sur toute l'AOI donnerait un NDVI unique pour toute l'Île-de-France, pas une valeur par
+  zone. Ventiler les stats par sous-géométrie en un seul envoi est exactement ce que fait la Batch
+  Statistical API (verrouillée, voir plus haut) ; l'API synchrone ne le permet pas.
+
+**Décision retenue** : accepter la durée de run actuelle (~24-28h pour `idf` en résolution 8) en
+attendant l'issue des deux candidatures en cours (Credits for Value Creators, Copernicus Services
+user — voir ci-dessous). Pas de changement d'architecture ni de dégradation de la résolution H3
+pour contourner le problème dans l'immédiat.
+
+**Pistes restantes, en cours**
+
+- **Credits for Value Creators** (CREODIAS/CDSE) : programme de crédits gratuits pour
+  chercheurs/startups développant des systèmes Earth Observation, couvrant explicitement Sentinel
+  Hub. Recommandé par le support lui-même comme alternative au refus de quota. Candidature à
+  déposer via `creodias.eu/pricing/credits-for-value-creators/` — comité de revue sous 30 jours.
+  **Hypothèse à vérifier** : rien ne garantit que ces crédits lèvent spécifiquement le
+  rate-limit par minute plutôt que juste le quota mensuel de PU — à confirmer dans la réponse du
+  comité avant de considérer cette piste comme la solution définitive.
+- **Candidature "Copernicus Services user"** : toujours en attente, indépendante de ce refus
+  (déposée en parallèle, voir update 2026-10-06). Débloquerait potentiellement l'accès à la Batch
+  Statistical API si acceptée.
+
+**Alternative identifiée mais non retenue pour l'instant : Google Earth Engine**
+
+Seule alternative extérieure à l'écosystème Copernicus qui aurait un sens technique :
+`reduceRegions()` de GEE calcule des stats pour des milliers de polygones en un seul appel
+serveur — équivalent fonctionnel à ce que la Batch Statistical API offrirait. Accès gratuit
+généreux pour la recherche non-commerciale. Non retenue dans l'immédiat : nouvelle auth (compte
+de service Google), nouveau modèle de requête à apprendre, clause non-commerciale des conditions
+d'utilisation à vérifier sérieusement avant tout usage au-delà d'un POC (BioWatch vise
+potentiellement des collectivités publiques), et perte du travail déjà stabilisé sur le client
+Sentinel Hub. À reconsidérer seulement si les deux pistes ci-dessus échouent également.
+
 **Remise en cause**
 
 Ce seuil est désormais **atteint en pratique**, pas seulement hypothétique (voir update
-2026-10-06). Prochaine étape dès que le support Copernicus répond : si un quota plus élevé est
-accordé, cette ADR reste valable telle quelle (juste un débit différent). Si l'éligibilité à la
+2026-10-06). La demande de quota direct est définitivement fermée (update 2026-10-09) — à
+réévaluer uniquement si l'une des deux candidatures en cours aboutit. Si l'éligibilité à la
 Batch Statistical API est obtenue, réévaluer complètement cette décision — le stockage S3
 deviendrait alors un besoin documenté et justifié, contrairement à aujourd'hui.
