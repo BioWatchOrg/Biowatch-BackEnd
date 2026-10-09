@@ -90,26 +90,27 @@ def test_happy_path_upserts_every_cell(fake_job_run, fake_upsert, fake_record_zo
         sentinel_extract, "fetch_zone_statistics", lambda geometry, time_range, client: _zone_stat()
     )
 
-    sentinel_extract.extract_sentinel_data_by_aoi("idf", "2026-02", 8, "1.0.0")
+    sentinel_extract.extract_sentinel_data_by_aoi("idf", "2026", 8, "1.0.0")
 
     assert len(fake_upsert) == 1
     model, rows = fake_upsert[0]
     assert model is sentinel_extract.SatelliteFeaturesByZone
     assert {row["zone_id"] for row in rows} == {"cellA", "cellB", "cellC"}
-    assert all(row["bucket_id"] == "2026-02" for row in rows)
+    assert all(row["bucket_id"] == "2026" for row in rows)
     assert all(row["source_version"] == "1.0.0" for row in rows)
     assert fake_record_zone_error == []
 
 
-def test_time_range_covers_a_full_calendar_month(
+def test_time_range_is_may_of_the_bucket_year_with_exclusive_end(
     fake_job_run, fake_upsert, fake_record_zone_error, fake_cells, monkeypatch
 ):
     """
-    Regression test: aggregationInterval="P1M" on the Sentinel Hub side needs
-    a full calendar month to fit inside [from, to] to produce an interval. A
-    `to` of "2026-02-28T23:59:59Z" is one second short of a full February and
-    made every single request come back with zero intervals in production —
-    `to` must be the exclusive start of the next day/month instead.
+    Cadence annuelle (ADR-003) : la requête interroge toujours mai de l'année
+    du bucket, pas l'année calendaire entière. La borne de fin est exclusive
+    (1er juin, pas 31 mai 23:59:59) : aggregationInterval="P1M" côté Sentinel
+    Hub a besoin qu'un mois calendaire complet rentre dans [from, to] pour
+    produire un intervalle — même piège que le bug corrigé le 2026-10-04,
+    mois différent.
     """
     seen_time_ranges = []
 
@@ -119,9 +120,21 @@ def test_time_range_covers_a_full_calendar_month(
 
     monkeypatch.setattr(sentinel_extract, "fetch_zone_statistics", _fetch)
 
-    sentinel_extract.extract_sentinel_data_by_aoi("idf", "2026-02", 8, "1.0.0")
+    sentinel_extract.extract_sentinel_data_by_aoi("idf", "2026", 8, "1.0.0")
 
-    assert seen_time_ranges == [("2026-02-01T00:00:00Z", "2026-03-01T00:00:00Z")] * 3
+    assert seen_time_ranges == [("2026-05-01T00:00:00Z", "2026-06-01T00:00:00Z")] * 3
+
+
+def test_rejects_non_yearly_bucket_id(fake_cells, monkeypatch):
+    called = {"fetch": False}
+    monkeypatch.setattr(
+        sentinel_extract, "fetch_zone_statistics", lambda *a, **k: called.update(fetch=True)
+    )
+
+    with pytest.raises(ValueError, match="annuel"):
+        sentinel_extract.extract_sentinel_data_by_aoi("idf", "2026-02", 8, "1.0.0")
+
+    assert called["fetch"] is False  # fails before any network call
 
 
 def test_job_already_succeeded_is_a_noop(fake_cells, monkeypatch):
@@ -138,7 +151,7 @@ def test_job_already_succeeded_is_a_noop(fake_cells, monkeypatch):
 
     monkeypatch.setattr(sentinel_extract, "fetch_zone_statistics", _fail_if_called)
 
-    sentinel_extract.extract_sentinel_data_by_aoi("idf", "2026-02", 8, "1.0.0")  # must not raise
+    sentinel_extract.extract_sentinel_data_by_aoi("idf", "2026", 8, "1.0.0")  # must not raise
 
     assert called["fetch"] is False
 
@@ -153,7 +166,7 @@ def test_per_zone_request_error_is_recorded_and_does_not_block_others(
 
     monkeypatch.setattr(sentinel_extract, "fetch_zone_statistics", _fetch)
 
-    sentinel_extract.extract_sentinel_data_by_aoi("idf", "2026-02", 8, "1.0.0", max_workers=1)
+    sentinel_extract.extract_sentinel_data_by_aoi("idf", "2026", 8, "1.0.0", max_workers=1)
 
     assert [call[1] for call in fake_record_zone_error] == ["cellB"]
     _, rows = fake_upsert[0]
@@ -170,7 +183,7 @@ def test_network_error_is_also_recorded_as_a_zone_error(
 
     monkeypatch.setattr(sentinel_extract, "fetch_zone_statistics", _fetch)
 
-    sentinel_extract.extract_sentinel_data_by_aoi("idf", "2026-02", 8, "1.0.0", max_workers=1)
+    sentinel_extract.extract_sentinel_data_by_aoi("idf", "2026", 8, "1.0.0", max_workers=1)
 
     assert [call[1] for call in fake_record_zone_error] == ["cellA"]
 
@@ -184,7 +197,7 @@ def test_auth_error_aborts_the_whole_run_instead_of_recording_per_zone(
     monkeypatch.setattr(sentinel_extract, "fetch_zone_statistics", _fetch)
 
     with pytest.raises(SentinelHubAuthError):
-        sentinel_extract.extract_sentinel_data_by_aoi("idf", "2026-02", 8, "1.0.0", max_workers=1)
+        sentinel_extract.extract_sentinel_data_by_aoi("idf", "2026", 8, "1.0.0", max_workers=1)
 
     assert fake_record_zone_error == []  # not a per-zone error
     assert fake_upsert == []  # never reached the upsert call
@@ -221,7 +234,7 @@ def test_run_id_propagates_into_worker_threads(fake_upsert, fake_record_zone_err
 
     monkeypatch.setattr(sentinel_extract, "fetch_zone_statistics", _fetch)
 
-    sentinel_extract.extract_sentinel_data_by_aoi("idf", "2026-02", 8, "1.0.0", max_workers=3)
+    sentinel_extract.extract_sentinel_data_by_aoi("idf", "2026", 8, "1.0.0", max_workers=3)
 
     assert seen_run_ids == [str(expected_run_id)] * 3
 
@@ -234,14 +247,14 @@ def test_fetch_cell_row_shape_and_is_valid_data_flag(monkeypatch):
 
     row = sentinel_extract._fetch_cell_row(
         cell="cellX",
-        time_range=("2026-02-01T00:00:00Z", "2026-02-28T23:59:59Z"),
-        bucket_id="2026-02",
+        time_range=("2026-05-01T00:00:00Z", "2026-06-01T00:00:00Z"),
+        bucket_id="2026",
         source_version="1.0.0",
         client=None,
     )
 
     assert row["zone_id"] == "cellX"
-    assert row["bucket_id"] == "2026-02"
+    assert row["bucket_id"] == "2026"
     assert row["source_version"] == "1.0.0"
     assert row["is_valid_data"] is False  # 0.05 is below the 0.1 threshold
     assert "computed_at" in row
@@ -260,8 +273,8 @@ def test_fetch_cell_row_valid_pixel_ratio_threshold_is_inclusive(monkeypatch):
 
     row = sentinel_extract._fetch_cell_row(
         cell="cellX",
-        time_range=("2026-02-01T00:00:00Z", "2026-02-28T23:59:59Z"),
-        bucket_id="2026-02",
+        time_range=("2026-05-01T00:00:00Z", "2026-06-01T00:00:00Z"),
+        bucket_id="2026",
         source_version="1.0.0",
         client=None,
     )

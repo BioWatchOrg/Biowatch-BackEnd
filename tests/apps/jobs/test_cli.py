@@ -34,7 +34,7 @@ def test_each_job_dispatches_to_its_run():
         if name == "generate_h3_grid":
             argv += ["--aoi", "paris", "--resolution", "8"]
         elif name == "extract_sentinel":
-            argv += ["--aoi", "paris", "--bucket_id", "2026-02", "--source_version", "1.0.0"]
+            argv += ["--aoi", "paris", "--bucket_id", "2026", "--source_version", "1.0.0"]
         args = parser.parse_args(argv)
         assert args._run is job.run
 

@@ -1,6 +1,7 @@
 import contextvars
 import datetime
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import httpx
@@ -19,7 +20,6 @@ from core import (
     AoiLabel,
     BucketId,
     compute_idempotency_key,
-    get_bucket_range,
 )
 from geo import cell_to_geojson, compute_h3_cells
 
@@ -38,6 +38,33 @@ DEFAULT_MAX_WORKERS = 5
 # (UNIQUE(zone_id, bucket_id, source_version)) au lieu de les écraser
 # silencieusement avec un résultat calculé différemment.
 EXTRACTION_PIPELINE_VERSION = "1.0.0"
+
+_YEARLY_BUCKET_RE = re.compile(r"^\d{4}$")
+
+# Fenêtre d'observation annuelle fixe : mai de chaque année (ADR-003,
+# docs/architecture-decisions.md). Choisi pour un couvert nuageux moyen
+# modéré en Île-de-France (~45%, contre 58-60% en nov-janv.) et une
+# végétation déjà active sans le stress hydrique de l'été. Le mois
+# complet (pas une sous-période) maximise le nombre de scènes agrégées
+# par cellule.
+REFERENCE_WINDOW_MONTH = 5  # mai
+
+
+def _reference_time_range(year: int) -> tuple[str, str]:
+    """
+    Plage ISO 8601 (bornes [from, to)) pour le mois de référence de `year`.
+
+    La borne de fin est exclusive (1er juin, pas 31 mai 23:59:59) :
+    `aggregationInterval="P1M"` côté Sentinel Hub a besoin qu'un mois
+    calendaire complet rentre dans [from, to] pour produire un intervalle
+    (voir le bug corrigé le 2026-10-04 — même piège, mois différent).
+    """
+    start = datetime.date(year, REFERENCE_WINDOW_MONTH, 1)
+    end_exclusive = datetime.date(year, REFERENCE_WINDOW_MONTH + 1, 1)
+    return (
+        f"{start.isoformat()}T00:00:00Z",
+        f"{end_exclusive.isoformat()}T00:00:00Z",
+    )
 
 
 def _fetch_cell_row(
@@ -83,17 +110,22 @@ def extract_sentinel_data_by_aoi(
     """
     Extrait les données Sentinel pour une AOI donnée et les persiste dans la base de données.
 
+    Cadence annuelle (ADR-003) : `bucket` est une année ("YYYY"), pas un mois. La
+    requête Sentinel Hub interroge toujours mai de cette année-là (voir
+    `_reference_time_range`), pas l'année calendaire entière.
+
     Args:
         aoi_label (str): Le label de l'AOI (voir packages/core/aoi/aoi_registry.json).
-        bucket (str): L'ID du bucket de temps (ex: "2026-02").
+        bucket (str): L'année du bucket (ex: "2026").
         resolution (int, optional): La résolution H3. Par défaut : le default_res de l'AOI.
         source_version (str): Version du pipeline d'extraction, pas une date — voir
             EXTRACTION_PIPELINE_VERSION. Par défaut : la version courante du code.
         max_workers (int): Nombre de requêtes Sentinel Hub en parallèle (défaut : 5).
     """
-    # `bucket` is already a bucket_id string (e.g. "2026-02") from the CLI —
-    # nothing to compute here. `get_bucket_range` below validates its format
-    # and raises if it's malformed, so there's no need to re-check it twice.
+    if not _YEARLY_BUCKET_RE.fullmatch(bucket):
+        raise ValueError(
+            f"extract_sentinel_data_by_aoi attend un bucket_id annuel ('YYYY'), reçu {bucket!r}."
+        )
     bucket_id: BucketId = bucket
     idempotency_key = compute_idempotency_key(
         job_name=SENTINEL_JOB_NAME,
@@ -122,19 +154,7 @@ def extract_sentinel_data_by_aoi(
                     extra={"event": "sentinel.extract", "context": log_ctx},
                 )
 
-                start_date, end_date = get_bucket_range(bucket_id)
-                # Sentinel Hub's aggregationInterval="P1M" needs a full
-                # calendar month to fit inside [from, to] to produce one
-                # interval. `end_date` is the bucket's last INCLUDED day
-                # (get_bucket_range), so stopping at its 23:59:59 is exactly
-                # one second short of a full month — the API then returns
-                # zero intervals for every single request. Use the exclusive
-                # upper bound (start of the day after end_date) instead.
-                next_day = end_date + datetime.timedelta(days=1)
-                time_range = (
-                    f"{start_date.isoformat()}T00:00:00Z",
-                    f"{next_day.isoformat()}T00:00:00Z",
-                )
+                time_range = _reference_time_range(int(bucket_id))
 
                 cells = compute_h3_cells(aoi_label, resolution)
 
@@ -145,8 +165,7 @@ def extract_sentinel_data_by_aoi(
                         "context": {
                             **log_ctx,
                             "n_cells": len(cells),
-                            "start_date": start_date,
-                            "end_date": end_date,
+                            "time_range": time_range,
                         },
                     },
                 )

@@ -76,7 +76,7 @@ def _configure_extract_sentinel(parser: ArgumentParser) -> None:
     parser.add_argument(
         "--bucket_id",
         required=True,
-        help="ID du bucket de temps (ex: '2026-02').",
+        help="Année du bucket, cadence annuelle (ex: '2026') — interroge mai de cette année.",
     )
     parser.add_argument(
         "--h3_res",

@@ -48,8 +48,11 @@ et que la grille H3 de l'AOI existe déjà (`satellite_features_by_zone.zone_id`
 `zones_hex` — lancer `generate_h3_grid` d'abord, **même résolution**).
 ```bash
 uv run biowatch-jobs generate_h3_grid --aoi idf --resolution 5
-uv run biowatch-jobs extract_sentinel --aoi idf --bucket_id 2026-02 --h3_res 5 --max_workers 5
+uv run biowatch-jobs extract_sentinel --aoi idf --bucket_id 2026 --h3_res 5 --max_workers 5
 ```
+`--bucket_id` est une **année** (cadence annuelle, voir ADR-003 dans `docs/architecture-decisions.md`)
+— le job interroge toujours mai de cette année-là, pas l'année calendaire entière.
+
 ⚠️ Chaque appel consomme du quota Sentinel Hub réel — préférer une petite résolution
 (`idf` en résolution 5 = 52 cellules) pour un premier test, pas la résolution 8 du MVP (~16 000
 cellules).
