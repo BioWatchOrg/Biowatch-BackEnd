@@ -267,6 +267,42 @@ d'utilisation à vérifier sérieusement avant tout usage au-delà d'un POC (Bio
 potentiellement des collectivités publiques), et perte du travail déjà stabilisé sur le client
 Sentinel Hub. À reconsidérer seulement si les deux pistes ci-dessus échouent également.
 
+**Update 2026-10-09 (suite) — passage à une cadence annuelle**
+
+Décision complémentaire, indépendante de l'issue CREODIAS : la cadence d'extraction passe de
+**mensuelle à annuelle**, sur une fenêtre temporelle courte et fixe répétée chaque année (pas une
+moyenne lissée sur 12 mois). Deux justifications :
+
+- **Cohérence avec le reste du pipeline** : toutes les autres sources de données sont déjà
+  annuelles (`update_gbif_occurrences` : 1x/an, `update_iucn_taxonomy` : annuel max,
+  `compute_species_features_by_zone` : `period_year` annuel, import OSM : `bucket_id` annuel).
+  Le satellite était la seule source pensée en mensuel — ce changement aligne enfin tout le
+  pipeline sur une cadence commune, plutôt que de maintenir une incohérence.
+- **Compatible avec le rate-limit actuel sans attendre de quota supplémentaire** : à ~635
+  requêtes/heure, un run national (~840 000 cellules pour la France métropolitaine) prend ~55
+  jours — ça ne rentre pas dans un mois, mais rentre très confortablement dans une année. Le
+  choix d'une fenêtre **courte** plutôt qu'une agrégation `aggregationInterval=P1Y` sur l'année
+  entière est délibéré : la Statistical API déclenche une sous-requête interne par date
+  d'observation dans la période demandée (voir update 2026-10-09 ci-dessus) — une fenêtre
+  courte reste donc moins coûteuse en quota qu'une agrégation annuelle complète, en plus de
+  garder une vraie comparabilité saisonnière (même période chaque année) plutôt qu'une moyenne
+  qui lisserait les écarts entre saisons.
+
+Tickets Notion mis à jour en conséquence : `Job extract_sentinel_2` (bucket_id annuel, CLI
+example, workflow) et `6. Industrialisation du calcul des scores` (DoD "tous les deux mois" →
+"annuel", le texte supposant le satellite comme "source la plus fréquente" n'étant plus
+applicable puisque toutes les sources sont désormais alignées).
+
+**Point ouvert, non tranché ici** : la fenêtre de référence exacte (quel mois, quelle durée) est
+une décision écologique/produit — ex. une période de végétation stable, faible couverture
+neigeuse/nuageuse selon la région. Ne pas l'inventer côté implémentation ; à valider avec
+l'équipe avant de coder le changement dans `packages/sentinel/sentinel_extract.py`.
+
+**Impact sur le backfill historique** : ce changement de cadence ne réduit pas le volume total
+du backfill (N années × ~840 000 cellules reste le même calcul, qu'on interroge une fenêtre
+courte ou longue par année) — seul le run **récurrent** devient praticable sans quota
+supplémentaire. Le backfill reste l'usage principal justifiant la demande CREODIAS en cours.
+
 **Remise en cause**
 
 Ce seuil est désormais **atteint en pratique**, pas seulement hypothétique (voir update
