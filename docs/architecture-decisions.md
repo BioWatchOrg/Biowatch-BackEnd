@@ -311,6 +311,22 @@ du backfill (N années × ~840 000 cellules reste le même calcul, qu'on interro
 courte ou longue par année) — seul le run **récurrent** devient praticable sans quota
 supplémentaire. Le backfill reste l'usage principal justifiant la demande CREODIAS en cours.
 
+**Update 2026-10-09 (suite) — backfill fixé à 10 ans, objectif de la demande CREODIAS élargi**
+
+Profondeur du backfill tranchée : **10 ans**, alignée sur la fenêtre glissante déjà actée pour
+les espèces (`update_gbif_occurrences` : *"pour l'année N, on recharge N-9 → N"*) — cohérence de
+profondeur historique entre sources plutôt qu'un chiffre arbitraire. Volume total du backfill :
+10 × ~840 000 ≈ **8,4 millions de requêtes**, en une fois.
+
+Décision complémentaire : la demande CREODIAS ne vise plus seulement "rendre le backfill
+faisable", mais aussi **rendre chaque run — backfill et récurrent annuel — rapide** (quelques
+jours, pas des semaines ni des mois), plutôt que de dimensionner au strict minimum qui fait
+tenir les chiffres dans le calendrier. Un run annuel de ~55 jours reste opérationnellement risqué
+(VPS à maintenir en continu, fenêtre d'exposition aux pannes/interruptions longue) même s'il
+rentre mathématiquement dans l'année. Pas de chiffre précis de PU/minute demandé au comité — on
+fournit les volumes réels (8,4M one-shot, 840k/an récurrent) et l'objectif (quelques jours), et
+on laisse le comité dimensionner les crédits en conséquence.
+
 **Remise en cause**
 
 Ce seuil est désormais **atteint en pratique**, pas seulement hypothétique (voir update
