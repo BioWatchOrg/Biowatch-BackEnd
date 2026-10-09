@@ -327,10 +327,40 @@ rentre mathématiquement dans l'année. Pas de chiffre précis de PU/minute dema
 fournit les volumes réels (8,4M one-shot, 840k/an récurrent) et l'objectif (quelques jours), et
 on laisse le comité dimensionner les crédits en conséquence.
 
+**Update 2026-10-09 (suite) — ratio PU/requête mesuré, risque critique quantifié**
+
+Export réel des statistiques d'usage Sentinel Hub (dashboard CDSE, 2 jours de tests) :
+802 requêtes pour 30 PU consommées, ratio **~0,0374 PU/requête** (stable à ±1% entre les deux
+jours) — plus élevé que le minimum générique ~0,01 PU évoqué plus haut, cohérent avec notre
+evalscript à 4 sorties (NDVI/NDWI/NDBI/SWIR) par requête plutôt qu'une seule bande.
+
+Avec ce ratio : backfill 10 ans ≈ 8,4M requêtes × 0,0374 ≈ **314 000 PU** (one-shot), run
+récurrent annuel ≈ 840k × 0,0374 ≈ **31 400 PU/an**. Demande dimensionnée à **~400 000 PU**
+(backfill + 1 an de récurrent + marge ~15-20% pour les retries de zones en échec).
+
+**Risque critique identifié en creusant ce calcul** : le mur de rate-limit déjà observé (429
+après ~24 requêtes, `Retry-After` ≈130s) n'a consommé que ~0,9 PU au moment où il s'est déclenché
+— on était loin d'épuiser un quota mensuel de PU. Ça confirme que le vrai plafond tapé est un
+**débit par minute** (requêtes ou PU/minute), un mécanisme **indépendant** du solde total de PU.
+Or les crédits CREODIAS sont un solde à consommer (comme un forfait prépayé), pas un abonnement
+récurrent qui relève nécessairement ce plafond de débit.
+
+**Conséquence** : si l'octroi de crédits n'augmente *pas* explicitement le débit par minute
+autorisé, un plus gros solde de PU ne change rien à la vitesse — au débit actuel (~635
+requêtes/heure estimé), consommer 8,4M requêtes prendrait **~551 jours**, qu'on ait 400 000 ou
+4 000 000 PU de solde. Le solde plus gros évite seulement de tomber à zéro avant la fin, il
+n'accélère rien. C'est la concrétisation chiffrée du risque déjà noté le 2026-10-09 (*"rien ne
+garantit que ces crédits lèvent spécifiquement le rate-limit par minute"*) — **à clarifier
+explicitement avec CREODIAS avant de considérer cette demande comme une solution**, pas juste à
+noter comme hypothèse en suspens.
+
 **Remise en cause**
 
 Ce seuil est désormais **atteint en pratique**, pas seulement hypothétique (voir update
 2026-10-06). La demande de quota direct est définitivement fermée (update 2026-10-09) — à
 réévaluer uniquement si l'une des deux candidatures en cours aboutit. Si l'éligibilité à la
 Batch Statistical API est obtenue, réévaluer complètement cette décision — le stockage S3
-deviendrait alors un besoin documenté et justifié, contrairement à aujourd'hui.
+deviendrait alors un besoin documenté et justifié, contrairement à aujourd'hui. **Si CREODIAS
+confirme que les crédits n'augmentent pas le débit par minute, cette piste doit être réévaluée
+immédiatement** — elle ne résoudrait alors ni le run récurrent ni le backfill dans un délai
+raisonnable, malgré le volume de PU accordé.
