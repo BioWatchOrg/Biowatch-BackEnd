@@ -13,6 +13,7 @@ from clients import init_db
 from geo import generate_h3_grid
 
 from jobs.registry import Job, register
+from sentinel import DEFAULT_MAX_WORKERS, EXTRACTION_PIPELINE_VERSION, extract_sentinel_data_by_aoi
 
 
 def _configure_generate_h3_grid(parser: ArgumentParser) -> None:
@@ -52,5 +53,56 @@ register(
         name="init_db",
         help="Initialise le schéma de la base clients (extensions + tables).",
         run=_run_init_db,
+    )
+)
+
+
+def _run_extract_sentinel(args: Namespace) -> None:
+    extract_sentinel_data_by_aoi(
+        aoi_label=args.aoi,
+        bucket=args.bucket_id,
+        resolution=args.h3_res,
+        source_version=args.source_version,
+        max_workers=args.max_workers,
+    )
+
+
+def _configure_extract_sentinel(parser: ArgumentParser) -> None:
+    parser.add_argument(
+        "--aoi",
+        required=True,
+        help="Label de l'AOI (voir packages/core/aoi/aoi_registry.json).",
+    )
+    parser.add_argument(
+        "--bucket_id",
+        required=True,
+        help="Année du bucket, cadence annuelle (ex: '2026') — interroge mai de cette année.",
+    )
+    parser.add_argument(
+        "--h3_res",
+        type=int,
+        default=8,
+        help="Résolution H3 (entier). Par défaut : le default_res de l'AOI.",
+    )
+    parser.add_argument(
+        "--source_version",
+        default=EXTRACTION_PIPELINE_VERSION,
+        help="Version du pipeline d'extraction, pas une date "
+        f"(défaut : {EXTRACTION_PIPELINE_VERSION}, la version courante du code).",
+    )
+    parser.add_argument(
+        "--max_workers",
+        type=int,
+        default=DEFAULT_MAX_WORKERS,
+        help=f"Requêtes Sentinel Hub en parallèle (défaut : {DEFAULT_MAX_WORKERS}).",
+    )
+
+
+register(
+    Job(
+        name="extract_sentinel",
+        help="Extrait les données Sentinel pour une AOI et un bucket donnés.",
+        run=_run_extract_sentinel,
+        configure=_configure_extract_sentinel,
     )
 )
