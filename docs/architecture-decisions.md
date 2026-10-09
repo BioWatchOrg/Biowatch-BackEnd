@@ -293,10 +293,18 @@ example, workflow) et `6. Industrialisation du calcul des scores` (DoD "tous les
 "annuel", le texte supposant le satellite comme "source la plus fréquente" n'étant plus
 applicable puisque toutes les sources sont désormais alignées).
 
-**Point ouvert, non tranché ici** : la fenêtre de référence exacte (quel mois, quelle durée) est
-une décision écologique/produit — ex. une période de végétation stable, faible couverture
-neigeuse/nuageuse selon la région. Ne pas l'inventer côté implémentation ; à valider avec
-l'équipe avant de coder le changement dans `packages/sentinel/sentinel_extract.py`.
+**Fenêtre de référence tranchée (2026-10-09)** : **1er au 31 mai, chaque année** (mois complet,
+pas une sous-période). Raisonnement : couvert nuageux moyen de 45% en Île-de-France en mai —
+point médian correct, nettement mieux que novembre-janvier (58-60%) — et végétation déjà active
+sans stress hydrique d'été. Le mois complet est préféré à une fenêtre plus courte pour maximiser
+le nombre de scènes agrégées par cellule (signal plus robuste), au prix d'un coût en quota
+légèrement supérieur à une sous-période.
+
+Implémentation : `bucket_id` reste au format annuel (`"YYYY"`, cohérent avec les autres sources),
+mais le `time_range` envoyé à la Statistical API est construit directement sur mai de cette
+année-là (`{year}-05-01T00:00:00Z` → `{year}-06-01T00:00:00Z`, borne de fin exclusive — même
+piège que le bug du 2026-10-04 sur `aggregationInterval=P1M`) plutôt que via `get_bucket_range`
+sur le bucket annuel complet (qui donnerait tout le calendrier, pas seulement mai).
 
 **Impact sur le backfill historique** : ce changement de cadence ne réduit pas le volume total
 du backfill (N années × ~840 000 cellules reste le même calcul, qu'on interroge une fenêtre
