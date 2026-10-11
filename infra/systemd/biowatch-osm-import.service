@@ -1,0 +1,28 @@
+# Import mensuel d'un snapshot OSM (ticket #35) — lancé par biowatch-osm-import.timer.
+# Chaque déclenchement importe la prochaine région pas encore importée pour
+# l'année en cours (voir apps/jobs/pipelines/osm_import.py).
+[Unit]
+Description=BioWatch - import OSM snapshot (osm2pgsql)
+Wants=network-online.target
+After=network-online.target postgresql.service
+
+[Service]
+Type=oneshot
+User=biowatch-jobs
+Group=biowatch-jobs
+EnvironmentFile=/etc/biowatch/jobs.env
+WorkingDirectory=/opt/biowatch/app
+# Le venv est construit par deploy : pas de « uv run », qui tenterait
+# d'écrire dans /opt/biowatch.
+ExecStart=/opt/biowatch/app/.venv/bin/biowatch-jobs osm_import_scheduled --env prod
+# Un import régional dure de quelques minutes à ~1 h : au-delà, il est bloqué.
+TimeoutStartSec=4h
+# Le VPS 1 sert aussi l'API : l'import passe après.
+Nice=10
+IOSchedulingClass=idle
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/biowatch/jobs /var/log/biowatch/jobs
