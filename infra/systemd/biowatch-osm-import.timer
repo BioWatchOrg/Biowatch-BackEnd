@@ -1,0 +1,12 @@
+# 1 région par mois. Le 5 du mois plutôt que le 1er : en janvier, le snapshot
+# Geofabrik du 1er janvier doit être publié avant qu'on le demande.
+[Unit]
+Description=BioWatch - import OSM mensuel
+
+[Timer]
+OnCalendar=*-*-05 03:00:00 Europe/Paris
+# Rattrape un déclenchement manqué (VPS éteint à l'heure prévue).
+Persistent=true
+
+[Install]
+WantedBy=timers.target
