@@ -62,6 +62,6 @@ def quality_filter(record: dict, date_min: date, date_max: date) -> dict | None:
         "event_date": event_date,
         "gbif_taxon_key": record.get("taxonKey"),
         "scientific_name": scientific_name,
-        "decimal_latitude": float(lat),
-        "decimal_longitude": float(lon),
+        "decimal_latitude": float(lat),  # type: ignore[arg-type]  # narrowed by _is_valid_coordinate above
+        "decimal_longitude": float(lon),  # type: ignore[arg-type]  # narrowed by _is_valid_coordinate above
     }
