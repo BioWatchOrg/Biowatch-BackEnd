@@ -36,7 +36,9 @@ class AOI:
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = CURRENT_DIR.split("packages")[0]
-with open(os.path.join(ROOT_DIR, "packages/core/aoi/aoi_registry.json"), "r", encoding="utf-8") as f:
+with open(
+    os.path.join(ROOT_DIR, "packages/core/aoi/aoi_registry.json"), "r", encoding="utf-8"
+) as f:
     aoi_data = json.load(f)
 
 

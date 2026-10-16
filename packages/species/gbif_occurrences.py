@@ -184,11 +184,18 @@ def update_gbif_occurrences(aoi_label: AoiLabel, engine: Engine | None = None) -
                         continue
                     rows.append({**quality_row, "zone_id": zone_id, "aoi_id": aoi_label})
                     if len(rows) >= UPSERT_BATCH_SIZE:
-                        upsert(session=session, model=SpeciesOccurrencesRaw, rows=rows, update_columns=[])
+                        upsert(
+                            session=session,
+                            model=SpeciesOccurrencesRaw,
+                            rows=rows,
+                            update_columns=[],
+                        )
                         n_total += len(rows)
                         rows = []
                 if rows:
-                    upsert(session=session, model=SpeciesOccurrencesRaw, rows=rows, update_columns=[])
+                    upsert(
+                        session=session, model=SpeciesOccurrencesRaw, rows=rows, update_columns=[]
+                    )
                     n_total += len(rows)
 
                 logger.info(

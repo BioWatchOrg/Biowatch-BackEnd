@@ -108,13 +108,21 @@ def test_request_download_raises_on_http_error(monkeypatch):
     monkeypatch.setattr(httpx.Client, "post", fake_post)
 
     with pytest.raises(GbifApiError):
-        request_download({"type": "and", "predicates": []}, creator="alice", auth=httpx.BasicAuth("a", "b"))
+        request_download(
+            {"type": "and", "predicates": []}, creator="alice", auth=httpx.BasicAuth("a", "b")
+        )
 
 
 def test_wait_for_download_returns_on_succeeded(monkeypatch):
     responses = [
-        httpx.Response(200, json={"status": "RUNNING"}, request=httpx.Request("GET", GBIF_DOWNLOAD_STATUS_URL)),
-        httpx.Response(200, json={"status": "SUCCEEDED"}, request=httpx.Request("GET", GBIF_DOWNLOAD_STATUS_URL)),
+        httpx.Response(
+            200, json={"status": "RUNNING"}, request=httpx.Request("GET", GBIF_DOWNLOAD_STATUS_URL)
+        ),
+        httpx.Response(
+            200,
+            json={"status": "SUCCEEDED"},
+            request=httpx.Request("GET", GBIF_DOWNLOAD_STATUS_URL),
+        ),
     ]
     sleeps = []
 
@@ -191,10 +199,22 @@ def test_stream_download_yields_parsed_rows(monkeypatch, tmp_path):
     monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
     body = _zipped_tsv(
         [
-            {"gbifID": "1001", "scientificName": "Vulpes vulpes", "taxonKey": "5219243",
-             "decimalLatitude": "48.8566", "decimalLongitude": "2.3522", "eventDate": "2020-06-15"},
-            {"gbifID": "1002", "scientificName": "Bubo bubo", "taxonKey": "2497252",
-             "decimalLatitude": "45.0", "decimalLongitude": "3.0", "eventDate": "2019-03-01"},
+            {
+                "gbifID": "1001",
+                "scientificName": "Vulpes vulpes",
+                "taxonKey": "5219243",
+                "decimalLatitude": "48.8566",
+                "decimalLongitude": "2.3522",
+                "eventDate": "2020-06-15",
+            },
+            {
+                "gbifID": "1002",
+                "scientificName": "Bubo bubo",
+                "taxonKey": "2497252",
+                "decimalLatitude": "45.0",
+                "decimalLongitude": "3.0",
+                "eventDate": "2019-03-01",
+            },
         ]
     )
 
@@ -236,8 +256,14 @@ def test_stream_download_parses_zip_archive_not_gzip(monkeypatch, tmp_path):
     download_key = "0001109-260921141020460"
     body = _zipped_tsv(
         [
-            {"gbifID": "2001", "scientificName": "Anthus campestris", "taxonKey": "2490274",
-             "decimalLatitude": "43.48563", "decimalLongitude": "5.13173", "eventDate": "2020-06-01"},
+            {
+                "gbifID": "2001",
+                "scientificName": "Anthus campestris",
+                "taxonKey": "2490274",
+                "decimalLatitude": "43.48563",
+                "decimalLongitude": "5.13173",
+                "eventDate": "2020-06-01",
+            },
         ],
         member_name=f"{download_key}.csv",
     )
@@ -280,7 +306,9 @@ def test_stream_download_raises_on_http_error(monkeypatch, tmp_path):
 
         def raise_for_status(self):
             raise httpx.HTTPStatusError(
-                "404", request=httpx.Request("GET", GBIF_DOWNLOAD_FILE_URL), response=httpx.Response(404)
+                "404",
+                request=httpx.Request("GET", GBIF_DOWNLOAD_FILE_URL),
+                response=httpx.Response(404),
             )
 
         def iter_bytes(self):

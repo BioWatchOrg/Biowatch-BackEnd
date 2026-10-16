@@ -57,12 +57,22 @@ def test_normalize_csv_row_maps_gbif_id_to_key():
 
 
 def test_normalize_csv_row_handles_missing_optional_fields():
-    row = {"gbifID": "", "scientificName": "", "taxonKey": "", "decimalLatitude": "",
-           "decimalLongitude": "", "eventDate": ""}
+    row = {
+        "gbifID": "",
+        "scientificName": "",
+        "taxonKey": "",
+        "decimalLatitude": "",
+        "decimalLongitude": "",
+        "eventDate": "",
+    }
     normalized = gbif_occurrences._normalize_csv_row(row)
     assert normalized == {
-        "key": None, "scientificName": None, "taxonKey": None,
-        "decimalLatitude": None, "decimalLongitude": None, "eventDate": None,
+        "key": None,
+        "scientificName": None,
+        "taxonKey": None,
+        "decimalLatitude": None,
+        "decimalLongitude": None,
+        "eventDate": None,
     }
 
 
@@ -313,22 +323,34 @@ def test_replaces_rows_within_refetched_window_scoped_to_aoi(monkeypatch):
             SpeciesOccurrencesRaw.__table__.insert(),
             [
                 {  # in-window, this AOI -> must be replaced (deleted, no new fetch data here)
-                    "gbif_occurrence_id": "in-window", "event_date": date(2020, 1, 1),
-                    "gbif_taxon_key": None, "scientific_name": "A",
-                    "decimal_latitude": 1.0, "decimal_longitude": 1.0,
-                    "zone_id": "z-in", "aoi_id": GOLDEN_AOI,
+                    "gbif_occurrence_id": "in-window",
+                    "event_date": date(2020, 1, 1),
+                    "gbif_taxon_key": None,
+                    "scientific_name": "A",
+                    "decimal_latitude": 1.0,
+                    "decimal_longitude": 1.0,
+                    "zone_id": "z-in",
+                    "aoi_id": GOLDEN_AOI,
                 },
                 {  # out-of-window, this AOI -> kept forever, never touched
-                    "gbif_occurrence_id": "out-of-window", "event_date": date(2000, 1, 1),
-                    "gbif_taxon_key": None, "scientific_name": "B",
-                    "decimal_latitude": 1.0, "decimal_longitude": 1.0,
-                    "zone_id": "z-out", "aoi_id": GOLDEN_AOI,
+                    "gbif_occurrence_id": "out-of-window",
+                    "event_date": date(2000, 1, 1),
+                    "gbif_taxon_key": None,
+                    "scientific_name": "B",
+                    "decimal_latitude": 1.0,
+                    "decimal_longitude": 1.0,
+                    "zone_id": "z-out",
+                    "aoi_id": GOLDEN_AOI,
                 },
                 {  # out-of-window, OTHER AOI -> must survive (not this AOI's window)
-                    "gbif_occurrence_id": "other-aoi-old", "event_date": date(2000, 1, 1),
-                    "gbif_taxon_key": None, "scientific_name": "C",
-                    "decimal_latitude": 1.0, "decimal_longitude": 1.0,
-                    "zone_id": "z-other", "aoi_id": "not-idf",
+                    "gbif_occurrence_id": "other-aoi-old",
+                    "event_date": date(2000, 1, 1),
+                    "gbif_taxon_key": None,
+                    "scientific_name": "C",
+                    "decimal_latitude": 1.0,
+                    "decimal_longitude": 1.0,
+                    "zone_id": "z-other",
+                    "aoi_id": "not-idf",
                 },
             ],
         )
@@ -336,9 +358,7 @@ def test_replaces_rows_within_refetched_window_scoped_to_aoi(monkeypatch):
     gbif_occurrences.update_gbif_occurrences(GOLDEN_AOI, engine=engine)
 
     with engine.connect() as conn:
-        remaining_ids = set(
-            conn.scalars(select(SpeciesOccurrencesRaw.gbif_occurrence_id)).all()
-        )
+        remaining_ids = set(conn.scalars(select(SpeciesOccurrencesRaw.gbif_occurrence_id)).all())
 
     assert remaining_ids == {"out-of-window", "other-aoi-old"}
 
@@ -356,7 +376,9 @@ def test_update_gbif_occurrences_skips_rerun_same_year(monkeypatch):
     init_db(engine)
 
     with engine.begin() as conn:
-        conn.execute(delete(SpeciesOccurrencesRaw).where(SpeciesOccurrencesRaw.aoi_id == GOLDEN_AOI))
+        conn.execute(
+            delete(SpeciesOccurrencesRaw).where(SpeciesOccurrencesRaw.aoi_id == GOLDEN_AOI)
+        )
         conn.execute(delete(JobRun).where(JobRun.job_name == "update_gbif_occurrences"))
 
     from geo.h3_grid import generate_h3_grid
@@ -373,11 +395,13 @@ def test_update_gbif_occurrences_skips_rerun_same_year(monkeypatch):
 
     with engine.connect() as conn:
         count = conn.scalar(
-            select(func.count()).select_from(SpeciesOccurrencesRaw)
+            select(func.count())
+            .select_from(SpeciesOccurrencesRaw)
             .where(SpeciesOccurrencesRaw.aoi_id == GOLDEN_AOI)
         )
         runs = conn.scalar(
-            select(func.count()).select_from(JobRun)
+            select(func.count())
+            .select_from(JobRun)
             .where(JobRun.job_name == "update_gbif_occurrences")
         )
 
@@ -403,7 +427,9 @@ def test_update_gbif_occurrences_refreshes_data_across_overlapping_windows(monke
     init_db(engine)
 
     with engine.begin() as conn:
-        conn.execute(delete(SpeciesOccurrencesRaw).where(SpeciesOccurrencesRaw.aoi_id == GOLDEN_AOI))
+        conn.execute(
+            delete(SpeciesOccurrencesRaw).where(SpeciesOccurrencesRaw.aoi_id == GOLDEN_AOI)
+        )
         conn.execute(delete(JobRun).where(JobRun.job_name == "update_gbif_occurrences"))
 
     from geo.h3_grid import generate_h3_grid
@@ -425,11 +451,13 @@ def test_update_gbif_occurrences_refreshes_data_across_overlapping_windows(monke
 
     with engine.connect() as conn:
         count = conn.scalar(
-            select(func.count()).select_from(SpeciesOccurrencesRaw)
+            select(func.count())
+            .select_from(SpeciesOccurrencesRaw)
             .where(SpeciesOccurrencesRaw.gbif_occurrence_id == "1001")
         )
         successful_runs = conn.scalar(
-            select(func.count()).select_from(JobRun)
+            select(func.count())
+            .select_from(JobRun)
             .where(JobRun.job_name == "update_gbif_occurrences", JobRun.status == "success")
         )
         row = conn.execute(
@@ -455,7 +483,9 @@ def test_update_gbif_occurrences_new_run_when_resolution_changes(monkeypatch):
     init_db(engine)
 
     with engine.begin() as conn:
-        conn.execute(delete(SpeciesOccurrencesRaw).where(SpeciesOccurrencesRaw.aoi_id == GOLDEN_AOI))
+        conn.execute(
+            delete(SpeciesOccurrencesRaw).where(SpeciesOccurrencesRaw.aoi_id == GOLDEN_AOI)
+        )
         conn.execute(delete(JobRun).where(JobRun.job_name == "update_gbif_occurrences"))
 
     from geo.h3_grid import generate_h3_grid
@@ -475,7 +505,8 @@ def test_update_gbif_occurrences_new_run_when_resolution_changes(monkeypatch):
 
     with engine.connect() as conn:
         runs = conn.scalar(
-            select(func.count()).select_from(JobRun)
+            select(func.count())
+            .select_from(JobRun)
             .where(JobRun.job_name == "update_gbif_occurrences", JobRun.status == "success")
         )
 

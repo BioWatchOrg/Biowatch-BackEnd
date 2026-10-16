@@ -135,9 +135,7 @@ def wait_for_download(
             try:
                 response.raise_for_status()
             except httpx.HTTPStatusError as exc:
-                raise GbifApiError(
-                    f"GBIF download status check failed (key={key}): {exc}"
-                ) from exc
+                raise GbifApiError(f"GBIF download status check failed (key={key}): {exc}") from exc
 
             status = response.json().get("status")
             if status == "SUCCEEDED":
