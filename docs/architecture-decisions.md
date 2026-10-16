@@ -104,3 +104,68 @@ nécessaire (cf. `CLAUDE.md`, section Architecture : "Auth : déléguée").
 
 À réévaluer si le projet dépasse le stade POC/MVP pour viser une mise en production
 commerciale avec des exigences de conformité RGPD strictes — pas avant.
+
+---
+
+## ADR-003 — Garde-fous dev / prod : marqueur `.env.prod` et suffixe `_<env>` du nom de base
+
+**Statut** : actif
+
+**Contexte**
+
+Un seul VPS de prod et des postes de dev qui, pour inspecter la prod, ouvrent un tunnel SSH
+vers sa base (issue #18). Le risque à couvrir est l'**erreur** : un job lancé depuis un laptop
+qui atteint `biowatch_prod` parce qu'un `DATABASE_URL` traîne dans le shell, ou parce qu'on a
+tapé `--env prod` sur la mauvaise machine. Le risque à ne pas couvrir ici est l'action
+délibérée d'un membre de l'équipe : contre ça, seuls les droits réseau et les comptes
+PostgreSQL comptent, pas du code Python.
+
+**Décision**
+
+1. **`dev` est le défaut**, résolu à un seul endroit (`core.config.resolve_env` :
+   `--env` > `BIOWATCH_ENV` > `dev`).
+2. **Prod exige la présence de `<racine du dépôt>/.env.prod`** (`ENV_FILE_REQUIRED`). Sur le
+   VPS, c'est un **marqueur** posé par le déploiement à côté du code, sans secret : les secrets
+   prod restent dans `/etc/biowatch/jobs.env`, lus par systemd, jamais dans un fichier lisible
+   par le code. Sur un poste de dev, le fichier n'existe pas, donc `--env prod` s'arrête avant
+   toute lecture de variable de connexion.
+3. **Le nom de la base doit finir par `_<env>`** (`biowatch_dev` / `biowatch_prod`), vérifié par
+   `clients.db` avant d'ouvrir la connexion, quelle que soit l'origine de la variable (fichier,
+   shell, systemd). C'est le filet qui couvre le cas « dev par défaut + tunnel vers la prod ».
+4. **`load_env_file(env)` est l'unique point d'activation d'un environnement** : il fige
+   `BIOWATCH_ENV` puis charge `<racine>/.env.<env>` (jamais le cwd ni ses parents). C'est un
+   effet de bord sur `os.environ`, assumé et localisé : tout entrypoint (CLI aujourd'hui, API
+   demain) l'appelle au démarrage, et `clients.db` le rappelle en filet (idempotent) pour les
+   usages en librairie. Partout ailleurs, l'env est lu via `resolve_env()`, jamais passé en
+   paramètre : c'est un état de process, pas un argument métier.
+5. **`env` entre dans la clé d'idempotence** : la ligne `job_runs` dit dans quel environnement
+   le travail a été fait, et un `success` de dev ne vaut jamais pour prod (copie de prod en
+   dev, restauration). Conséquence assumée au merge : les runs déjà en `success` se relancent
+   une fois.
+
+**Pourquoi**
+
+- Deux filets indépendants plutôt qu'un seul : le marqueur bloque `--env prod` hors VPS, le
+  suffixe bloque une base prod atteinte *sans* `--env prod`. Aucun des deux ne dépend de ce
+  qui traîne dans le shell.
+- Pas de mécanisme de confirmation (`--yes`, prompt) : une case à cocher s'automatise et se
+  copie-colle ; l'absence d'un fichier et une convention de nommage, non.
+- Les secrets prod ne descendent jamais dans un `.env.prod` lisible par `biowatch-jobs` :
+  cohérent avec le modèle du VPS (`EnvironmentFile=` lu par systemd en root, cf.
+  `infra/vps/README.md`).
+
+**Limites assumées**
+
+- Un `.env.prod` créé volontairement sur un laptop, ou une base prod renommée `*_dev`,
+  contourne ces garde-fous : ils protègent contre l'erreur, pas contre l'intention. La
+  protection contre l'intention est réseau (DB jamais exposée, tunnel nominatif) et
+  PostgreSQL (comptes, droits).
+- `load_env_file` mute `os.environ` : acceptable tant que chaque entrypoint est explicite sur
+  son env. L'API devra appeler `load_env_file(resolve_env())` à son démarrage, et ne jamais
+  pouvoir tomber sur `prod` par défaut.
+
+**Remise en cause**
+
+À revoir si un troisième environnement apparaît (préprod, staging), ou si la prod quitte le
+modèle « un VPS, secrets via systemd » (conteneurs, secret manager) : le marqueur `.env.prod`
+n'aurait alors plus de sens et devrait être remplacé par un signal propre à cette plateforme.

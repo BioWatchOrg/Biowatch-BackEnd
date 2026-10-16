@@ -34,6 +34,11 @@ gagne sur `.env.dev` (`override=False`), donc un tunnel SSH qui exporte un
 `DATABASE_URL` vers `biowatch_prod` ferait écrire en prod un job lancé sans `--env`.
 Avec ce contrôle, la connexion est refusée avant d'être ouverte.
 
+Ces deux garde-fous protègent contre **l'erreur**, pas contre une action délibérée :
+créer soi-même `.env.prod` sur un laptop les contourne. La protection contre
+l'intention est réseau et PostgreSQL (DB jamais exposée, comptes, droits). Raisonnement
+complet dans `docs/architecture-decisions.md` (ADR-003).
+
 Les tokens d'outillage (Notion) restent dans `.env`, commun aux deux envs.
 
 **Migration** (si tu avais déjà un `.env` avec `POSTGRES_*` / `LOG_LEVEL`) : ces
@@ -82,6 +87,25 @@ uv run biowatch-jobs init_db
 # 3. enregistrer les h3 pour le MVP 
 uv run biowatch-jobs generate_h3_grid --aoi idf --resolution 8
 ```
+---
+## Tests
+
+```bash
+uv run pytest                                   # unitaires : aucune base requise
+uv run ruff check . && uv run mypy .            # ce que la CI fait tourner
+```
+
+Les tests bout-en-bout sur PostGIS (idempotence réelle des jobs, séparation dev / prod
+dans `job_runs`) sont marqués `skipif` tant que `TEST_DATABASE_URL` n'est pas défini.
+**La CI les exécute toujours** (service PostGIS dans `.github/workflows/test.yml`). En
+local, sur une base jetable pour ne pas polluer `biowatch_dev` :
+
+```bash
+docker exec postgis psql -U biowatch -d biowatch_dev -c "CREATE DATABASE biowatch_test_dev"
+TEST_DATABASE_URL=postgresql+psycopg://biowatch:<mot de passe de .env.dev>@127.0.0.1:5432/biowatch_test_dev \
+  uv run pytest tests/packages/geo/test_generate_h3_grid.py
+```
+
 ---
 ## CLI 
 ### Lancer
