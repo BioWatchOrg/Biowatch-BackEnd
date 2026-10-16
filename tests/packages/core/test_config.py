@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from core.config import (
+    DATA_ROOT_VAR,
     DEFAULT_ENV,
     ENV_VAR,
     UnknownEnvError,
@@ -68,8 +69,21 @@ def test_env_file_names():
     assert env_file("prod") == ".env.prod"
 
 
-def test_data_root_separates_environments():
+def test_data_root_separates_environments(monkeypatch):
     """Les deux environnements n'écrivent jamais dans le même répertoire."""
+    monkeypatch.delenv(DATA_ROOT_VAR, raising=False)
     assert data_root("dev") == Path("data/dev")
     assert data_root("prod") == Path("data/prod")
     assert data_root("dev") != data_root("prod")
+
+
+def test_data_root_is_overridable_and_keeps_env_separation(monkeypatch):
+    """Sur le VPS, la racine pointe hors du code déployé (lecture seule)."""
+    monkeypatch.setenv(DATA_ROOT_VAR, "/var/lib/biowatch/jobs")
+    assert data_root("prod") == Path("/var/lib/biowatch/jobs/prod")
+    assert data_root("dev") == Path("/var/lib/biowatch/jobs/dev")
+
+
+def test_empty_data_root_falls_back_to_default(monkeypatch):
+    monkeypatch.setenv(DATA_ROOT_VAR, "")
+    assert data_root("dev") == Path("data/dev")

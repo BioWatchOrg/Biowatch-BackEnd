@@ -22,6 +22,7 @@ ENVS: tuple[Env, ...] = get_args(Env)
 DEFAULT_ENV: Env = "dev"
 ENV_VAR = "BIOWATCH_ENV"
 DATA_ROOT = Path("data")
+DATA_ROOT_VAR = "BIOWATCH_DATA_ROOT"
 
 
 class UnknownEnvError(ValueError):
@@ -71,5 +72,9 @@ def data_root(env: Env) -> Path:
     `data/` est gitignoré : les artefacts produits par les jobs (grilles,
     exports) ne rentrent jamais dans le dépôt, et les deux environnements
     n'écrivent jamais dans le même répertoire.
+
+    `BIOWATCH_DATA_ROOT` remplace la racine `data/` : sur le VPS, le code
+    déployé (`/opt/biowatch`) est en lecture seule pour `biowatch-jobs`, les
+    artefacts doivent aller dans `/var/lib/biowatch/jobs`.
     """
-    return DATA_ROOT / env
+    return Path(os.environ.get(DATA_ROOT_VAR) or DATA_ROOT) / env

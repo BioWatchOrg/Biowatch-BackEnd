@@ -210,6 +210,10 @@ PrivateTmp=yes
 ReadWritePaths=/var/lib/biowatch/api /var/log/biowatch/api
 ```
 
+Les jobs écrivent leurs artefacts sous `BIOWATCH_DATA_ROOT/<env>` : dans
+`/etc/biowatch/jobs.env`, poser `BIOWATCH_DATA_ROOT=/var/lib/biowatch/jobs`
+(le défaut relatif `data/` tomberait dans `/opt/biowatch`, en lecture seule).
+
 Contrôle sur la machine : `systemctl show -p User <unité>` et
 `ps -o user,cmd -C python`.
 
