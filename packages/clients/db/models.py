@@ -156,6 +156,30 @@ class SpeciesFeaturesByZone(Base):
     )
 
 
+class IucnTaxa(Base):
+    """IUCN Red List reference: threat category per species (staging schema).
+
+    Intermediate data, not exposed by the API: it feeds
+    `compute_species_features_by_zone` (join on `scientific_name` with GBIF).
+    One row per IUCN taxon (MVP: a single "active" version). A taxon dropped
+    from a newer Red List keeps its old `source_version` — consumers filter on
+    the version they target.
+    """
+
+    __tablename__ = "iucn_taxa"
+    __table_args__ = {"schema": "staging"}
+
+    iucn_taxon_id: Mapped[int] = mapped_column(Integer, primary_key=True)  # IUCN SIS id
+    scientific_name: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    category: Mapped[str] = mapped_column(String, nullable=False, index=True)  # CR, EN, VU...
+    assessment_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    year_published: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_version: Mapped[str] = mapped_column(String, nullable=False, index=True)  # "2026-1"
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
 class StressScoreByZone(Base):
     """Main business result: ecological stress score per zone × bucket × method."""
 

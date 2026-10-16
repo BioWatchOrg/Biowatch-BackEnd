@@ -5,8 +5,9 @@ and every table declared by the ORM models:
     uv run python -m clients.db.init_db
 
 The ORM models (`clients.db.models`) are the single source of truth for the
-schema. Extensions cannot be expressed as ORM models, so they are created here
-in raw SQL before `create_all`, since PostGIS geometry columns depend on them.
+schema. Extensions and schemas cannot be expressed as ORM models, so they are
+created here in raw SQL before `create_all`: PostGIS geometry columns depend on
+the extensions, and `staging.*` tables on the `staging` schema.
 """
 
 import logging
@@ -19,6 +20,9 @@ from .session import DatabaseConfigError, get_engine
 logger = logging.getLogger(__name__)
 
 EXTENSIONS = ("postgis", "pgcrypto")
+# Intermediate data (reference tables, raw-ish imports) kept apart from the
+# business tables of `public`.
+SCHEMAS = ("staging",)
 
 
 def _create_extensions(engine: Engine) -> None:
@@ -28,11 +32,19 @@ def _create_extensions(engine: Engine) -> None:
             conn.execute(text(f"CREATE EXTENSION IF NOT EXISTS {extension}"))
 
 
+def _create_schemas(engine: Engine) -> None:
+    """Create the non-default schemas some tables live in (e.g. `staging`)."""
+    with engine.begin() as conn:
+        for schema in SCHEMAS:
+            conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema}"))
+
+
 def init_db(engine: Engine | None = None) -> None:
-    """Create extensions and every table. Idempotent: safe to re-run."""
+    """Create extensions, schemas and every table. Idempotent: safe to re-run."""
     try:
         engine = engine or get_engine()
         _create_extensions(engine)
+        _create_schemas(engine)
         Base.metadata.create_all(engine)
         logger.info(
             "schema initialized",

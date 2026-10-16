@@ -112,8 +112,8 @@ packages (voir CLAUDE.md, "Documentation").
   le suffixe `_<env>` — contrôlé sur le nom réellement ouvert, `?dbname=` compris). Ces
   erreurs ne contiennent jamais d'URL ni de mot de passe ; le CLI les logge en WARNING
   (`cli.config_error`) et sort sans traceback.
-- `init_db(engine=None) -> None` — crée les extensions PostgreSQL (`postgis`, `pgcrypto`) et
-  toutes les tables ORM. Idempotent, à lancer une fois par environnement. Une
+- `init_db(engine=None) -> None` — crée les extensions PostgreSQL (`postgis`, `pgcrypto`), les
+  schémas (`staging`) et toutes les tables ORM. Idempotent, à lancer une fois par environnement. Une
   `DatabaseConfigError` remonte telle quelle (déjà rapportée par l'entrypoint), sans
   `db.init_db.error`.
 - `upsert(session, model, rows, update_columns=None) -> None` — `INSERT ... ON CONFLICT DO
@@ -123,7 +123,14 @@ packages (voir CLAUDE.md, "Documentation").
 - `JobAlreadySucceeded`, `RunContext` (dataclass), `Base` (déclarative base ORM).
 - Modèles ORM (`clients.db.models`, source de vérité du schéma) : `ZonesHex`,
   `SatelliteFeaturesByZone`, `OsmFeaturesByZone`, `ProtectedAreasByZone`,
-  `SpeciesFeaturesByZone`, `StressScoreByZone`, `JobRun`, `JobRunZoneError`.
+  `SpeciesFeaturesByZone`, `StressScoreByZone`, `JobRun`, `JobRunZoneError`, et dans le schéma
+  `staging` (données intermédiaires, non exposées) : `IucnTaxa` (`staging.iucn_taxa`).
+
+### `clients.iucn`
+- `IucnClient(token=None)` — client de l'API IUCN Red List v4 (jeton `IUCN_API_TOKEN` lu dans
+  l'env si non fourni ; context manager). `red_list_version() -> str` (ex. `"2026-1"`),
+  `iter_country_assessments(country, scope_code=1)` — dernières évaluations d'un pays, toutes
+  pages parcourues. Exception : `IucnApiError`.
 
 ### `clients.osm` (Geofabrik + osm2pgsql)
 - `snapshot_for(aoi_label, bucket) -> Snapshot` — URLs Geofabrik du snapshot au 1er janvier
@@ -294,6 +301,9 @@ une entrée dans `definitions.py`.
 
 Pipelines existants : `jobs.pipelines.osm_import` (`osm_import_snapshot`,
 `osm_import_scheduled`) — voir `infra/systemd/README.md` pour la planification.
+
+Les pipelines qui orchestrent plusieurs packages (API externe → copie brute → table) vivent
+dans `apps/jobs/pipelines/` : ex. `update_iucn_taxonomy(country="FR")`.
 
 ---
 
