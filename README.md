@@ -68,6 +68,8 @@ docker compose -f infra/docker/docker-compose.yml up -d postgis
 uv run biowatch-jobs init_db
 # 3. enregistrer les h3 pour le MVP 
 uv run biowatch-jobs generate_h3_grid --aoi idf --resolution 8
+# 4. référentiel IUCN des espèces de France (IUCN_API_TOKEN dans .env.dev)
+uv run biowatch-jobs update_iucn_taxonomy
 ```
 2) see logs
 ```bash

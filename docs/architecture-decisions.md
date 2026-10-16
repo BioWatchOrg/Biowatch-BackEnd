@@ -169,3 +169,48 @@ PostgreSQL comptent, pas du code Python.
 À revoir si un troisième environnement apparaît (préprod, staging), ou si la prod quitte le
 modèle « un VPS, secrets via systemd » (conteneurs, secret manager) : le marqueur `.env.prod`
 n'aurait alors plus de sens et devrait être remplacé par un signal propre à cette plateforme.
+
+---
+
+## ADR-004 — Référentiel IUCN : API v4 par pays plutôt qu'export complet sur S3
+
+**Statut** : actif
+
+**Contexte**
+
+`update_iucn_taxonomy` (#34) alimente `staging.iucn_taxa` (statut de menace par espèce),
+utilisé ensuite par `compute_species_features_by_zone`. Le ticket initial prévoyait
+d'ingérer un fichier d'export versionné déposé sur S3
+(`s3://.../raw/iucn/{source_version}/`).
+
+**Décision**
+
+Le job lit l'API IUCN Red List v4, route `/countries/FR?latest=true&scope_code=1`
+(évaluations globales des espèces présentes en France, environ 5000 espèces, 51 pages,
+environ 30 s). La réponse est gardée telle quelle en copie brute sur le disque du VPS
+(`BIOWATCH_DATA_ROOT/<env>/raw/iucn/<version>/FR.json`). `source_version` est la version
+de la Red List renvoyée par l'API (ex. `2026-1`).
+
+**Pourquoi**
+
+- L'API v4 n'expose aucune route d'export complet. L'export complet n'existe que via le
+  site, manuellement, avec un compte utilisateur : impossible à automatiser proprement
+  dans un job.
+- Le périmètre MVP est la France : la route par pays ne ramène que les espèces utiles,
+  sans filtrer 175 000 espèces mondiales.
+- Stockage local sur le VPS par défaut (CLAUDE.md) : S3 n'est justifié par aucun besoin
+  documenté. La copie brute suffit à la reproductibilité (recalcul sans rappeler l'API).
+- La version de la Red List lue sur l'API donne une `source_version` fiable et une clé
+  d'idempotence qui relance le job à chaque nouvelle édition.
+
+**Limites assumées**
+
+- Dépendance à un jeton API (`IUCN_API_TOKEN`, compte gratuit).
+- La route par pays ne fournit pas la tendance de population (`trend`).
+- France uniquement : `staging.iucn_taxa` n'a pas de colonne pays.
+
+**Remise en cause**
+
+À réévaluer si BioWatch couvre d'autres pays (ajouter une colonne pays, ou repasser par
+un export mondial), si le score a besoin de `trend`, ou si l'IUCN publie une route
+d'export complet.

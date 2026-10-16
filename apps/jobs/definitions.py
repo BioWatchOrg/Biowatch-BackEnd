@@ -12,6 +12,7 @@ from argparse import ArgumentParser, Namespace
 from clients import init_db
 from geo import generate_h3_grid
 
+from jobs.pipelines import update_iucn_taxonomy
 from jobs.registry import Job, register
 
 
@@ -52,5 +53,18 @@ register(
         name="init_db",
         help="Initialise le schéma de la base clients (extensions + tables).",
         run=_run_init_db,
+    )
+)
+
+
+def _run_update_iucn_taxonomy(args: Namespace) -> None:
+    update_iucn_taxonomy()
+
+
+register(
+    Job(
+        name="update_iucn_taxonomy",
+        help="Importe la Red List IUCN (espèces de France) dans staging.iucn_taxa.",
+        run=_run_update_iucn_taxonomy,
     )
 )

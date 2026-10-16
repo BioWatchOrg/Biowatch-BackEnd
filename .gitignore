@@ -257,3 +257,6 @@ docker-data/
 
 # macOS
 .DS_Store
+
+# Contexte agent local, par poste — ne doit jamais être versionné
+CLAUDE.local.md

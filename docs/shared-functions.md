@@ -86,18 +86,27 @@ packages (voir CLAUDE.md, "Documentation").
   le suffixe `_<env>` — contrôlé sur le nom réellement ouvert, `?dbname=` compris). Ces
   erreurs ne contiennent jamais d'URL ni de mot de passe ; le CLI les logge en WARNING
   (`cli.config_error`) et sort sans traceback.
-- `init_db(engine=None) -> None` — crée les extensions PostgreSQL (`postgis`, `pgcrypto`) et
-  toutes les tables ORM. Idempotent, à lancer une fois par environnement. Une
+- `init_db(engine=None) -> None` — crée les extensions PostgreSQL (`postgis`, `pgcrypto`), les
+  schémas (`staging`) et toutes les tables ORM. Idempotent, à lancer une fois par environnement. Une
   `DatabaseConfigError` remonte telle quelle (déjà rapportée par l'entrypoint), sans
   `db.init_db.error`.
 - `upsert(session, model, rows, update_columns=None) -> None` — `INSERT ... ON CONFLICT DO
   UPDATE` en masse sur la PK du modèle. **Seule façon d'écrire/mettre à jour** dans une table
   métier (jamais d'`INSERT` manuel). Chunké automatiquement sous la limite de bind params
-  PostgreSQL.
+  PostgreSQL. Les colonnes à `onupdate` ORM (ex. `updated_at`) absentes des lignes sont
+  rafraîchies au conflit.
 - `JobAlreadySucceeded`, `RunContext` (dataclass), `Base` (déclarative base ORM).
 - Modèles ORM (`clients.db.models`, source de vérité du schéma) : `ZonesHex`,
   `SatelliteFeaturesByZone`, `OsmFeaturesByZone`, `ProtectedAreasByZone`,
-  `SpeciesFeaturesByZone`, `StressScoreByZone`, `JobRun`, `JobRunZoneError`.
+  `SpeciesFeaturesByZone`, `StressScoreByZone`, `JobRun`, `JobRunZoneError`, et dans le schéma
+  `staging` (données intermédiaires, non exposées) : `IucnTaxa` (`staging.iucn_taxa`).
+
+### `clients.iucn`
+- `IucnClient(token=None)` — client de l'API IUCN Red List v4 (jeton `IUCN_API_TOKEN` lu dans
+  l'env si non fourni ; context manager). `red_list_version() -> str` (ex. `"2026-1"`),
+  `iter_country_assessments(country, scope_code=1)` — dernières évaluations d'un pays, toutes
+  pages parcourues ; lève `IucnApiError` si la liste reçue ne fait pas le total annoncé par
+  l'API (pas d'import tronqué silencieux), ou si la réponse n'est pas le JSON attendu.
 
 ### `clients.logs`
 - `setup_logging(service="biowatch", level=None) -> None` — configure le logger racine en
@@ -209,7 +218,11 @@ l'instant.
 Pas des fonctions à appeler, mais le pattern pour brancher un nouveau job en CLI sans toucher
 au reste : `apps/jobs/registry.py` (`Job` dataclass, `register(job)`) +
 `apps/jobs/definitions.py` (un `Job(...)` par job métier, mappe une sous-commande CLI vers une
-fonction de `packages/*`). Ajouter un job = ajouter une entrée dans `definitions.py`.
+fonction de `packages/*` ou de `jobs.pipelines`). Ajouter un job = ajouter une entrée dans `definitions.py`.
+
+Les pipelines qui orchestrent plusieurs packages (API externe → copie brute → table) vivent
+dans `apps/jobs/pipelines/` : ex. `update_iucn_taxonomy()` (France uniquement pour le MVP : la table n'a pas de colonne
+pays).
 
 ---
 

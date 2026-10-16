@@ -15,6 +15,7 @@ EXPECTED_TABLES = {
     "stress_score_by_zone",
     "job_runs",
     "job_run_zone_errors",
+    "staging.iucn_taxa",
 }
 
 EXPECTED_PRIMARY_KEYS = {
@@ -26,6 +27,7 @@ EXPECTED_PRIMARY_KEYS = {
     "stress_score_by_zone": {"zone_id", "bucket_id", "score_method"},
     "job_runs": {"run_id"},
     "job_run_zone_errors": {"run_id", "zone_id"},
+    "staging.iucn_taxa": {"iucn_taxon_id", "source_version"},
 }
 
 
@@ -41,7 +43,8 @@ def test_primary_keys_match_expected():
 
 
 def test_every_feature_table_references_zones_hex():
-    referencing = EXPECTED_TABLES - {"zones_hex", "job_runs"}
+    # staging.iucn_taxa est un référentiel par espèce, pas par zone.
+    referencing = EXPECTED_TABLES - {"zones_hex", "job_runs", "staging.iucn_taxa"}
     for table_name in referencing:
         table = Base.metadata.tables[table_name]
         targets = {fk.column.table.name for fk in table.foreign_keys}
@@ -54,9 +57,17 @@ def test_schema_compiles_to_postgresql_ddl():
     # geometry, UUID and timestamp column types without needing a live DB.
     for table in Base.metadata.sorted_tables:
         ddl = str(CreateTable(table).compile(dialect=engine.dialect))
-        assert f"CREATE TABLE {table.name}" in ddl
+        assert f"CREATE TABLE {table.fullname}" in ddl
 
 
 def test_extensions_declared_for_init():
     assert "postgis" in EXTENSIONS
     assert "pgcrypto" in EXTENSIONS
+
+
+def test_iucn_taxa_lives_in_the_staging_schema():
+    from clients.db.init_db import SCHEMAS
+
+    table = Base.metadata.tables["staging.iucn_taxa"]
+    assert table.schema == "staging"
+    assert table.schema in SCHEMAS  # init_db crée le schéma avant la table

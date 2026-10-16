@@ -224,6 +224,7 @@ POSTGRES_PASSWORD=...
 POSTGRES_DB=biowatch_prod      # le nom DOIT finir par _prod, sinon refus de connexion
 POSTGRES_HOST=127.0.0.1
 POSTGRES_PORT=5432
+IUCN_API_TOKEN=...             # job update_iucn_taxonomy (compte api.iucnredlist.org)
 ```
 
 Le code exige en plus la présence de **`/opt/biowatch/app/.env.prod`** pour

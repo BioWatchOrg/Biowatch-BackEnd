@@ -74,6 +74,24 @@ def test_generate_h3_grid_resolution_must_be_int():
         parser.parse_args(["generate_h3_grid", "--aoi", "paris", "--resolution", "huit"])
 
 
+def test_update_iucn_taxonomy_has_no_country_option():
+    """MVP France uniquement : la table n'a pas de colonne pays."""
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["update_iucn_taxonomy", "--country", "BE"])
+
+
+def test_update_iucn_taxonomy_dispatches_to_the_pipeline(monkeypatch):
+    import jobs.definitions as definitions
+
+    calls: list[bool] = []
+    monkeypatch.setattr(definitions, "update_iucn_taxonomy", lambda: calls.append(True))
+    args = build_parser().parse_args(["update_iucn_taxonomy"])
+
+    args._run(args)
+
+    assert calls == [True]
+
+
 def test_no_job_is_rejected():
     """`required=True` sur le sous-parser : appeler sans job échoue."""
     parser = build_parser()
