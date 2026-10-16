@@ -8,6 +8,7 @@ from .job_runs import (
     record_zone_error,
 )
 from .models import (
+    IucnTaxa,
     JobRun,
     JobRunZoneError,
     OsmFeaturesByZone,
@@ -27,6 +28,7 @@ __all__ = [
     "OsmFeaturesByZone",
     "ProtectedAreasByZone",
     "SpeciesFeaturesByZone",
+    "IucnTaxa",
     "StressScoreByZone",
     "JobRun",
     "JobRunZoneError",

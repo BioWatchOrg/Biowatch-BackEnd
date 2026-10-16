@@ -74,6 +74,24 @@ def test_generate_h3_grid_resolution_must_be_int():
         parser.parse_args(["generate_h3_grid", "--aoi", "paris", "--resolution", "huit"])
 
 
+def test_update_iucn_taxonomy_country_defaults_to_fr():
+    parser = build_parser()
+    assert parser.parse_args(["update_iucn_taxonomy"]).country == "FR"
+    assert parser.parse_args(["update_iucn_taxonomy", "--country", "BE"]).country == "BE"
+
+
+def test_update_iucn_taxonomy_dispatches_to_the_pipeline(monkeypatch):
+    import jobs.definitions as definitions
+
+    seen: list[str] = []
+    monkeypatch.setattr(definitions, "update_iucn_taxonomy", lambda country: seen.append(country))
+    args = build_parser().parse_args(["update_iucn_taxonomy", "--country", "BE"])
+
+    args._run(args)
+
+    assert seen == ["BE"]
+
+
 def test_no_job_is_rejected():
     """`required=True` sur le sous-parser : appeler sans job échoue."""
     parser = build_parser()
