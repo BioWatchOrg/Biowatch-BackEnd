@@ -2,9 +2,8 @@
 
 No business logic here (no quality filtering, no H3, no DB) -- this module
 only knows how to build a download predicate, request a download, poll its
-status, and (see Task 13) stream-parse the resulting file. See
-`species.quality` and `species.gbif_occurrences` for the pipeline built on
-top of it.
+status, and stream-parse the resulting file. See `species.quality` and
+`species.gbif_occurrences` for the pipeline built on top of it.
 """
 
 import csv
@@ -170,8 +169,8 @@ def stream_download(
 
     GBIF always serves the finished download as a ZIP archive (regardless of
     the requested format) containing a single tab-separated file with a
-    header row -- confirmed against the real API (Task 17), not just the
-    Swagger docs. Streams the zip to a temp file on disk (it can be hundreds
+    header row -- confirmed against the real API, not just the Swagger docs.
+    Streams the zip to a temp file on disk (it can be hundreds
     of MB for a large AOI/window), then parses the one member inside -- the
     whole file is never held in memory at once. The temp file is deleted
     once the generator is exhausted (or closed).

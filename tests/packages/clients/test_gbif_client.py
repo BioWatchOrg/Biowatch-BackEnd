@@ -39,10 +39,10 @@ def test_build_predicate_combines_geometry_and_date_range():
 
 
 def test_load_gbif_credentials_reads_env_vars(monkeypatch):
-    # Isolate from the real .env file (this worktree genuinely has
-    # GBIF_USERNAME/GBIF_PASSWORD set for Task 17's real smoke test) so this
-    # test's own monkeypatch.setenv calls are the only source of truth for
-    # os.environ, regardless of what's on disk.
+    # Isolate from the real .env file (a dev machine may genuinely have
+    # GBIF_USERNAME/GBIF_PASSWORD set for real runs) so this test's own
+    # monkeypatch.setenv calls are the only source of truth for os.environ,
+    # regardless of what's on disk.
     monkeypatch.setattr("clients.gbif.client.load_dotenv", lambda *a, **k: None)
     monkeypatch.setenv("GBIF_USERNAME", "alice")
     monkeypatch.setenv("GBIF_PASSWORD", "secret")
@@ -58,8 +58,7 @@ def test_load_gbif_credentials_raises_on_missing_username(monkeypatch):
     # Same isolation as above -- without this, load_gbif_credentials()'s own
     # load_dotenv(override=False) call repopulates GBIF_USERNAME from the
     # real .env file after delenv removes it from os.environ, silently
-    # defeating this test on any machine with real GBIF credentials
-    # configured (as this worktree now has, for Task 17).
+    # defeating this test on any machine with real GBIF credentials configured.
     monkeypatch.setattr("clients.gbif.client.load_dotenv", lambda *a, **k: None)
     monkeypatch.delenv("GBIF_USERNAME", raising=False)
     monkeypatch.setenv("GBIF_PASSWORD", "secret")
@@ -173,9 +172,9 @@ def test_wait_for_download_raises_on_timeout(monkeypatch):
 def _zipped_tsv(rows: list[dict[str, str]], *, member_name: str = "key123.csv") -> bytes:
     """
     Build a ZIP archive matching what GBIF's real Download API actually
-    returns for a finished download (confirmed against the real API in
-    Task 17): a single tab-separated member with a header row -- NOT a bare
-    gzip stream, which is what this module originally (and wrongly) assumed.
+    returns for a finished download (confirmed against the real API): a
+    single tab-separated member with a header row -- NOT a bare gzip stream,
+    which is what this module originally (and wrongly) assumed.
     """
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=list(rows[0]), delimiter="\t")
@@ -225,7 +224,7 @@ def test_stream_download_yields_parsed_rows(monkeypatch, tmp_path):
 
 def test_stream_download_parses_zip_archive_not_gzip(monkeypatch, tmp_path):
     """
-    Regression test for Task 17: the real GBIF Download API serves the
+    Regression test: the real GBIF Download API serves the
     finished download as a ZIP archive (e.g. member name
     "0001109-260921141020460.csv"), not a bare gzip stream -- confirmed
     against the real API, where the original gzip-based implementation
