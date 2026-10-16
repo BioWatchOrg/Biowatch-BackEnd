@@ -35,6 +35,28 @@ packages (voir CLAUDE.md, "Documentation").
 - `AOI` (dataclass : `label`, `name`, `geom`, `bbox`, `version`, `default_res`).
 - Exceptions : `UndefinedAOIError`, `LoadingAOIError`, `GeoJsonValueError`.
 
+### `core.config`
+- `resolve_env(cli_env=None) -> Env` — environnement effectif : flag `--env` >
+  `BIOWATCH_ENV` > `dev`. Normalise casse/espaces, lève `UnknownEnvError` sinon.
+- `normalize_env(value) -> str` — la règle de normalisation (`" PROD "` → `"prod"`), partagée
+  par `resolve_env` et le `type=` argparse du CLI. Ne pas la réécrire.
+- `load_env_file(env) -> str | None` — charge `<PROJECT_ROOT>/.env.<env>` (sans écraser les
+  variables déjà posées ; jamais cherché dans le cwd). À appeler à l'entrypoint, avant
+  `setup_logging`. `env_file(env)` donne le nom.
+  **Garde-fou prod** : lève `EnvFileNotFoundError` si `.env.prod` est absent (prod est dans
+  `ENV_FILE_REQUIRED`), avant toute lecture de `DATABASE_URL` / `POSTGRES_*`, et aussi si le
+  fichier est présent mais illisible (tous envs). En dev, retourne `None` si le fichier manque.
+  Fige `BIOWATCH_ENV` à l'env chargé avant de lire le fichier.
+- `PROJECT_ROOT: Path` — racine du dépôt, ancre de tout chemin relatif au projet
+  (`.env.<env>`, `data/`). Ne pas recalculer une racine ailleurs.
+- `expected_db_suffix(env) -> str` — suffixe obligatoire du nom de la base (`_dev`,
+  `_prod`). `clients.db` refuse une base qui ne le porte pas (`DatabaseEnvMismatchError`).
+- `data_root(env) -> Path` — racine des artefacts des jobs (`<PROJECT_ROOT>/data/<env>`,
+  racine surchargeable par `BIOWATCH_DATA_ROOT` ; une valeur relative est ancrée sur
+  `PROJECT_ROOT`, pas sur le cwd). Ne jamais écrire d'artefact ailleurs.
+- `Env` (`Literal["dev", "prod"]`), `ENVS`, `ENV_FILE_REQUIRED`, `PROJECT_ROOT`, exceptions
+  `UnknownEnvError`, `EnvFileNotFoundError`.
+
 ### `core.parquet`
 - `write_parquet(df: pd.DataFrame, file_path: str) -> None` — écrit un DataFrame en Parquet.
   Utilisé pour les artefacts de reproductibilité des jobs (ex. `h3_grid.py`).
@@ -59,9 +81,15 @@ packages (voir CLAUDE.md, "Documentation").
   un retry ciblé.
 - `get_engine(echo=False) -> Engine` / `get_sessionmaker(engine=None) -> sessionmaker` —
   construction de l'engine SQLAlchemy depuis les variables d'env (`DATABASE_URL` ou
-  `POSTGRES_*`), mise en cache (`lru_cache`).
+  `POSTGRES_*`), mise en cache (`lru_cache`). Lève `DatabaseConfigError` (variable
+  manquante, URL illisible) ou sa sous-classe `DatabaseEnvMismatchError` (nom de base sans
+  le suffixe `_<env>` — contrôlé sur le nom réellement ouvert, `?dbname=` compris). Ces
+  erreurs ne contiennent jamais d'URL ni de mot de passe ; le CLI les logge en WARNING
+  (`cli.config_error`) et sort sans traceback.
 - `init_db(engine=None) -> None` — crée les extensions PostgreSQL (`postgis`, `pgcrypto`) et
-  toutes les tables ORM. Idempotent, à lancer une fois par environnement.
+  toutes les tables ORM. Idempotent, à lancer une fois par environnement. Une
+  `DatabaseConfigError` remonte telle quelle (déjà rapportée par l'entrypoint), sans
+  `db.init_db.error`.
 - `upsert(session, model, rows, update_columns=None) -> None` — `INSERT ... ON CONFLICT DO
   UPDATE` en masse sur la PK du modèle. **Seule façon d'écrire/mettre à jour** dans une table
   métier (jamais d'`INSERT` manuel). Chunké automatiquement sous la limite de bind params
@@ -75,6 +103,8 @@ packages (voir CLAUDE.md, "Documentation").
 - `setup_logging(service="biowatch", level=None) -> None` — configure le logger racine en
   JSON structuré (un seul appel, à l'entrypoint du process — jamais dans un `__init__.py`).
   Idempotent.
+  Lève `InvalidLogLevelError` (sous-classe de `ValueError`) si `LOG_LEVEL` / `level` n'est pas
+  un niveau connu ; le CLI l'affiche comme erreur de config, sans traceback.
 - `run_id_var`, `request_id_var` (`ContextVar[str | None]`) — id de corrélation ambiant,
   injecté automatiquement dans chaque log émis pendant un job (`run_id_var`, posé par
   `job_run`) ou une requête API (`request_id_var`). Pas besoin de le passer à la main dans

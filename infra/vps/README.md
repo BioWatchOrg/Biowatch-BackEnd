@@ -210,6 +210,34 @@ PrivateTmp=yes
 ReadWritePaths=/var/lib/biowatch/api /var/log/biowatch/api
 ```
 
+Les jobs écrivent leurs artefacts sous `BIOWATCH_DATA_ROOT/<env>` : dans
+`/etc/biowatch/jobs.env`, poser `BIOWATCH_DATA_ROOT=/var/lib/biowatch/jobs`
+(le défaut `data/` tomberait dans `/opt/biowatch/app`, en lecture seule).
+
+### Environnement prod : ce que `/etc/biowatch/jobs.env` doit contenir
+
+```ini
+BIOWATCH_ENV=prod
+BIOWATCH_DATA_ROOT=/var/lib/biowatch/jobs
+POSTGRES_USER=...
+POSTGRES_PASSWORD=...
+POSTGRES_DB=biowatch_prod      # le nom DOIT finir par _prod, sinon refus de connexion
+POSTGRES_HOST=127.0.0.1
+POSTGRES_PORT=5432
+```
+
+Le code exige en plus la présence de **`/opt/biowatch/app/.env.prod`** pour
+démarrer en prod (`core.config.ENV_FILE_REQUIRED`). C'est un **marqueur**, posé
+par `deploy` à côté du code, pas un fichier de secrets : il peut être vide, ou
+ne porter que des réglages non sensibles (`LOG_LEVEL=INFO`). Les secrets restent
+dans `/etc/biowatch/jobs.env`, lus par systemd, et gagnent sur le fichier
+(`override=False`). Son absence sur un poste de dev est ce qui fait échouer un
+`--env prod` lancé par erreur — ne jamais le créer ailleurs que sur le VPS.
+
+```bash
+install -o deploy -g biowatch -m 640 /dev/null /opt/biowatch/app/.env.prod
+```
+
 Contrôle sur la machine : `systemctl show -p User <unité>` et
 `ps -o user,cmd -C python`.
 

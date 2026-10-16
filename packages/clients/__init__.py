@@ -1,7 +1,9 @@
-from .logs import request_id_var, run_id_var, setup_logging
+from .logs import InvalidLogLevelError, request_id_var, run_id_var, setup_logging
 
 from .db import (
     Base,
+    DatabaseConfigError,
+    DatabaseEnvMismatchError,
     JobAlreadySucceeded,
     JobRun,
     JobRunZoneError,
@@ -31,6 +33,8 @@ __all__ = [
     "JobRun",
     "JobRunZoneError",
     "session_scope",
+    "DatabaseConfigError",
+    "DatabaseEnvMismatchError",
     "upsert",
     "job_run",
     "record_zone_error",
@@ -39,6 +43,7 @@ __all__ = [
     "RunContext",
     "init_db",
     "setup_logging",
+    "InvalidLogLevelError",
     "run_id_var",
     "request_id_var",
 ]

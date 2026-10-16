@@ -15,6 +15,23 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # Base PostGIS jetable pour les tests bout-en-bout (idempotence des jobs sur
+    # une vraie base). Même image que infra/docker/docker-compose.yml. Les
+    # identifiants sont ceux d'un conteneur éphémère de CI, pas des secrets.
+    services:
+      postgis:
+        image: postgis/postgis:16-3.4-alpine
+        env:
+          POSTGRES_USER: biowatch
+          POSTGRES_PASSWORD: biowatch
+          POSTGRES_DB: biowatch_dev
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U biowatch -d biowatch_dev"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
         with:
@@ -47,6 +64,10 @@ jobs:
 
       - name: Run tests with coverage
         if: steps.filter.outputs.relevant == 'true'
+        env:
+          # Active les tests marqués `skipif("TEST_DATABASE_URL" not in os.environ)` :
+          # sans cette variable, le test d'idempotence bout-en-bout ne tourne jamais.
+          TEST_DATABASE_URL: postgresql+psycopg://biowatch:biowatch@127.0.0.1:5432/biowatch_dev
         run: |
           uv run pytest --cov=apps --cov=packages --cov-report=xml --cov-report=term
           uv run coverage report --format=total --precision=4 > coverage-total.txt
