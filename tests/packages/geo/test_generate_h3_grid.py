@@ -33,36 +33,102 @@ def test_generate_h3_grid_skips_when_already_succeeded(monkeypatch, tmp_path):
     assert called["body"] is False
 
 
+def _golden_key(env: str) -> str:
+    """Clé d'idempotence attendue pour la grille golden dans l'env donné."""
+    from core import compute_idempotency_key, load_aoi
+
+    return compute_idempotency_key(
+        job_name="generate_h3_grid",
+        scope=GOLDEN_AOI,
+        resolution=GOLDEN_RES,
+        source_version=load_aoi(GOLDEN_AOI).version,
+        env=env,
+    )
+
+
+def _golden_zone_count(engine) -> int:
+    """Cellules de la grille golden en base (filtrées : la base de test peut en porter d'autres)."""
+    from clients.db import ZonesHex
+
+    with engine.connect() as conn:
+        return (
+            conn.scalar(
+                select(func.count())
+                .select_from(ZonesHex)
+                .where(ZonesHex.aoi_id == GOLDEN_AOI, ZonesHex.resolution == GOLDEN_RES)
+            )
+            or 0
+        )
+
+
 @pytest.mark.skipif(
     "TEST_DATABASE_URL" not in os.environ,
     reason="requires a live PostGIS database (set TEST_DATABASE_URL)",
 )
 def test_generate_h3_grid_is_idempotent(project_root, monkeypatch):
-    """Full run against PostGIS: two runs → one job, no duplicated zones."""
-    from clients.db import JobRun, ZonesHex
-    from clients.db.init_db import init_db
+    """Full run against PostGIS: two runs → one `job_runs` row, no duplicated zones.
 
+    Assertions scoped to this run's idempotency key and AOI so the test is
+    replayable against a database that already holds other runs (CI reuses the
+    same service DB across the module; a local throwaway DB is reused across
+    sessions). Nothing is dropped or deleted.
+    """
+    from clients.db import JobRun
+    from clients.db.init_db import init_db
+    from core import ENV_VAR
+
+    monkeypatch.setenv(ENV_VAR, "dev")
     # parquet artifact lands under project_root/data (isolated tmp dir)
     engine = create_engine(os.environ["TEST_DATABASE_URL"], future=True)
     init_db(engine)
+    key = _golden_key("dev")
 
     h3_grid.generate_h3_grid(GOLDEN_AOI, GOLDEN_RES, engine=engine)
     h3_grid.generate_h3_grid(GOLDEN_AOI, GOLDEN_RES, engine=engine)  # 2nd run must skip
 
     with engine.connect() as conn:
-        zones = conn.scalar(select(func.count()).select_from(ZonesHex))
-        runs = conn.scalar(
-            select(func.count()).select_from(JobRun).where(JobRun.job_name == "generate_h3_grid")
-        )
-        successes = conn.scalar(
-            select(func.count())
-            .select_from(JobRun)
-            .where(JobRun.job_name == "generate_h3_grid", JobRun.status == "success")
+        statuses = list(conn.scalars(select(JobRun.status).where(JobRun.idempotency_key == key)))
+
+    assert statuses == ["success"]  # exactly one run for this key, and it succeeded
+    assert _golden_zone_count(engine) == GOLDEN_COUNT  # no duplicates despite two runs
+
+
+@pytest.mark.skipif(
+    "TEST_DATABASE_URL" not in os.environ,
+    reason="requires a live PostGIS database (set TEST_DATABASE_URL)",
+)
+def test_generate_h3_grid_dev_and_prod_runs_do_not_skip_each_other(project_root, monkeypatch):
+    """Sur une vraie base : un `success` en dev ne fait pas skipper le run prod.
+
+    C'est le comportement bout-en-bout attendu de « env dans la clé » : deux
+    lignes `job_runs` en `success`, une par env, et toujours aucun doublon
+    dans `zones_hex` (UPSERT). Complète le test unitaire sur les clés.
+    """
+    from clients.db import JobRun
+    from clients.db.init_db import init_db
+    from core import ENV_VAR
+
+    engine = create_engine(os.environ["TEST_DATABASE_URL"], future=True)
+    init_db(engine)
+    keys = {env: _golden_key(env) for env in ("dev", "prod")}
+
+    for env in ("dev", "prod"):
+        monkeypatch.setenv(ENV_VAR, env)
+        h3_grid.generate_h3_grid(GOLDEN_AOI, GOLDEN_RES, engine=engine)
+
+    with engine.connect() as conn:
+        statuses = dict(
+            conn.execute(
+                select(JobRun.idempotency_key, JobRun.status).where(
+                    JobRun.idempotency_key.in_(list(keys.values()))
+                )
+            ).all()
         )
 
-    assert zones == GOLDEN_COUNT  # no duplicates despite two runs
-    assert runs == 1  # single run reused (idempotent), not two
-    assert successes == 1
+    # Rejouable : sur une base déjà peuplée, un run skippe (déjà `success`),
+    # ce qui est exactement l'idempotence attendue — les deux clés restent en succès.
+    assert statuses == {keys["dev"]: "success", keys["prod"]: "success"}
+    assert _golden_zone_count(engine) == GOLDEN_COUNT  # même grille, pas de doublon entre les envs
 
 
 def test_generate_h3_grid_writes_the_artifact_under_data_env(monkeypatch, project_root):

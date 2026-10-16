@@ -5,6 +5,7 @@ on vérifie que chaque job enregistré est exposé en sous-commande, câblé sur
 `run`, et que ses arguments sont bien déclarés.
 """
 
+import logging
 import os
 
 import pytest
@@ -116,6 +117,16 @@ def _fake_job(run):
     return {"fake_job": Job(name="fake_job", help="job de test", run=run)}
 
 
+@pytest.fixture(autouse=True)
+def _restore_root_logger():
+    """`main()` configure réellement le logging : on rend le root logger intact ensuite."""
+    root = logging.getLogger()
+    saved_level, saved_handlers = root.level, list(root.handlers)
+    yield
+    root.handlers[:] = saved_handlers
+    root.setLevel(saved_level)
+
+
 def test_main_exports_the_env_before_dispatching(monkeypatch, project_root):
     """`main` pose BIOWATCH_ENV avant d'appeler le job.
 
@@ -130,7 +141,6 @@ def test_main_exports_the_env_before_dispatching(monkeypatch, project_root):
     # Prod exige son fichier : on simule le VPS, où `.env.prod` existe.
     (project_root / ".env.prod").write_text("")
     monkeypatch.delenv(ENV_VAR, raising=False)
-    monkeypatch.setattr(cli, "setup_logging", lambda **_: None)
     monkeypatch.setattr(cli, "get_jobs", lambda: _fake_job(fake_run))
     monkeypatch.setattr("sys.argv", ["biowatch-jobs", "--env", "prod", "fake_job"])
 
@@ -139,29 +149,36 @@ def test_main_exports_the_env_before_dispatching(monkeypatch, project_root):
     assert seen["env"] == "prod"
 
 
-def test_dotenv_is_loaded_before_logging_is_configured(monkeypatch, project_root):
-    """`LOG_LEVEL` de `.env.<env>` doit être lu AVANT `setup_logging`.
+def test_log_level_from_env_file_is_applied_to_the_jobs(monkeypatch, project_root):
+    """`LOG_LEVEL=WARNING` dans `.env.<env>` ⇒ le root logger tourne en WARNING.
 
-    Régression : le dotenv n'était chargé qu'au premier accès DB, donc après
-    `setup_logging` — `LOG_LEVEL` n'avait alors aucun effet sur les jobs, alors
-    que `.env.dev.example` le documente comme un réglage actif.
+    Régression : le dotenv n'était chargé qu'au premier accès DB, donc après la
+    configuration du logging — `LOG_LEVEL` n'avait alors aucun effet sur les
+    jobs, alors que `.env.dev.example` le documente comme un réglage actif. On
+    observe le niveau réellement configuré, pas l'ordre des appels dans `main`.
     """
     monkeypatch.delenv(ENV_VAR, raising=False)
     monkeypatch.delenv("LOG_LEVEL", raising=False)
     (project_root / ".env.dev").write_text("LOG_LEVEL=WARNING\n")
-
-    seen: dict[str, str | None] = {}
-
-    def fake_setup_logging(**_):
-        seen["level"] = os.environ.get("LOG_LEVEL")
-
-    monkeypatch.setattr(cli, "setup_logging", fake_setup_logging)
     monkeypatch.setattr(cli, "get_jobs", lambda: _fake_job(lambda _args: None))
     monkeypatch.setattr("sys.argv", ["biowatch-jobs", "fake_job"])
 
     cli.main()
 
-    assert seen["level"] == "WARNING"
+    assert logging.getLogger().level == logging.WARNING
+
+
+def test_debug_flag_wins_over_the_env_file_level(monkeypatch, project_root):
+    """`--debug` force DEBUG même si `.env.dev` dit WARNING (réglage ponctuel de dev)."""
+    monkeypatch.delenv(ENV_VAR, raising=False)
+    monkeypatch.delenv("LOG_LEVEL", raising=False)
+    (project_root / ".env.dev").write_text("LOG_LEVEL=WARNING\n")
+    monkeypatch.setattr(cli, "get_jobs", lambda: _fake_job(lambda _args: None))
+    monkeypatch.setattr("sys.argv", ["biowatch-jobs", "--debug", "fake_job"])
+
+    cli.main()
+
+    assert logging.getLogger().level == logging.DEBUG
 
 
 @pytest.mark.parametrize(
@@ -190,7 +207,6 @@ def test_prod_without_env_file_fails_before_db_access(monkeypatch, project_root,
         nonlocal job_called
         job_called = True
 
-    monkeypatch.setattr(cli, "setup_logging", lambda **_: None)
     monkeypatch.setattr(cli, "get_jobs", lambda: _fake_job(fake_run))
     monkeypatch.setattr("sys.argv", ["biowatch-jobs", "--env", "prod", "fake_job"])
 
@@ -206,7 +222,6 @@ def test_prod_without_env_file_fails_before_db_access(monkeypatch, project_root,
 def test_unknown_env_from_variable_exits_cleanly(monkeypatch):
     """`BIOWATCH_ENV=staging` (hors flag, donc hors `choices` d'argparse) ⇒ pas de traceback."""
     monkeypatch.setenv(ENV_VAR, "staging")
-    monkeypatch.setattr(cli, "setup_logging", lambda **_: None)
     monkeypatch.setattr(cli, "get_jobs", lambda: _fake_job(lambda _args: None))
     monkeypatch.setattr("sys.argv", ["biowatch-jobs", "fake_job"])
 
@@ -228,7 +243,6 @@ def test_database_config_error_from_the_job_exits_cleanly(monkeypatch, project_r
         )
 
     monkeypatch.delenv(ENV_VAR, raising=False)
-    monkeypatch.setattr(cli, "setup_logging", lambda **_: None)
     monkeypatch.setattr(cli, "get_jobs", lambda: _fake_job(fake_run))
     monkeypatch.setattr("sys.argv", ["biowatch-jobs", "fake_job"])
 
