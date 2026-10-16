@@ -3,7 +3,7 @@
     API IUCN (jeton)
        │ 1. évaluations des espèces présentes en France (pages de 100)
        ▼
-    data/<env>/raw/iucn/<version>/FR.json   copie brute, réutilisée si présente
+    data/<env>/raw/iucn/<version>/FR.json   copie brute, réutilisée si complète
        │ 2. normalisation : une ligne par espèce
        ▼
     staging.iucn_taxa                       UPSERT, une ligne par espèce × version
@@ -86,15 +86,24 @@ def _recency(row: dict[str, Any]) -> tuple[int, int]:
 
 
 def _read_raw(path: Path) -> list[dict[str, Any]] | None:
-    """Copie brute si elle est lisible, sinon `None` (fichier supprimé, à refaire)."""
+    """Copie brute si elle est lisible et complète, sinon `None` (fichier supprimé).
+
+    Le fichier porte le nombre d'évaluations vérifié au téléchargement : une
+    copie tronquée ou retouchée après coup est rejetée, pas importée.
+    """
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except ValueError:
         data = None
-    if isinstance(data, list) and data:
-        return data
+    assessments = data.get("assessments") if isinstance(data, dict) else None
+    if (
+        isinstance(assessments, list)
+        and assessments
+        and data.get("total_count") == len(assessments)
+    ):
+        return assessments
     logger.warning(
-        "unreadable raw IUCN file, fetching again",
+        "unreadable or incomplete raw IUCN file, fetching again",
         extra={"event": "iucn_taxonomy.raw_invalid", "context": {"path": str(path)}},
     )
     path.unlink()
@@ -105,7 +114,8 @@ def _write_raw(path: Path, assessments: list[dict[str, Any]]) -> None:
     """Écriture atomique : un process tué en cours d'écriture ne laisse pas de JSON tronqué."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(assessments, ensure_ascii=False), encoding="utf-8")
+    payload = {"total_count": len(assessments), "assessments": assessments}
+    tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     os.replace(tmp, path)
 
 

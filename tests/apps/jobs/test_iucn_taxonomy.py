@@ -161,7 +161,7 @@ def test_job_writes_the_raw_copy_and_upserts_rows(raw_file, fake_db):
 
     job.update_iucn_taxonomy(client=client)
 
-    assert json.loads(raw_file.read_text()) == client.assessments
+    assert json.loads(raw_file.read_text()) == {"total_count": 2, "assessments": client.assessments}
     assert not raw_file.with_suffix(".json.tmp").exists()  # écriture atomique
     assert fake_db["model"] is IucnTaxa
     assert fake_db["scope"] == "FR"
@@ -171,7 +171,7 @@ def test_job_writes_the_raw_copy_and_upserts_rows(raw_file, fake_db):
 
 def test_job_reuses_the_raw_copy_instead_of_calling_the_api(raw_file, fake_db):
     raw_file.parent.mkdir(parents=True)
-    raw_file.write_text(json.dumps([_assessment(7)]))
+    raw_file.write_text(json.dumps({"total_count": 1, "assessments": [_assessment(7)]}))
     client = FakeClient()
 
     job.update_iucn_taxonomy(client=client)
@@ -180,8 +180,16 @@ def test_job_reuses_the_raw_copy_instead_of_calling_the_api(raw_file, fake_db):
     assert [r["iucn_taxon_id"] for r in fake_db["rows"]] == [7]
 
 
-@pytest.mark.parametrize("content", ['[{"sis_taxon_id": 1', "[]", '{"a": 1}'])
-def test_unreadable_raw_copy_is_fetched_again(raw_file, fake_db, content):
+@pytest.mark.parametrize(
+    "content",
+    [
+        '{"total_count": 1, "assessments": [{"sis_taxon_id": 1',  # JSON tronqué
+        '{"total_count": 0, "assessments": []}',  # vide
+        '{"total_count": 5002, "assessments": [{"sis_taxon_id": 1}]}',  # incomplet
+        '[{"sis_taxon_id": 1}]',  # ancien format, sans total
+    ],
+)
+def test_unreadable_or_incomplete_raw_copy_is_fetched_again(raw_file, fake_db, content):
     """Un fichier tronqué ou vide ne doit pas bloquer tous les retries."""
     raw_file.parent.mkdir(parents=True)
     raw_file.write_text(content)
@@ -190,7 +198,7 @@ def test_unreadable_raw_copy_is_fetched_again(raw_file, fake_db, content):
     job.update_iucn_taxonomy(client=client)
 
     assert client.fetches == 1
-    assert json.loads(raw_file.read_text()) == client.assessments
+    assert json.loads(raw_file.read_text())["assessments"] == client.assessments
     assert [r["iucn_taxon_id"] for r in fake_db["rows"]] == [9]
 
 
