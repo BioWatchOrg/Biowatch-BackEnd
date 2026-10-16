@@ -14,7 +14,7 @@ import logging
 from sqlalchemy import Engine, text
 
 from .base import Base
-from .session import get_engine
+from .session import DatabaseConfigError, get_engine
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,11 @@ def init_db(engine: Engine | None = None) -> None:
                 "context": {"n_tables": len(Base.metadata.tables)},
             },
         )
+    except DatabaseConfigError:
+        # Erreur de configuration (env, nom de base, variables) : ce n'est pas
+        # une erreur du schéma, et l'entrypoint la rapporte déjà une fois
+        # (`cli.config_error`, WARNING). Pas de second log en ERROR.
+        raise
     except Exception as e:
         logger.error(
             "error initializing schema",

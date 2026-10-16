@@ -10,10 +10,13 @@ dans les fonctions métier de `packages/*`.
 """
 
 import logging
+import os
 from argparse import ArgumentParser
+from typing import NoReturn
 
 from clients import DatabaseConfigError, InvalidLogLevelError, setup_logging
 from core import (
+    ENV_VAR,
     ENVS,
     EnvFileNotFoundError,
     UnknownEnvError,
@@ -52,6 +55,20 @@ def build_parser() -> ArgumentParser:
     return parser
 
 
+def _exit_on_config_error(env: str | None, error: Exception) -> NoReturn:
+    """Sortie propre sur une erreur de configuration : erreur attendue, pas un bug.
+
+    Un event JSON `cli.config_error` en WARNING (c'est un garde-fou qui fait son
+    travail, pas une exception imprévue), puis une ligne lisible sur stderr et un
+    code de sortie 1, sans traceback. Le logging doit être configuré avant l'appel.
+    """
+    logger.warning(
+        "configuration error",
+        extra={"event": "cli.config_error", "context": {"env": env, "error": str(error)}},
+    )
+    raise SystemExit(f"biowatch-jobs: {error}") from error
+
+
 def main() -> None:
     args = build_parser().parse_args()
     try:
@@ -65,10 +82,11 @@ def main() -> None:
         # Une seule configuration du logging, au démarrage de l'entrypoint.
         setup_logging(service="biowatch-jobs", level="DEBUG" if args.debug else None)
     except (UnknownEnvError, EnvFileNotFoundError, InvalidLogLevelError) as e:
-        # Erreur de configuration, pas un bug : message lisible sur stderr,
-        # code de sortie 1, pas de traceback. Le logging n'est pas (encore)
-        # configuré ici, SystemExit est le canal propre.
-        raise SystemExit(f"biowatch-jobs: {e}") from e
+        # Le logging n'a pas pu être configuré : on le fait ici avec un niveau
+        # explicite (qui ne relit pas LOG_LEVEL) pour que l'échec sorte aussi en
+        # JSON sur stdout — Logdy ne voit pas une ligne texte sur stderr.
+        setup_logging(service="biowatch-jobs", level="WARNING")
+        _exit_on_config_error(args.env or os.environ.get(ENV_VAR), e)
     logger.info(
         "job start",
         extra={"event": "cli.start", "context": {"env": env, "job": args.job}},
@@ -77,13 +95,8 @@ def main() -> None:
         args._run(args)
     except DatabaseConfigError as e:
         # Levée au premier accès DB (engine paresseux) : base mal nommée pour
-        # l'env, variable manquante, URL illisible. Erreur de config, pas un
-        # bug — on la logge (le logging est configuré ici) et on sort proprement.
-        logger.error(
-            "database configuration error",
-            extra={"event": "cli.config_error", "context": {"env": env, "error": str(e)}},
-        )
-        raise SystemExit(f"biowatch-jobs: {e}") from e
+        # l'env, variable manquante, URL illisible.
+        _exit_on_config_error(env, e)
 
 
 if __name__ == "__main__":

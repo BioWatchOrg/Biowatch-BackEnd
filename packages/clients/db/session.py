@@ -6,7 +6,7 @@ from functools import lru_cache
 
 from core import Env, env_file, expected_db_suffix, load_env_file, resolve_env
 from sqlalchemy import Engine, create_engine
-from sqlalchemy.engine import make_url
+from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import ArgumentError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -41,6 +41,19 @@ def _check_db_matches_env(db_name: str, env: Env) -> None:
         )
 
 
+def _database_name(url: URL) -> str:
+    """Nom de base effectivement ouvert par le driver.
+
+    Avec psycopg/libpq, un `?dbname=` dans la query string prime sur le chemin
+    de l'URL : `.../biowatch_dev?dbname=biowatch_prod` ouvre `biowatch_prod`.
+    Le contrôle du suffixe doit donc porter sur ce nom-là, pas sur `url.database`.
+    """
+    override = url.query.get("dbname")
+    if isinstance(override, tuple):  # paramètre répété : libpq garde le dernier
+        override = override[-1]
+    return override or url.database or ""
+
+
 def _build_database_url() -> str:
     """URL SQLAlchemy de l'environnement courant.
 
@@ -66,7 +79,7 @@ def _build_database_url() -> str:
     explicit_url = os.environ.get("DATABASE_URL")
     if explicit_url:
         try:
-            db_from_url = make_url(explicit_url).database or ""
+            db_from_url = _database_name(make_url(explicit_url))
         except ArgumentError:
             # `from None` : le message SQLAlchemy cite l'URL complète, donc le
             # mot de passe — il ne doit apparaître ni ici ni dans la chaîne.

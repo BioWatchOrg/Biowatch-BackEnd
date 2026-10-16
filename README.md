@@ -96,9 +96,11 @@ uv run ruff check . && uv run mypy .            # ce que la CI fait tourner
 ```
 
 Les tests bout-en-bout sur PostGIS (idempotence réelle des jobs, séparation dev / prod
-dans `job_runs`) sont marqués `skipif` tant que `TEST_DATABASE_URL` n'est pas défini.
-**La CI les exécute toujours** (service PostGIS dans `.github/workflows/test.yml`). En
-local, sur une base jetable pour ne pas polluer `biowatch_dev` :
+dans `job_runs`, `init_db` à travers les garde-fous) sont skippés en local tant que
+`TEST_DATABASE_URL` n'est pas défini. **La CI les exécute toujours** (service PostGIS dans
+`.github/workflows/test.yml`) : si la variable y manquait, ils échoueraient au lieu de
+skipper. En local, sur une base jetable pour ne pas polluer `biowatch_dev` (ils oublient
+leurs propres runs précédents dans `job_runs`, jamais rien d'autre) :
 
 ```bash
 docker exec postgis psql -U biowatch -d biowatch_dev -c "CREATE DATABASE biowatch_test_dev"

@@ -83,10 +83,13 @@ packages (voir CLAUDE.md, "Documentation").
   construction de l'engine SQLAlchemy depuis les variables d'env (`DATABASE_URL` ou
   `POSTGRES_*`), mise en cache (`lru_cache`). Lève `DatabaseConfigError` (variable
   manquante, URL illisible) ou sa sous-classe `DatabaseEnvMismatchError` (nom de base sans
-  le suffixe `_<env>`). Ces erreurs ne contiennent jamais d'URL ni de mot de passe ; le CLI
-  les affiche sans traceback.
+  le suffixe `_<env>` — contrôlé sur le nom réellement ouvert, `?dbname=` compris). Ces
+  erreurs ne contiennent jamais d'URL ni de mot de passe ; le CLI les logge en WARNING
+  (`cli.config_error`) et sort sans traceback.
 - `init_db(engine=None) -> None` — crée les extensions PostgreSQL (`postgis`, `pgcrypto`) et
-  toutes les tables ORM. Idempotent, à lancer une fois par environnement.
+  toutes les tables ORM. Idempotent, à lancer une fois par environnement. Une
+  `DatabaseConfigError` remonte telle quelle (déjà rapportée par l'entrypoint), sans
+  `db.init_db.error`.
 - `upsert(session, model, rows, update_columns=None) -> None` — `INSERT ... ON CONFLICT DO
   UPDATE` en masse sur la PK du modèle. **Seule façon d'écrire/mettre à jour** dans une table
   métier (jamais d'`INSERT` manuel). Chunké automatiquement sous la limite de bind params
