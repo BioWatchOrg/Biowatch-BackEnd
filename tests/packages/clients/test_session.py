@@ -1,7 +1,8 @@
 """Tests for clients.db.session — URL building, engine memoization, session factory."""
 
 import pytest
-from clients.db.session import _build_database_url, get_sessionmaker, get_engine
+from clients.db.session import _build_database_url, get_engine, get_sessionmaker
+from core import ENV_VAR, EnvFileNotFoundError
 from sqlalchemy import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -32,6 +33,33 @@ def test_database_url_takes_precedence(clean_env):
     clean_env.setenv("DATABASE_URL", "postgresql+psycopg://u:p@example:5432/db")
     # POSTGRES_* are intentionally absent — they must be ignored entirely.
     assert _build_database_url() == "postgresql+psycopg://u:p@example:5432/db"
+
+
+def test_prod_without_env_file_fails_even_with_database_url(monkeypatch, tmp_path):
+    """Garde-fou prod : `.env.prod` absent ⇒ refus AVANT de lire DATABASE_URL.
+
+    Sans ce test, un `DATABASE_URL` résiduel dans le shell suffirait à
+    construire une URL vers la prod depuis un poste local. Ici on ne mocke
+    pas `load_env_file` : c'est précisément lui qui doit bloquer.
+    """
+    monkeypatch.chdir(tmp_path)  # aucun .env.prod ici
+    monkeypatch.setenv(ENV_VAR, "prod")
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://u:p@prod.internal:5432/biowatch_prod")
+    get_engine.cache_clear()
+
+    with pytest.raises(EnvFileNotFoundError, match=r"\.env\.prod"):
+        _build_database_url()
+
+
+def test_prod_with_env_file_reaches_the_configured_url(monkeypatch, tmp_path):
+    """Sur le VPS, `.env.prod` existe : la résolution prod aboutit normalement."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env.prod").write_text("")
+    monkeypatch.setenv(ENV_VAR, "prod")
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://u:p@prod.internal:5432/biowatch_prod")
+    get_engine.cache_clear()
+
+    assert _build_database_url() == "postgresql+psycopg://u:p@prod.internal:5432/biowatch_prod"
 
 
 def test_url_built_from_postgres_vars(clean_env):
@@ -72,7 +100,7 @@ def test_get_engine_is_memoized(clean_env):
     assert first is second  # single shared engine / pool
 
 
-def testget_sessionmaker_uses_given_engine(clean_env):
+def test_get_sessionmaker_uses_given_engine(clean_env):
     clean_env.setenv("POSTGRES_USER", "u")
     clean_env.setenv("POSTGRES_PASSWORD", "p")
     clean_env.setenv("POSTGRES_DB", "d")
@@ -83,7 +111,7 @@ def testget_sessionmaker_uses_given_engine(clean_env):
     assert factory.kw["expire_on_commit"] is False
 
 
-def testget_sessionmaker_falls_back_to_shared_engine(clean_env):
+def test_get_sessionmaker_falls_back_to_shared_engine(clean_env):
     clean_env.setenv("POSTGRES_USER", "u")
     clean_env.setenv("POSTGRES_PASSWORD", "p")
     clean_env.setenv("POSTGRES_DB", "d")

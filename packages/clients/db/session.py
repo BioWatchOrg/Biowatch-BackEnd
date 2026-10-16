@@ -20,7 +20,10 @@ def _build_database_url() -> str:
     """
     env = resolve_env()
     # Filet pour les entrypoints qui ne passent pas par le CLI (API à venir,
-    # usage en librairie). Idempotent si le CLI l'a déjà fait.
+    # usage en librairie). Idempotent si le CLI l'a déjà fait. En prod, lève
+    # `EnvFileNotFoundError` si `.env.prod` manque — AVANT de lire DATABASE_URL
+    # ou POSTGRES_* : une variable résiduelle dans le shell ne doit jamais
+    # suffire à atteindre la base de production depuis un poste local.
     load_env_file(env)
     logger.debug(
         "environment resolved",

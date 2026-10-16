@@ -14,7 +14,7 @@ import os
 from argparse import ArgumentParser
 
 from clients import setup_logging
-from core import ENV_VAR, ENVS, load_env_file, resolve_env
+from core import ENV_VAR, ENVS, EnvFileNotFoundError, UnknownEnvError, load_env_file, resolve_env
 
 import jobs.definitions  # noqa: F401  (import pour peupler le registre)
 from jobs.registry import get_jobs
@@ -45,13 +45,20 @@ def build_parser() -> ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
-    # L'environnement doit être fixé AVANT le premier accès DB : `get_engine`
-    # est mis en cache à sa première construction et n'est jamais reconstruit.
-    env = resolve_env(args.env)
-    os.environ[ENV_VAR] = env
-    # Le dotenv doit être chargé AVANT setup_logging, qui lit LOG_LEVEL dès
-    # son appel : un chargement paresseux au premier accès DB arriverait trop tard.
-    load_env_file(env)
+    try:
+        # L'environnement doit être fixé AVANT le premier accès DB : `get_engine`
+        # est mis en cache à sa première construction et n'est jamais reconstruit.
+        env = resolve_env(args.env)
+        os.environ[ENV_VAR] = env
+        # Le dotenv doit être chargé AVANT setup_logging, qui lit LOG_LEVEL dès
+        # son appel : un chargement paresseux au premier accès DB arriverait trop
+        # tard. En prod, c'est aussi le garde-fou : pas de `.env.prod`, pas de run.
+        load_env_file(env)
+    except (UnknownEnvError, EnvFileNotFoundError) as e:
+        # Erreur de configuration, pas un bug : message lisible sur stderr,
+        # code de sortie 1, pas de traceback. Le logging n'est pas encore
+        # configuré ici, SystemExit est le canal propre.
+        raise SystemExit(f"biowatch-jobs: {e}") from e
     # Une seule configuration du logging, au démarrage de l'entrypoint.
     setup_logging(service="biowatch-jobs", level="DEBUG" if args.debug else None)
     logger.info(

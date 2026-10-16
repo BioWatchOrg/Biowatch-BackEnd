@@ -19,10 +19,16 @@ uv run biowatch-jobs generate_h3_grid --aoi idf   # dev (défaut)
 uv run biowatch-jobs --env prod generate_h3_grid --aoi idf
 ```
 
-`.env.prod` n'existe pas sur un poste de dev : c'est ce qui fait échouer un
-`--env prod` lancé par erreur, avec un message explicite, avant tout accès DB.
+`.env.prod` n'existe pas sur un poste de dev, et **prod exige ce fichier** : un
+`--env prod` lancé par erreur s'arrête avec un message explicite, avant tout accès
+DB — même si un `DATABASE_URL` ou des `POSTGRES_*` traînent dans le shell. En dev,
+le fichier est optionnel (la CI injecte ses variables directement).
 
 Les tokens d'outillage (Notion) restent dans `.env`, commun aux deux envs.
+
+**Migration** (si tu avais déjà un `.env` avec `POSTGRES_*` / `LOG_LEVEL`) : ces
+variables ne sont plus lues depuis `.env`. Déplace-les dans `.env.dev` ; `.env`
+ne garde que les tokens Notion.
 
 ### Setup (une fois)
 
@@ -43,7 +49,7 @@ La config de la base est lue depuis `.env.dev` (voir ci-dessus).
 1) run postgis
 ```bash
 docker compose -f infra/docker/docker-compose.yml up -d postgis
-# 2. créer extensions + tables (variables lues depuis .env)
+# 2. créer extensions + tables (variables lues depuis .env.dev)
 uv run biowatch-jobs init_db
 # 3. enregistrer les h3 pour le MVP 
 uv run biowatch-jobs generate_h3_grid --aoi idf --resolution 8
@@ -61,7 +67,7 @@ docker exec -it postgis psql -U <user_name> -d <db_name>
 ```bash 
 docker compose -f infra/docker/docker-compose.yml down -v && \
 docker compose -f infra/docker/docker-compose.yml up -d postgis
-# 2. créer extensions + tables (variables lues depuis .env)
+# 2. créer extensions + tables (variables lues depuis .env.dev)
 uv run biowatch-jobs init_db
 # 3. enregistrer les h3 pour le MVP 
 uv run biowatch-jobs generate_h3_grid --aoi idf --resolution 8

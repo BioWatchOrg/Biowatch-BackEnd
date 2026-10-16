@@ -6,8 +6,10 @@ Un seul endroit décide de l'environnement du process :
 
 Le défaut est volontairement `dev` : un lancement qui ne précise rien ne doit
 jamais pouvoir écrire en production. La protection réelle reste structurelle —
-`.env.prod` n'existe que sur le VPS, donc un `--env prod` lancé en local échoue
-faute de variables de connexion, plutôt que d'atteindre la vraie base.
+`.env.prod` n'existe que sur le VPS, et `load_env_file("prod")` **exige** ce
+fichier : un `--env prod` lancé en local échoue sur son absence, avant toute
+lecture de variable de connexion. Un `DATABASE_URL` ou des `POSTGRES_*` qui
+traînent dans le shell ne suffisent donc pas à atteindre la vraie base.
 """
 
 import os
@@ -25,8 +27,18 @@ DATA_ROOT = Path("data")
 DATA_ROOT_VAR = "BIOWATCH_DATA_ROOT"
 
 
+# Environnements dont le fichier `.env.<env>` est obligatoire. En prod, le
+# fichier est la preuve qu'on tourne sur la machine autorisée (le VPS) : sans
+# lui, on refuse de démarrer, quelles que soient les variables déjà présentes.
+ENV_FILE_REQUIRED: frozenset[Env] = frozenset({"prod"})
+
+
 class UnknownEnvError(ValueError):
     """Nom d'environnement inconnu (attendu : `dev` ou `prod`)."""
+
+
+class EnvFileNotFoundError(RuntimeError):
+    """`.env.<env>` introuvable alors que l'environnement l'exige (prod)."""
 
 
 def resolve_env(cli_env: str | None = None) -> Env:
@@ -56,11 +68,23 @@ def load_env_file(env: Env) -> str | None:
     `setup_logging()` lit `LOG_LEVEL` dès son appel, donc un chargement
     paresseux (au premier accès DB) arriverait trop tard.
 
+    Garde-fou prod : si `env` est dans `ENV_FILE_REQUIRED` et que le fichier
+    est introuvable, lève `EnvFileNotFoundError` — c'est ce qui bloque un
+    `--env prod` hors du VPS, même si un `DATABASE_URL` est déjà exporté.
+    En dev, l'absence du fichier retourne `None` (variables injectées par le
+    shell ou la CI).
+
     Idempotent : `override=False` laisse gagner les variables déjà présentes
     dans l'environnement, un second appel ne change donc rien.
     """
-    path = find_dotenv(env_file(env), usecwd=True)
+    name = env_file(env)
+    path = find_dotenv(name, usecwd=True)
     if not path:
+        if env in ENV_FILE_REQUIRED:
+            raise EnvFileNotFoundError(
+                f"Fichier {name} introuvable : l'environnement '{env}' exige ce fichier "
+                f"et refuse de démarrer sans lui (il n'existe que sur le VPS)."
+            )
         return None
     load_dotenv(path, override=False)
     return path

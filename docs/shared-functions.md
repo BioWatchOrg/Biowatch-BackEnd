@@ -40,9 +40,13 @@ packages (voir CLAUDE.md, "Documentation").
   `BIOWATCH_ENV` > `dev`. Normalise casse/espaces, lève `UnknownEnvError` sinon.
 - `load_env_file(env) -> str | None` — charge `.env.<env>` (sans écraser les variables déjà
   posées). À appeler à l'entrypoint, avant `setup_logging`. `env_file(env)` donne le nom.
+  **Garde-fou prod** : lève `EnvFileNotFoundError` si `.env.prod` est absent (prod est dans
+  `ENV_FILE_REQUIRED`), avant toute lecture de `DATABASE_URL` / `POSTGRES_*`. En dev,
+  retourne `None` si le fichier manque.
 - `data_root(env) -> Path` — racine des artefacts des jobs (`data/<env>`, racine
   surchargeable par `BIOWATCH_DATA_ROOT`). Ne jamais écrire d'artefact ailleurs.
-- `Env` (`Literal["dev", "prod"]`), `ENVS`, exception `UnknownEnvError`.
+- `Env` (`Literal["dev", "prod"]`), `ENVS`, `ENV_FILE_REQUIRED`, exceptions `UnknownEnvError`,
+  `EnvFileNotFoundError`.
 
 ### `core.parquet`
 - `write_parquet(df: pd.DataFrame, file_path: str) -> None` — écrit un DataFrame en Parquet.

@@ -108,7 +108,7 @@ def _fake_job(run):
     return {"fake_job": Job(name="fake_job", help="job de test", run=run)}
 
 
-def test_main_exports_the_env_before_dispatching(monkeypatch):
+def test_main_exports_the_env_before_dispatching(monkeypatch, tmp_path):
     """`main` pose BIOWATCH_ENV avant d'appeler le job.
 
     Invariant critique : `get_engine` est mis en cache dès le premier appel,
@@ -119,6 +119,9 @@ def test_main_exports_the_env_before_dispatching(monkeypatch):
     def fake_run(_args):
         seen["env"] = os.environ.get(ENV_VAR)
 
+    # Prod exige son fichier : on simule le VPS, où `.env.prod` existe.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env.prod").write_text("")
     monkeypatch.delenv(ENV_VAR, raising=False)
     monkeypatch.setattr(cli, "setup_logging", lambda **_: None)
     monkeypatch.setattr(cli, "get_jobs", lambda: _fake_job(fake_run))
@@ -153,3 +156,53 @@ def test_dotenv_is_loaded_before_logging_is_configured(monkeypatch, tmp_path):
     cli.main()
 
     assert seen["level"] == "WARNING"
+
+
+@pytest.mark.parametrize(
+    "database_url",
+    [None, "postgresql+psycopg://u:p@prod.internal:5432/biowatch_prod"],
+    ids=["no-connection-var", "DATABASE_URL-exported"],
+)
+def test_prod_without_env_file_fails_before_db_access(monkeypatch, tmp_path, database_url):
+    """`--env prod` sans `.env.prod` ⇒ sortie propre, le job n'est jamais appelé.
+
+    Scénario clé du ticket : la base prod ne doit pas être atteignable depuis
+    un poste local. Le refus ne dépend pas des variables de connexion : même
+    avec un `DATABASE_URL` déjà exporté dans le shell, on n'arrive pas au job
+    (donc pas au premier `get_engine`).
+    """
+    monkeypatch.chdir(tmp_path)  # aucun .env.prod ici
+    monkeypatch.delenv(ENV_VAR, raising=False)
+    if database_url is None:
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+    else:
+        monkeypatch.setenv("DATABASE_URL", database_url)
+
+    job_called = False
+
+    def fake_run(_args):
+        nonlocal job_called
+        job_called = True
+
+    monkeypatch.setattr(cli, "setup_logging", lambda **_: None)
+    monkeypatch.setattr(cli, "get_jobs", lambda: _fake_job(fake_run))
+    monkeypatch.setattr("sys.argv", ["biowatch-jobs", "--env", "prod", "fake_job"])
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+
+    assert job_called is False
+    message = str(exc.value)
+    assert ".env.prod" in message
+    assert "prod" in message
+
+
+def test_unknown_env_from_variable_exits_cleanly(monkeypatch):
+    """`BIOWATCH_ENV=staging` (hors flag, donc hors `choices` d'argparse) ⇒ pas de traceback."""
+    monkeypatch.setenv(ENV_VAR, "staging")
+    monkeypatch.setattr(cli, "setup_logging", lambda **_: None)
+    monkeypatch.setattr(cli, "get_jobs", lambda: _fake_job(lambda _args: None))
+    monkeypatch.setattr("sys.argv", ["biowatch-jobs", "fake_job"])
+
+    with pytest.raises(SystemExit, match="staging"):
+        cli.main()

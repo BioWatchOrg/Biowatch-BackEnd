@@ -1,9 +1,11 @@
 """Tests pour core.config — résolution de l'environnement d'exécution.
 
-Logique pure : aucun accès disque ni DB. On vérifie la précédence
-(flag > variable > défaut), la normalisation, et le rejet des valeurs inconnues.
+Aucun accès DB. On vérifie la précédence (flag > variable > défaut), la
+normalisation, le rejet des valeurs inconnues, et le garde-fou prod de
+`load_env_file` (le seul point qui touche le disque, via `tmp_path`).
 """
 
+import os
 from pathlib import Path
 
 import pytest
@@ -11,10 +13,13 @@ import pytest
 from core.config import (
     DATA_ROOT_VAR,
     DEFAULT_ENV,
+    ENV_FILE_REQUIRED,
     ENV_VAR,
+    EnvFileNotFoundError,
     UnknownEnvError,
     data_root,
     env_file,
+    load_env_file,
     resolve_env,
 )
 
@@ -67,6 +72,53 @@ def test_unknown_env_from_variable_also_raises(monkeypatch):
 def test_env_file_names():
     assert env_file("dev") == ".env.dev"
     assert env_file("prod") == ".env.prod"
+
+
+def test_prod_is_the_env_that_requires_its_file():
+    """Le garde-fou ne vise que prod : dev peut tourner sur des variables injectées."""
+    assert ENV_FILE_REQUIRED == {"prod"}
+
+
+def test_load_env_file_prod_without_file_raises(monkeypatch, tmp_path):
+    """Pas de `.env.prod` ⇒ refus explicite, nommant l'env et le fichier.
+
+    C'est le garde-fou structurel : il ne dépend d'aucune variable de connexion,
+    donc un `DATABASE_URL` exporté dans le shell ne le contourne pas.
+    """
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://u:p@prod.internal:5432/biowatch_prod")
+    with pytest.raises(EnvFileNotFoundError, match=r"\.env\.prod.*'prod'"):
+        load_env_file("prod")
+
+
+def test_load_env_file_dev_without_file_returns_none(monkeypatch, tmp_path):
+    """En dev, l'absence du fichier n'est pas une erreur (CI, variables du shell)."""
+    monkeypatch.chdir(tmp_path)
+    assert load_env_file("dev") is None
+
+
+@pytest.mark.parametrize("env", ["dev", "prod"])
+def test_load_env_file_loads_the_file_when_present(monkeypatch, tmp_path, env):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("BIOWATCH_TEST_MARKER", raising=False)
+    (tmp_path / env_file(env)).write_text("BIOWATCH_TEST_MARKER=loaded\n")
+
+    path = load_env_file(env)
+
+    assert path == str(tmp_path / env_file(env))
+    assert os.environ["BIOWATCH_TEST_MARKER"] == "loaded"
+    monkeypatch.delenv("BIOWATCH_TEST_MARKER")
+
+
+def test_load_env_file_never_overrides_existing_variables(monkeypatch, tmp_path):
+    """`override=False` : une variable déjà posée (shell, CI) gagne sur le fichier."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("BIOWATCH_TEST_MARKER", "from-shell")
+    (tmp_path / ".env.dev").write_text("BIOWATCH_TEST_MARKER=from-file\n")
+
+    load_env_file("dev")
+
+    assert os.environ["BIOWATCH_TEST_MARKER"] == "from-shell"
 
 
 def test_data_root_separates_environments(monkeypatch):
