@@ -12,8 +12,6 @@ import pytest
 
 from core.config import (
     DATA_ROOT_VAR,
-    DEFAULT_ENV,
-    ENV_FILE_REQUIRED,
     ENV_VAR,
     EnvFileNotFoundError,
     UnknownEnvError,
@@ -30,7 +28,6 @@ def test_default_is_dev_when_nothing_is_set(monkeypatch):
     """Aucun flag, aucune variable ⇒ dev. C'est le garde-fou principal."""
     monkeypatch.delenv(ENV_VAR, raising=False)
     assert resolve_env() == "dev"
-    assert DEFAULT_ENV == "dev"
 
 
 def test_env_var_is_used_when_no_flag(monkeypatch):
@@ -111,22 +108,16 @@ def test_load_env_file_unreadable_file_is_a_config_error(project_root, env):
         path.chmod(0o600)
 
 
-def test_env_file_names():
+def test_env_file_follows_the_dot_env_env_convention():
+    """Convention `.env.<env>` : c'est ce nom que `load_env_file` cherche et que prod exige."""
     assert env_file("dev") == ".env.dev"
     assert env_file("prod") == ".env.prod"
 
 
 def test_expected_db_suffix_is_the_env_name():
-    """Convention de nommage : `biowatch_dev` / `biowatch_prod`."""
+    """Convention `<base>_<env>` : `biowatch_dev` / `biowatch_prod`, contrôlée par `clients.db`."""
     assert expected_db_suffix("dev") == "_dev"
     assert expected_db_suffix("prod") == "_prod"
-    assert "biowatch_dev".endswith(expected_db_suffix("dev"))
-    assert not "biowatch_prod".endswith(expected_db_suffix("dev"))
-
-
-def test_prod_is_the_env_that_requires_its_file():
-    """Le garde-fou ne vise que prod : dev peut tourner sur des variables injectées."""
-    assert ENV_FILE_REQUIRED == {"prod"}
 
 
 def test_load_env_file_prod_without_file_raises(monkeypatch, project_root):

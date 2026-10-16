@@ -1,10 +1,14 @@
-"""Tests pour jobs.cli.build_parser — dispatch et déclaration des args par job.
+"""Tests pour jobs.cli — parser, puis `main()` de bout en bout.
 
-On ne lance jamais les jobs ici (parse_args ne fait que fixer les defaults) :
-on vérifie que chaque job enregistré est exposé en sous-commande, câblé sur son
-`run`, et que ses arguments sont bien déclarés.
+Les tests de `build_parser` ne lancent rien (parse_args ne fait que fixer les
+defaults). Les tests de `main` observent le comportement réel : variables
+posées, niveau de log configuré, events JSON émis sur stdout, code de sortie —
+avec un faux job quand le job importe peu, avec les vrais jobs enregistrés
+quand c'est le trajet complet (CLI → job → `get_engine` → garde-fous) qui est
+en jeu, et jusqu'à une vraie base avec `TEST_DATABASE_URL`.
 """
 
+import json
 import logging
 import os
 
@@ -112,9 +116,42 @@ def test_unknown_env_is_rejected_by_the_parser():
         parser.parse_args(["--env", "staging", "generate_h3_grid", "--aoi", "idf"])
 
 
+POSTGRES_VARS = (
+    "POSTGRES_USER",
+    "POSTGRES_PASSWORD",
+    "POSTGRES_DB",
+    "POSTGRES_HOST",
+    "POSTGRES_PORT",
+)
+
+
 def _fake_job(run):
     """Un job minimal enregistrable, pour piloter `main` sans job métier réel."""
     return {"fake_job": Job(name="fake_job", help="job de test", run=run)}
+
+
+def _exit_status(exc: SystemExit) -> int:
+    """Statut réel du process pour un `SystemExit`, avec la sémantique de l'interpréteur.
+
+    `SystemExit("message")` affiche le message sur stderr et sort en 1 ;
+    `exc.code` vaut alors la chaîne, donc `exc.code != 0` ne prouverait rien.
+    """
+    if exc.code is None:
+        return 0
+    if isinstance(exc.code, int):
+        return exc.code
+    return 1
+
+
+def _json_events(stdout: str) -> list[dict]:
+    """Lignes JSON émises par le logging sur stdout (ce que Logdy ingère)."""
+    return [json.loads(line) for line in stdout.splitlines() if line.startswith("{")]
+
+
+def _no_connection(*_args, **_kwargs):
+    raise AssertionError(
+        "create_engine ne doit pas être appelé : refus attendu avant toute connexion"
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -186,13 +223,16 @@ def test_debug_flag_wins_over_the_env_file_level(monkeypatch, project_root):
     [None, "postgresql+psycopg://u:p@prod.internal:5432/biowatch_prod"],
     ids=["no-connection-var", "DATABASE_URL-exported"],
 )
-def test_prod_without_env_file_fails_before_db_access(monkeypatch, project_root, database_url):
+def test_prod_without_env_file_fails_before_db_access(
+    monkeypatch, project_root, capsys, database_url
+):
     """`--env prod` sans `.env.prod` ⇒ sortie propre, le job n'est jamais appelé.
 
     Scénario clé du ticket : la base prod ne doit pas être atteignable depuis
     un poste local. Le refus ne dépend pas des variables de connexion : même
     avec un `DATABASE_URL` déjà exporté dans le shell, on n'arrive pas au job
-    (donc pas au premier `get_engine`).
+    (donc pas au premier `get_engine`). L'échec sort aussi en JSON sur stdout :
+    sur le VPS, c'est la seule trace que Logdy verrait.
     """
     # `project_root` est vide : aucun .env.prod.
     monkeypatch.delenv(ENV_VAR, raising=False)
@@ -214,9 +254,12 @@ def test_prod_without_env_file_fails_before_db_access(monkeypatch, project_root,
         cli.main()
 
     assert job_called is False
+    assert _exit_status(exc.value) == 1
     message = str(exc.value)
     assert ".env.prod" in message
     assert "prod" in message
+    events = _json_events(capsys.readouterr().out)
+    assert [(e["event"], e["level"]) for e in events] == [("cli.config_error", "WARNING")]
 
 
 def test_unknown_env_from_variable_exits_cleanly(monkeypatch):
@@ -229,11 +272,12 @@ def test_unknown_env_from_variable_exits_cleanly(monkeypatch):
         cli.main()
 
 
-def test_database_config_error_from_the_job_exits_cleanly(monkeypatch, project_root):
+def test_database_config_error_from_the_job_exits_cleanly(monkeypatch, project_root, capsys):
     """Base mal nommée pour l'env (ex. tunnel prod en dev) ⇒ exit 1, pas de traceback.
 
     L'erreur ne peut être levée qu'au premier accès DB, donc à l'intérieur du
-    job : `main` doit quand même la transformer en message lisible.
+    job : `main` doit quand même la transformer en message lisible, et la
+    logger en WARNING (erreur attendue), après le `cli.start` en INFO.
     """
     from clients import DatabaseEnvMismatchError
 
@@ -249,8 +293,14 @@ def test_database_config_error_from_the_job_exits_cleanly(monkeypatch, project_r
     with pytest.raises(SystemExit) as exc:
         cli.main()
 
-    assert exc.value.code != 0
+    assert _exit_status(exc.value) == 1
     assert "biowatch_prod" in str(exc.value)
+    events = _json_events(capsys.readouterr().out)
+    assert [(e["event"], e["level"]) for e in events] == [
+        ("cli.start", "INFO"),
+        ("cli.config_error", "WARNING"),
+    ]
+    assert events[0]["context"] == {"env": "dev", "job": "fake_job"}
 
 
 def test_invalid_log_level_from_env_file_exits_cleanly(monkeypatch, project_root):
@@ -268,3 +318,79 @@ def test_invalid_log_level_from_env_file_exits_cleanly(monkeypatch, project_root
 
     with pytest.raises(SystemExit, match="LOG_LEVEL"):
         cli.main()
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [["init_db"], ["generate_h3_grid", "--aoi", "idf", "--resolution", "5"]],
+    ids=["init_db", "generate_h3_grid"],
+)
+def test_forgotten_prod_tunnel_is_refused_by_a_real_job_before_any_connection(
+    monkeypatch, project_root, capsys, argv
+):
+    """Tunnel prod oublié dans le shell + job RÉEL sans `--env` ⇒ refus avant toute connexion.
+
+    Pas de faux job : on traverse la vraie chaîne CLI → job enregistré →
+    `get_engine` → `_build_database_url`. `create_engine` est piégé pour prouver
+    qu'aucune connexion n'est même tentée. Aucune base requise.
+    """
+    from clients.db import session as db_session
+
+    monkeypatch.delenv(ENV_VAR, raising=False)
+    for var in POSTGRES_VARS:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://u:p@127.0.0.1:55432/biowatch_prod")
+    monkeypatch.setattr(db_session, "create_engine", _no_connection)
+    db_session.get_engine.cache_clear()
+    monkeypatch.setattr("sys.argv", ["biowatch-jobs", *argv])
+
+    try:
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+    finally:
+        db_session.get_engine.cache_clear()
+
+    message = str(exc.value)
+    assert _exit_status(exc.value) == 1
+    assert "biowatch_prod" in message and "_dev" in message
+    assert "u:p@" not in message  # jamais l'URL ni le mot de passe
+    events = _json_events(capsys.readouterr().out)
+    assert ("cli.config_error", "WARNING") in [(e["event"], e["level"]) for e in events]
+    assert not [
+        e for e in events if e["level"] == "ERROR"
+    ]  # un refus attendu n'est pas une exception
+
+
+def test_init_db_reaches_the_dev_database_through_the_guards(
+    monkeypatch, project_root, capsys, postgis_url
+):
+    """Chemin nominal bout-en-bout : CLI → `init_db` → `get_engine` → garde-fous → vraie base.
+
+    Le nom de la base de test finit par `_dev` : les deux garde-fous laissent
+    passer, le schéma est créé, l'event de succès est émis. Complète les tests
+    de refus : les garde-fous ne bloquent pas le cas légitime.
+    """
+    from sqlalchemy import text
+
+    from clients.db import session as db_session
+
+    monkeypatch.delenv(ENV_VAR, raising=False)
+    for var in POSTGRES_VARS:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("DATABASE_URL", postgis_url)
+    db_session.get_engine.cache_clear()
+    monkeypatch.setattr("sys.argv", ["biowatch-jobs", "init_db"])
+
+    try:
+        cli.main()
+        engine = db_session.get_engine()
+        assert (engine.url.database or "").endswith("_dev")
+        with engine.connect() as conn:
+            assert conn.scalar(text("SELECT to_regclass('public.zones_hex') IS NOT NULL"))
+        engine.dispose()
+    finally:
+        db_session.get_engine.cache_clear()
+
+    events = [e["event"] for e in _json_events(capsys.readouterr().out)]
+    assert events[0] == "cli.start"
+    assert "db.init_db.success" in events

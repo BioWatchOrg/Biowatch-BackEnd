@@ -9,6 +9,8 @@
 - `project_root` : racine de projet isolée. `.env.<env>` et `data/` sont ancrés
   sur `core.config.PROJECT_ROOT` (pas sur le cwd) ; un test qui veut poser un
   `.env.prod` ou lire un artefact passe par cette fixture.
+- `postgis_url` : base PostGIS de test (`TEST_DATABASE_URL`) ; skip en local,
+  échec en CI si la variable manque.
 """
 
 import os
@@ -31,3 +33,22 @@ def project_root(tmp_path, monkeypatch) -> Path:
 
     monkeypatch.setattr(core.config, "PROJECT_ROOT", tmp_path)
     return tmp_path
+
+
+@pytest.fixture
+def postgis_url() -> str:
+    """URL de la base PostGIS de test. Skip en local sans `TEST_DATABASE_URL`, ÉCHEC en CI.
+
+    En CI (`CI=true`, posé par GitHub Actions), `.github/workflows/test.yml`
+    fournit toujours la variable : son absence est une casse du workflow, pas une
+    raison de skipper en silence les tests bout-en-bout.
+    """
+    url = os.environ.get("TEST_DATABASE_URL")
+    if url:
+        return url
+    if os.environ.get("CI"):
+        pytest.fail(
+            "TEST_DATABASE_URL manquant en CI : les tests PostGIS doivent tourner "
+            "(voir .github/workflows/test.yml)."
+        )
+    pytest.skip("requires a live PostGIS database (set TEST_DATABASE_URL)")

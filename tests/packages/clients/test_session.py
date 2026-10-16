@@ -136,11 +136,20 @@ def test_unparsable_database_url_fails_without_leaking_it(clean_env):
     assert exc.value.__cause__ is None and exc.value.__suppress_context__
 
 
-def test_missing_required_var_raises(clean_env):
+def test_missing_required_var_raises_a_config_error_naming_var_env_and_file(clean_env):
     clean_env.setenv("POSTGRES_PASSWORD", "p")
     clean_env.setenv("POSTGRES_DB", "biowatch_dev")
-    # POSTGRES_USER missing → explicit, readable failure naming the variable.
-    with pytest.raises(RuntimeError, match="POSTGRES_USER"):
+    # POSTGRES_USER missing → erreur de config lisible : variable, env, fichier attendu.
+    with pytest.raises(DatabaseConfigError, match=r"POSTGRES_USER.*'dev'.*\.env\.dev"):
+        _build_database_url()
+
+
+def test_dbname_query_parameter_cannot_bypass_the_suffix_check(clean_env):
+    """`?dbname=` (libpq) prime sur le chemin de l'URL : c'est ce nom-là qui est contrôlé."""
+    clean_env.setenv(
+        "DATABASE_URL", "postgresql+psycopg://u:p@127.0.0.1:5432/biowatch_dev?dbname=biowatch_prod"
+    )
+    with pytest.raises(DatabaseEnvMismatchError, match="biowatch_prod"):
         _build_database_url()
 
 
