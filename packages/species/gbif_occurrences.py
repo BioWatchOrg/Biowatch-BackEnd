@@ -76,11 +76,20 @@ def update_gbif_occurrences(aoi_label: AoiLabel, engine: Engine | None = None) -
     """
     Fetch, filter, and store GBIF occurrences for an AOI's rolling 10-year window.
 
+    Keeps the full history ever fetched -- data older than the current
+    window is never deleted. Each run replaces the data for the window it
+    just refetched (`[date_min, date_max]`): existing rows in that range are
+    deleted first, then the fresh fetch is inserted, so an occurrence whose
+    GBIF record changed since the last run (corrected coordinates, updated
+    taxonomy, etc.) reflects the latest data instead of silently keeping
+    whatever was stored years ago.
+
     Idempotent: guarded by `job_run` (one run per AOI + target year N + AOI
     version + resolution -- skip if already succeeded) and written via
-    `upsert(..., update_columns=[])` (`ON CONFLICT DO NOTHING` -- a GBIF
-    occurrence is an immutable historical record, re-running never needs to
-    overwrite an existing row).
+    `upsert(..., update_columns=[])` (`ON CONFLICT DO NOTHING` -- belt and
+    suspenders now that the window is cleared before inserting, but still
+    the correct call: a GBIF occurrence is otherwise an immutable historical
+    record).
     """
     aoi: AOI = load_aoi(aoi_label)
     current_year = biowatch_now().year
@@ -136,13 +145,14 @@ def update_gbif_occurrences(aoi_label: AoiLabel, engine: Engine | None = None) -
                 )
 
                 logger.info(
-                    "purging staging rows outside the rolling window",
-                    extra={"event": "gbif_occurrences.purge", "context": log_ctx},
+                    "replacing staging rows for the refetched window",
+                    extra={"event": "gbif_occurrences.replace_window", "context": log_ctx},
                 )
                 session.execute(
                     delete(SpeciesOccurrencesRaw).where(
                         SpeciesOccurrencesRaw.aoi_id == aoi_label,
-                        SpeciesOccurrencesRaw.event_date < date_min,
+                        SpeciesOccurrencesRaw.event_date >= date_min,
+                        SpeciesOccurrencesRaw.event_date <= date_max,
                     )
                 )
 

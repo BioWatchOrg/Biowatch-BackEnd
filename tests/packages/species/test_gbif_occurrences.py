@@ -277,10 +277,12 @@ def test_update_gbif_occurrences_logs_full_funnel_counts(monkeypatch, caplog):
     "TEST_DATABASE_URL" not in os.environ,
     reason="requires a live PostGIS database (set TEST_DATABASE_URL)",
 )
-def test_purges_rows_outside_window_scoped_to_aoi(monkeypatch):
-    """Spec-mandated purge test (missing in the previous iteration, flagged
-    by final review): out-of-window rows for this AOI are deleted, in-window
-    rows survive, and another AOI's rows are never touched."""
+def test_replaces_rows_within_refetched_window_scoped_to_aoi(monkeypatch):
+    """The full history is kept (nothing older than the window is ever
+    deleted) -- only the window just refetched gets replaced: rows inside
+    `[date_min, date_max]` for this AOI are deleted (so stale/corrected GBIF
+    data can't survive a refresh), rows outside that window for this AOI
+    survive untouched, and another AOI's rows are never touched."""
     from clients.db import JobRun, ZonesHex
     from clients.db.init_db import init_db
 
@@ -293,7 +295,7 @@ def test_purges_rows_outside_window_scoped_to_aoi(monkeypatch):
         # Without this, a `success` JobRun row left behind by a previous run
         # of this exact test (same aoi/year/resolution -> same deterministic
         # idempotency_key) makes `job_run()` raise `JobAlreadySucceeded` and
-        # skip the purge entirely on the next run -- same cleanup pattern the
+        # skip the window replacement entirely on the next run -- same cleanup pattern the
         # other DB-gated tests below already use.
         conn.execute(delete(JobRun).where(JobRun.job_name == "update_gbif_occurrences"))
 
@@ -310,19 +312,19 @@ def test_purges_rows_outside_window_scoped_to_aoi(monkeypatch):
         conn.execute(
             SpeciesOccurrencesRaw.__table__.insert(),
             [
-                {  # in-window, this AOI -> must survive
+                {  # in-window, this AOI -> must be replaced (deleted, no new fetch data here)
                     "gbif_occurrence_id": "in-window", "event_date": date(2020, 1, 1),
                     "gbif_taxon_key": None, "scientific_name": "A",
                     "decimal_latitude": 1.0, "decimal_longitude": 1.0,
                     "zone_id": "z-in", "aoi_id": GOLDEN_AOI,
                 },
-                {  # out-of-window, this AOI -> must be purged
+                {  # out-of-window, this AOI -> kept forever, never touched
                     "gbif_occurrence_id": "out-of-window", "event_date": date(2000, 1, 1),
                     "gbif_taxon_key": None, "scientific_name": "B",
                     "decimal_latitude": 1.0, "decimal_longitude": 1.0,
                     "zone_id": "z-out", "aoi_id": GOLDEN_AOI,
                 },
-                {  # out-of-window, OTHER AOI -> must survive (not this AOI's purge)
+                {  # out-of-window, OTHER AOI -> must survive (not this AOI's window)
                     "gbif_occurrence_id": "other-aoi-old", "event_date": date(2000, 1, 1),
                     "gbif_taxon_key": None, "scientific_name": "C",
                     "decimal_latitude": 1.0, "decimal_longitude": 1.0,
@@ -338,7 +340,7 @@ def test_purges_rows_outside_window_scoped_to_aoi(monkeypatch):
             conn.scalars(select(SpeciesOccurrencesRaw.gbif_occurrence_id)).all()
         )
 
-    assert remaining_ids == {"in-window", "other-aoi-old"}
+    assert remaining_ids == {"out-of-window", "other-aoi-old"}
 
 
 @pytest.mark.skipif(
@@ -387,10 +389,13 @@ def test_update_gbif_occurrences_skips_rerun_same_year(monkeypatch):
     "TEST_DATABASE_URL" not in os.environ,
     reason="requires a live PostGIS database (set TEST_DATABASE_URL)",
 )
-def test_update_gbif_occurrences_row_level_dedup_across_overlapping_windows(monkeypatch):
-    """Row-level dedup: two different job runs (different target years,
-    overlapping windows) both attempt to upsert the same occurrence -- must
-    not raise, must not duplicate, must not overwrite (DO NOTHING)."""
+def test_update_gbif_occurrences_refreshes_data_across_overlapping_windows(monkeypatch):
+    """Two different job runs (different target years, overlapping windows)
+    both fetch the same occurrence id -- must not raise, must not duplicate,
+    and the second run's data must win (the window-replace delete clears the
+    first run's row before the second run's fresh fetch is inserted, so a
+    GBIF record that changed between runs -- corrected coordinates, updated
+    taxonomy -- is reflected instead of silently kept stale)."""
     from clients.db import JobRun
     from clients.db.init_db import init_db
 
@@ -413,9 +418,9 @@ def test_update_gbif_occurrences_row_level_dedup_across_overlapping_windows(monk
     _patch_download_pipeline(monkeypatch, [original_row])
     gbif_occurrences.update_gbif_occurrences(GOLDEN_AOI, engine=engine)
 
-    conflicting_row = {**original_row, "scientificName": "SHOULD NOT OVERWRITE"}
+    updated_row = {**original_row, "scientificName": "Vulpes vulpes (updated)"}
     monkeypatch.setattr(gbif_occurrences, "biowatch_now", lambda: date(2025, 1, 1))
-    _patch_download_pipeline(monkeypatch, [conflicting_row])
+    _patch_download_pipeline(monkeypatch, [updated_row])
     gbif_occurrences.update_gbif_occurrences(GOLDEN_AOI, engine=engine)  # must not raise
 
     with engine.connect() as conn:
@@ -432,8 +437,8 @@ def test_update_gbif_occurrences_row_level_dedup_across_overlapping_windows(monk
         ).one()
 
     assert successful_runs == 2
-    assert count == 1
-    assert row.scientific_name == "Vulpes vulpes"
+    assert count == 1  # still no duplicate row
+    assert row.scientific_name == "Vulpes vulpes (updated)"  # 2nd run's fresher data won
 
 
 @pytest.mark.skipif(

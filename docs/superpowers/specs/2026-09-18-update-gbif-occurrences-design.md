@@ -71,10 +71,11 @@ volume).
 - **Résolution H3** : `aoi.default_res`, inchangé.
 - **Filtre taxonomique** : aucun, inchangé.
 - **Conflit PK** : `DO NOTHING`, inchangé — `upsert(..., update_columns=[])`.
-- **Purge staging** : inchangé — `DELETE` avant fetch, dans la transaction du
-  job. **Ajout suite à la revue finale** : un test dédié doit exister pour
-  cette opération destructive (v2 ne l'avait pas — trouvé en revue finale,
-  corrigé en v3).
+- **Purge staging** : `DELETE` avant fetch, dans la transaction du job (voir
+  v4 ci-dessous pour la condition exacte — elle a changé depuis v3). **Ajout
+  suite à la revue finale** : un test dédié doit exister pour cette
+  opération destructive (v2 ne l'avait pas — trouvé en revue finale, corrigé
+  en v3).
 - **Idempotence** : **ajout suite à la revue finale** — la clé doit inclure
   `aoi_version` et `resolution` (comme `generate_h3_grid` le fait déjà),
   pas seulement `aoi_label` + année. Sans ça, un changement de géométrie ou
@@ -87,6 +88,30 @@ volume).
   serait aggravé une fois ce plafond contourné, donc traité maintenant).
 - **Nouveau package** : inchangé — `packages/species/`, client HTTP dans
   `packages/clients/gbif/`.
+
+## v4 — Historique conservé, remplacement par fenêtre refetchée
+
+**Changement de décision produit, après v3** : `staging.species_occurrences_raw`
+n'est plus une fenêtre glissante qui s'auto-purge — c'est une **archive
+historique complète**, jamais tronquée par âge. Ce que chaque run purge
+change : au lieu de supprimer ce qui est **sorti** de la fenêtre
+(`event_date < date_min`), on supprime ce qui est **dans** la fenêtre qu'on
+vient de refetcher (`date_min ≤ event_date ≤ date_max`), avant d'insérer le
+fetch frais. Motivation : une occurrence GBIF peut être corrigée après coup
+(coordonnées, taxonomie) ; sans ce remplacement, un refetch sur une année
+déjà connue ne verrait jamais la correction (`ON CONFLICT DO NOTHING` garde
+silencieusement l'ancienne donnée pour toujours).
+
+Avec ce changement : `ON CONFLICT DO NOTHING` devient surtout un filet de
+sécurité (plus de conflit normal possible dans la fenêtre qu'on vient de
+vider) plutôt que le mécanisme principal anti-doublon — le vrai mécanisme
+anti-doublon redevient le `DELETE` scopé par fenêtre + `aoi_id`.
+
+**⚠️ Écart avec le Notion** : la page source demandait explicitement une
+purge « hors fenêtre » (`staging` bornée à 10 ans glissants). Ce changement
+l'inverse délibérément, sur demande explicite de l'utilisateur en session —
+**à reporter dans le ticket Notion** pour que la DoD écrite reste alignée
+avec le comportement réel.
 
 ## Architecture
 
@@ -103,7 +128,10 @@ apps/jobs/definitions.py
 
 1. **`job_runs`** : `job_run(...)` standard — inchangé.
 2. **Fenêtre glissante** : `date_min = date(N-9, 1, 1)`, `date_max = date(N, 12, 31)` — inchangé.
-3. **Purge staging hors fenêtre** — inchangé (testé cette fois, cf. Tests).
+3. **Remplacement staging pour la fenêtre refetchée** (v4 — inversé depuis
+   v3) : `DELETE WHERE aoi_id = :aoi AND event_date BETWEEN :date_min AND
+   :date_max`. L'historique hors fenêtre n'est jamais touché, conservé pour
+   toujours.
 4. **Un seul appel GBIF pour toute la fenêtre** :
    - `predicate = {"type": "and", "predicates": [
         {"type": "within", "geometry": "<hull WKT>"},
@@ -194,12 +222,13 @@ granularité par zone.
 - **Filtre qualité** : inchangé (déjà fait, testé, 100% coverage) — juste
   vérifier que la normalisation CSV→dict alimente `quality_filter` sans le
   modifier.
-- **Purge staging** : **nouveau test explicite** (absent en v2, finding de
-  revue) — lignes hors fenêtre supprimées, lignes dans la fenêtre
-  conservées, scoping correct par `aoi_id`.
+- **Remplacement de fenêtre** (v4) : lignes **dans** la fenêtre refetchée
+  supprimées, lignes **hors** fenêtre conservées pour toujours, scoping
+  correct par `aoi_id`.
 - **Job complet** : DB de test — idempotence (rerun identique = skip),
-  dédup PK (`DO NOTHING`), exclusion des points hors `zones_hex`, et
-  vérifie que changer `aoi.version`/`resolution` déclenche un nouveau run
+  rafraîchissement de données sur fenêtres qui se recoupent (2e run gagne,
+  pas de doublon), exclusion des points hors `zones_hex`, et vérifie que
+  changer `aoi.version`/`resolution` déclenche un nouveau run
   (nouveau test, finding de revue).
 
 ## Hors scope
