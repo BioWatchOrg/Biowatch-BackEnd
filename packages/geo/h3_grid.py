@@ -98,8 +98,8 @@ def generate_h3_grid(
     """
     Generate the H3 grid for an AOI + resolution and persist it into `zones_hex`.
 
-    Idempotent: guarded by `job_run` (same aoi + resolution + aoi version ⇒
-    skip if already succeeded) and written via `upsert` (no duplicates on re-run).
+    Idempotent: guarded by `job_run` (same aoi + resolution + aoi version + env
+    ⇒ skip if already succeeded) and written via `upsert` (no duplicates on re-run).
 
     The AOI is resolved up front so the run is keyed on its declared `version`
     (registry source of truth) rather than a hardcoded constant: bump the AOI
@@ -113,8 +113,11 @@ def generate_h3_grid(
     if resolution is None:
         resolution = aoi.default_res
 
-    # L'env entre dans la clé : un run de dev ne peut pas marquer le run de
-    # prod comme déjà réussi, même si les deux partageaient une base.
+    # L'env fait partie de l'identité du run : la clé (et la ligne `job_runs`)
+    # dit explicitement dans quel environnement le travail a été fait. Un run
+    # de dev ne vaut jamais pour prod, même si une base venait à être partagée
+    # (copie de prod en dev, restauration). Défense en profondeur, en plus du
+    # suffixe `_<env>` imposé au nom de la base.
     env = resolve_env()
     idempotency_key = compute_idempotency_key(
         job_name="generate_h3_grid",

@@ -37,12 +37,12 @@ def test_generate_h3_grid_skips_when_already_succeeded(monkeypatch, tmp_path):
     "TEST_DATABASE_URL" not in os.environ,
     reason="requires a live PostGIS database (set TEST_DATABASE_URL)",
 )
-def test_generate_h3_grid_is_idempotent(tmp_path, monkeypatch):
+def test_generate_h3_grid_is_idempotent(project_root, monkeypatch):
     """Full run against PostGIS: two runs → one job, no duplicated zones."""
     from clients.db import JobRun, ZonesHex
     from clients.db.init_db import init_db
 
-    monkeypatch.chdir(tmp_path)  # parquet artifact lands in the tmp dir
+    # parquet artifact lands under project_root/data (isolated tmp dir)
     engine = create_engine(os.environ["TEST_DATABASE_URL"], future=True)
     init_db(engine)
 
@@ -65,8 +65,8 @@ def test_generate_h3_grid_is_idempotent(tmp_path, monkeypatch):
     assert successes == 1
 
 
-def test_generate_h3_grid_writes_the_artifact_under_data_env(monkeypatch, tmp_path):
-    """L'artefact parquet atterrit dans `data/<env>/grids/...`, plus dans `docs/`.
+def test_generate_h3_grid_writes_the_artifact_under_data_env(monkeypatch, project_root):
+    """L'artefact parquet atterrit dans `<racine>/data/<env>/grids/...`, plus dans `docs/`.
 
     Le chemin de stockage par environnement est un livrable central de la
     séparation dev/prod : il doit être couvert par un test qui tourne en CI,
@@ -76,7 +76,7 @@ def test_generate_h3_grid_writes_the_artifact_under_data_env(monkeypatch, tmp_pa
 
     from core import ENV_VAR, load_aoi
 
-    monkeypatch.chdir(tmp_path)
+    tmp_path = project_root
     monkeypatch.delenv(ENV_VAR, raising=False)  # rien de posé ⇒ dev par défaut
 
     @contextmanager
@@ -105,13 +105,13 @@ def test_generate_h3_grid_writes_the_artifact_under_data_env(monkeypatch, tmp_pa
     assert len(written[0]) == GOLDEN_COUNT
 
 
-def test_generate_h3_grid_isolates_prod_artifacts_from_dev(monkeypatch, tmp_path):
+def test_generate_h3_grid_isolates_prod_artifacts_from_dev(monkeypatch, project_root):
     """Le même job en prod écrit ailleurs : les deux envs ne se marchent pas dessus."""
     from types import SimpleNamespace
 
     from core import ENV_VAR
 
-    monkeypatch.chdir(tmp_path)
+    tmp_path = project_root
     monkeypatch.setenv(ENV_VAR, "prod")
 
     @contextmanager
@@ -127,20 +127,38 @@ def test_generate_h3_grid_isolates_prod_artifacts_from_dev(monkeypatch, tmp_path
     assert not (tmp_path / "data" / "dev").exists()
 
 
-def test_env_discriminates_the_idempotency_key(monkeypatch):
-    """Même AOI, même résolution, deux envs ⇒ deux clés distinctes."""
+def test_env_discriminates_the_idempotency_key_of_the_job(monkeypatch, project_root):
+    """Le JOB passe bien l'env dans sa clé : même AOI, même résolution, dev ≠ prod.
+
+    On capture la clé reçue par `job_run` plutôt que d'appeler
+    `compute_idempotency_key` directement : si quelqu'un retire `env=env`
+    dans `generate_h3_grid`, ce test doit casser.
+    """
+    from types import SimpleNamespace
+
     from core import ENV_VAR, compute_idempotency_key, load_aoi
 
-    aoi = load_aoi(GOLDEN_AOI)
-    monkeypatch.delenv(ENV_VAR, raising=False)
+    keys: dict[str, str] = {}
 
-    def key_for(env: str) -> str:
-        return compute_idempotency_key(
+    @contextmanager
+    def fake_job_run(*args, idempotency_key="", **kwargs):
+        keys[os.environ[ENV_VAR]] = idempotency_key
+        yield SimpleNamespace(run_id=uuid.uuid4()), object()
+
+    monkeypatch.setattr(h3_grid, "job_run", fake_job_run)
+    monkeypatch.setattr(h3_grid, "upsert", lambda **kwargs: None)
+
+    for env in ("dev", "prod"):
+        monkeypatch.setenv(ENV_VAR, env)
+        h3_grid.generate_h3_grid(GOLDEN_AOI, GOLDEN_RES)
+
+    assert keys["dev"] != keys["prod"]
+    version = load_aoi(GOLDEN_AOI).version
+    for env in ("dev", "prod"):
+        assert keys[env] == compute_idempotency_key(
             job_name="generate_h3_grid",
             scope=GOLDEN_AOI,
             resolution=GOLDEN_RES,
-            source_version=aoi.version,
+            source_version=version,
             env=env,
         )
-
-    assert key_for("dev") != key_for("prod")

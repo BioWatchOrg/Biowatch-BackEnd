@@ -13,6 +13,8 @@ une commande qui ne précise rien ne peut pas écrire en production.
 | prod | `.env.prod` (**VPS uniquement**) | `biowatch_prod` | `data/prod/` |
 
 L'environnement est résolu dans cet ordre : `--env` > `BIOWATCH_ENV` > `dev`.
+`.env.<env>` et `data/` sont cherchés **à la racine du dépôt**, quel que soit le
+répertoire d'où la commande est lancée (jamais dans le cwd ni ses parents).
 
 ```bash
 uv run biowatch-jobs generate_h3_grid --aoi idf   # dev (défaut)
@@ -21,8 +23,16 @@ uv run biowatch-jobs --env prod generate_h3_grid --aoi idf
 
 `.env.prod` n'existe pas sur un poste de dev, et **prod exige ce fichier** : un
 `--env prod` lancé par erreur s'arrête avec un message explicite, avant tout accès
-DB — même si un `DATABASE_URL` ou des `POSTGRES_*` traînent dans le shell. En dev,
-le fichier est optionnel (la CI injecte ses variables directement).
+DB — même si un `DATABASE_URL` ou des `POSTGRES_*` traînent dans le shell. Sur le
+VPS, c'est un marqueur posé par le déploiement à côté du code (il peut être vide :
+les secrets restent injectés par systemd, voir `infra/vps/README.md`). En dev, le
+fichier est optionnel (la CI injecte ses variables directement).
+
+Deuxième filet, valable dans les deux sens : **le nom de la base doit finir par
+`_<env>`** (`biowatch_dev` en dev, `biowatch_prod` en prod). Une variable du shell
+gagne sur `.env.dev` (`override=False`), donc un tunnel SSH qui exporte un
+`DATABASE_URL` vers `biowatch_prod` ferait écrire en prod un job lancé sans `--env`.
+Avec ce contrôle, la connexion est refusée avant d'être ouverte.
 
 Les tokens d'outillage (Notion) restent dans `.env`, commun aux deux envs.
 

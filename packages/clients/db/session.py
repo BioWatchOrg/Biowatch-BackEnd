@@ -4,11 +4,41 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from functools import lru_cache
 
-from core import env_file, load_env_file, resolve_env
+from core import Env, env_file, expected_db_suffix, load_env_file, resolve_env
 from sqlalchemy import Engine, create_engine
+from sqlalchemy.engine import make_url
+from sqlalchemy.exc import ArgumentError
 from sqlalchemy.orm import Session, sessionmaker
 
 logger = logging.getLogger(__name__)
+
+
+class DatabaseConfigError(RuntimeError):
+    """Configuration de connexion invalide ou incomplète (erreur d'exploitation,
+    pas un bug) : le CLI l'affiche sans traceback. Ne contient jamais d'URL
+    ni de mot de passe."""
+
+
+class DatabaseEnvMismatchError(DatabaseConfigError):
+    """Le nom de la base ne porte pas le suffixe de l'environnement courant."""
+
+
+def _check_db_matches_env(db_name: str, env: Env) -> None:
+    """Refuse une base dont le nom ne se termine pas par `_<env>`.
+
+    Dernier filet, indépendant de l'origine des variables : un `DATABASE_URL`
+    exporté dans le shell (tunnel vers la prod) gagne sur `.env.dev`, et
+    `.env.prod` n'est exigé qu'en prod. Sans ce contrôle, un job lancé sans
+    `--env` pourrait écrire en production. Le message ne contient jamais
+    l'URL ni le mot de passe, seulement le nom de la base.
+    """
+    suffix = expected_db_suffix(env)
+    if not db_name.endswith(suffix):
+        raise DatabaseEnvMismatchError(
+            f"Base '{db_name}' incohérente avec l'environnement '{env}' : son nom doit "
+            f"se terminer par '{suffix}'. Un DATABASE_URL ou un POSTGRES_DB du shell "
+            f"(tunnel SSH ?) pointe vers une autre base que celle de .env.{env}."
+        )
 
 
 def _build_database_url() -> str:
@@ -35,6 +65,16 @@ def _build_database_url() -> str:
 
     explicit_url = os.environ.get("DATABASE_URL")
     if explicit_url:
+        try:
+            db_from_url = make_url(explicit_url).database or ""
+        except ArgumentError:
+            # `from None` : le message SQLAlchemy cite l'URL complète, donc le
+            # mot de passe — il ne doit apparaître ni ici ni dans la chaîne.
+            raise DatabaseConfigError(
+                f"DATABASE_URL illisible — environnement '{env}', fichier {env_file(env)}. "
+                "Format attendu : postgresql+psycopg://user:password@host:port/base."
+            ) from None
+        _check_db_matches_env(db_from_url, env)
         return explicit_url
 
     try:
@@ -42,10 +82,11 @@ def _build_database_url() -> str:
         password = os.environ["POSTGRES_PASSWORD"]
         db = os.environ["POSTGRES_DB"]
     except KeyError as e:
-        raise RuntimeError(
+        raise DatabaseConfigError(
             f"Variable d'environnement manquante : {e.args[0]} — environnement "
             f"'{env}', fichier attendu : {env_file(env)} (voir .env.dev.example)."
         ) from e
+    _check_db_matches_env(db, env)
     host = os.environ.get("POSTGRES_HOST", "127.0.0.1")
     port = os.environ.get("POSTGRES_PORT", "5432")
 

@@ -96,6 +96,14 @@ def test_env_flag_is_parsed(value):
     assert args.env == value
 
 
+@pytest.mark.parametrize("raw", ["PROD", " prod ", "Prod"])
+def test_env_flag_is_normalized_like_the_variable(raw):
+    """`--env PROD` et `BIOWATCH_ENV=PROD` doivent se comporter pareil."""
+    parser = build_parser()
+    args = parser.parse_args(["--env", raw, "generate_h3_grid", "--aoi", "idf"])
+    assert args.env == "prod"
+
+
 def test_unknown_env_is_rejected_by_the_parser():
     """`choices` refuse un env inconnu dès le parsing, avant tout accès DB."""
     parser = build_parser()
@@ -108,7 +116,7 @@ def _fake_job(run):
     return {"fake_job": Job(name="fake_job", help="job de test", run=run)}
 
 
-def test_main_exports_the_env_before_dispatching(monkeypatch, tmp_path):
+def test_main_exports_the_env_before_dispatching(monkeypatch, project_root):
     """`main` pose BIOWATCH_ENV avant d'appeler le job.
 
     Invariant critique : `get_engine` est mis en cache dès le premier appel,
@@ -120,8 +128,7 @@ def test_main_exports_the_env_before_dispatching(monkeypatch, tmp_path):
         seen["env"] = os.environ.get(ENV_VAR)
 
     # Prod exige son fichier : on simule le VPS, où `.env.prod` existe.
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / ".env.prod").write_text("")
+    (project_root / ".env.prod").write_text("")
     monkeypatch.delenv(ENV_VAR, raising=False)
     monkeypatch.setattr(cli, "setup_logging", lambda **_: None)
     monkeypatch.setattr(cli, "get_jobs", lambda: _fake_job(fake_run))
@@ -132,17 +139,16 @@ def test_main_exports_the_env_before_dispatching(monkeypatch, tmp_path):
     assert seen["env"] == "prod"
 
 
-def test_dotenv_is_loaded_before_logging_is_configured(monkeypatch, tmp_path):
+def test_dotenv_is_loaded_before_logging_is_configured(monkeypatch, project_root):
     """`LOG_LEVEL` de `.env.<env>` doit être lu AVANT `setup_logging`.
 
     Régression : le dotenv n'était chargé qu'au premier accès DB, donc après
     `setup_logging` — `LOG_LEVEL` n'avait alors aucun effet sur les jobs, alors
     que `.env.dev.example` le documente comme un réglage actif.
     """
-    monkeypatch.chdir(tmp_path)
     monkeypatch.delenv(ENV_VAR, raising=False)
     monkeypatch.delenv("LOG_LEVEL", raising=False)
-    (tmp_path / ".env.dev").write_text("LOG_LEVEL=WARNING\n")
+    (project_root / ".env.dev").write_text("LOG_LEVEL=WARNING\n")
 
     seen: dict[str, str | None] = {}
 
@@ -163,7 +169,7 @@ def test_dotenv_is_loaded_before_logging_is_configured(monkeypatch, tmp_path):
     [None, "postgresql+psycopg://u:p@prod.internal:5432/biowatch_prod"],
     ids=["no-connection-var", "DATABASE_URL-exported"],
 )
-def test_prod_without_env_file_fails_before_db_access(monkeypatch, tmp_path, database_url):
+def test_prod_without_env_file_fails_before_db_access(monkeypatch, project_root, database_url):
     """`--env prod` sans `.env.prod` ⇒ sortie propre, le job n'est jamais appelé.
 
     Scénario clé du ticket : la base prod ne doit pas être atteignable depuis
@@ -171,7 +177,7 @@ def test_prod_without_env_file_fails_before_db_access(monkeypatch, tmp_path, dat
     avec un `DATABASE_URL` déjà exporté dans le shell, on n'arrive pas au job
     (donc pas au premier `get_engine`).
     """
-    monkeypatch.chdir(tmp_path)  # aucun .env.prod ici
+    # `project_root` est vide : aucun .env.prod.
     monkeypatch.delenv(ENV_VAR, raising=False)
     if database_url is None:
         monkeypatch.delenv("DATABASE_URL", raising=False)
@@ -205,4 +211,46 @@ def test_unknown_env_from_variable_exits_cleanly(monkeypatch):
     monkeypatch.setattr("sys.argv", ["biowatch-jobs", "fake_job"])
 
     with pytest.raises(SystemExit, match="staging"):
+        cli.main()
+
+
+def test_database_config_error_from_the_job_exits_cleanly(monkeypatch, project_root):
+    """Base mal nommée pour l'env (ex. tunnel prod en dev) ⇒ exit 1, pas de traceback.
+
+    L'erreur ne peut être levée qu'au premier accès DB, donc à l'intérieur du
+    job : `main` doit quand même la transformer en message lisible.
+    """
+    from clients import DatabaseEnvMismatchError
+
+    def fake_run(_args):
+        raise DatabaseEnvMismatchError(
+            "Base 'biowatch_prod' incohérente avec l'environnement 'dev'"
+        )
+
+    monkeypatch.delenv(ENV_VAR, raising=False)
+    monkeypatch.setattr(cli, "setup_logging", lambda **_: None)
+    monkeypatch.setattr(cli, "get_jobs", lambda: _fake_job(fake_run))
+    monkeypatch.setattr("sys.argv", ["biowatch-jobs", "fake_job"])
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+
+    assert exc.value.code != 0
+    assert "biowatch_prod" in str(exc.value)
+
+
+def test_invalid_log_level_from_env_file_exits_cleanly(monkeypatch, project_root):
+    """`LOG_LEVEL=verbose` dans `.env.dev` ⇒ erreur de config lisible, pas de ValueError brut.
+
+    Depuis que le dotenv est chargé avant `setup_logging`, cette valeur est
+    réellement appliquée : une faute de frappe doit être traitée comme les
+    autres erreurs de configuration.
+    """
+    monkeypatch.delenv(ENV_VAR, raising=False)
+    monkeypatch.delenv("LOG_LEVEL", raising=False)
+    (project_root / ".env.dev").write_text("LOG_LEVEL=verbose\n")
+    monkeypatch.setattr(cli, "get_jobs", lambda: _fake_job(lambda _args: None))
+    monkeypatch.setattr("sys.argv", ["biowatch-jobs", "fake_job"])
+
+    with pytest.raises(SystemExit, match="LOG_LEVEL"):
         cli.main()
