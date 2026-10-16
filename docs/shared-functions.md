@@ -35,6 +35,15 @@ packages (voir CLAUDE.md, "Documentation").
 - `AOI` (dataclass : `label`, `name`, `geom`, `bbox`, `version`, `default_res`).
 - Exceptions : `UndefinedAOIError`, `LoadingAOIError`, `GeoJsonValueError`.
 
+### `core.config`
+- `resolve_env(cli_env=None) -> Env` — environnement effectif : flag `--env` >
+  `BIOWATCH_ENV` > `dev`. Normalise casse/espaces, lève `UnknownEnvError` sinon.
+- `load_env_file(env) -> str | None` — charge `.env.<env>` (sans écraser les variables déjà
+  posées). À appeler à l'entrypoint, avant `setup_logging`. `env_file(env)` donne le nom.
+- `data_root(env) -> Path` — racine des artefacts des jobs (`data/<env>`, racine
+  surchargeable par `BIOWATCH_DATA_ROOT`). Ne jamais écrire d'artefact ailleurs.
+- `Env` (`Literal["dev", "prod"]`), `ENVS`, exception `UnknownEnvError`.
+
 ### `core.parquet`
 - `write_parquet(df: pd.DataFrame, file_path: str) -> None` — écrit un DataFrame en Parquet.
   Utilisé pour les artefacts de reproductibilité des jobs (ex. `h3_grid.py`).
