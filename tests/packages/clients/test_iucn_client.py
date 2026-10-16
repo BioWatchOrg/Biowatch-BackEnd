@@ -50,6 +50,12 @@ def test_http_error_is_wrapped():
         client.red_list_version()
 
 
+def _page(assessments, total_pages="1", total_count=None):
+    headers = {"total-pages": total_pages}
+    headers["total-count"] = str(len(assessments) if total_count is None else total_count)
+    return httpx.Response(200, headers=headers, json={"assessments": assessments})
+
+
 def test_country_assessments_walk_every_page():
     pages = {1: [{"sis_taxon_id": 1}, {"sis_taxon_id": 2}], 2: [{"sis_taxon_id": 3}]}
     requested = []
@@ -60,7 +66,7 @@ def test_country_assessments_walk_every_page():
         assert request.url.params["scope_code"] == "1"  # évaluations globales
         page = int(request.url.params["page"])
         requested.append(page)
-        return httpx.Response(200, headers={"total-pages": "2"}, json={"assessments": pages[page]})
+        return _page(pages[page], total_pages="2", total_count=3)
 
     result = list(_client(handler).iter_country_assessments("FR"))
 
@@ -68,12 +74,49 @@ def test_country_assessments_walk_every_page():
     assert [a["sis_taxon_id"] for a in result] == [1, 2, 3]
 
 
-def test_country_assessments_without_pagination_header_stop_after_one_page():
-    calls = []
+@pytest.mark.parametrize("headers", [{}, {"total-pages": "beaucoup", "total-count": "1"}])
+def test_missing_or_invalid_pagination_header_raises(headers):
+    """Sans `total-pages` fiable, on ne sait pas si la liste est complète : on refuse."""
 
     def handler(request):
-        calls.append(request)
-        return httpx.Response(200, json={"assessments": [{"sis_taxon_id": 1}]})
+        return httpx.Response(200, headers=headers, json={"assessments": [{"sis_taxon_id": 1}]})
 
-    assert len(list(_client(handler).iter_country_assessments("FR"))) == 1
-    assert len(calls) == 1
+    with pytest.raises(IucnApiError, match="total-pages"):
+        list(_client(handler).iter_country_assessments("FR"))
+
+
+def test_truncated_list_raises():
+    """Moins d'évaluations reçues que le total annoncé → pas d'import partiel « réussi »."""
+    client = _client(lambda request: _page([{"sis_taxon_id": 1}], total_count=5002))
+    with pytest.raises(IucnApiError, match="incomplètes"):
+        list(client.iter_country_assessments("FR"))
+
+
+def test_non_json_body_raises():
+    """Ex. page HTML de maintenance renvoyée en 200 par un proxy."""
+    client = _client(
+        lambda request: httpx.Response(
+            200, headers={"total-pages": "1", "total-count": "0"}, text="<html>maintenance</html>"
+        )
+    )
+    with pytest.raises(IucnApiError, match="non JSON"):
+        list(client.iter_country_assessments("FR"))
+
+
+@pytest.mark.parametrize("body", [[{"sis_taxon_id": 1}], {"result": []}, {"assessments": {}}])
+def test_unexpected_body_shape_raises(body):
+    client = _client(
+        lambda request: httpx.Response(
+            200, headers={"total-pages": "1", "total-count": "1"}, json=body
+        )
+    )
+    with pytest.raises(IucnApiError):
+        list(client.iter_country_assessments("FR"))
+
+
+def test_transport_error_is_wrapped():
+    def handler(request):
+        raise httpx.ConnectError("unreachable")
+
+    with pytest.raises(IucnApiError):
+        _client(handler).red_list_version()

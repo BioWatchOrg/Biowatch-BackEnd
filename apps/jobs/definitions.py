@@ -57,23 +57,14 @@ register(
 )
 
 
-def _configure_update_iucn_taxonomy(parser: ArgumentParser) -> None:
-    parser.add_argument(
-        "--country",
-        default="FR",
-        help="Pays (code ISO alpha-2) dont on importe les espèces évaluées. Défaut : FR.",
-    )
-
-
 def _run_update_iucn_taxonomy(args: Namespace) -> None:
-    update_iucn_taxonomy(country=args.country)
+    update_iucn_taxonomy()
 
 
 register(
     Job(
         name="update_iucn_taxonomy",
-        help="Importe la Red List IUCN (espèces d'un pays) dans staging.iucn_taxa.",
+        help="Importe la Red List IUCN (espèces de France) dans staging.iucn_taxa.",
         run=_run_update_iucn_taxonomy,
-        configure=_configure_update_iucn_taxonomy,
     )
 )

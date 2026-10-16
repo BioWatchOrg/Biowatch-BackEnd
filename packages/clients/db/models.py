@@ -161,20 +161,21 @@ class IucnTaxa(Base):
 
     Intermediate data, not exposed by the API: it feeds
     `compute_species_features_by_zone` (join on `scientific_name` with GBIF).
-    One row per IUCN taxon (MVP: a single "active" version). A taxon dropped
-    from a newer Red List keeps its old `source_version` — consumers filter on
-    the version they target.
+    One row per IUCN taxon **per Red List version**, like the other feature
+    tables: importing a new version adds rows and never rewrites the previous
+    one, so consumers filter on the `source_version` they target. MVP scope:
+    species present in France only (global assessments).
     """
 
     __tablename__ = "iucn_taxa"
     __table_args__ = {"schema": "staging"}
 
     iucn_taxon_id: Mapped[int] = mapped_column(Integer, primary_key=True)  # IUCN SIS id
+    source_version: Mapped[str] = mapped_column(String, primary_key=True, index=True)  # "2026-1"
     scientific_name: Mapped[str] = mapped_column(String, nullable=False, index=True)
     category: Mapped[str] = mapped_column(String, nullable=False, index=True)  # CR, EN, VU...
     assessment_id: Mapped[int] = mapped_column(Integer, nullable=False)
     year_published: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    source_version: Mapped[str] = mapped_column(String, nullable=False, index=True)  # "2026-1"
     updated_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
