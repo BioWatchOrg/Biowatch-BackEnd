@@ -76,20 +76,20 @@ jobs:
             exit 0
           fi
 
-          RUN_ID=$(gh run list --repo "${{ github.repository }}" --branch dev \
-            --workflow test.yml --status success --json databaseId --jq '.[0].databaseId')
+          # Look up the latest baseline ARTIFACT, not the latest dev run: a dev push that
+          # touches none of the relevant paths succeeds with every step skipped, so it
+          # carries no artifact.
+          RUN_ID=$(gh api "repos/${{ github.repository }}/actions/artifacts?name=coverage-baseline&per_page=100" \
+            --jq '[.artifacts[] | select(.expired | not) | select(.workflow_run.head_branch == "dev")]
+                  | sort_by(.created_at) | last | .workflow_run.id // empty')
           if [ -z "$RUN_ID" ]; then
-            echo "No successful run on dev yet - no baseline - passing (first run)."
+            echo "No coverage-baseline artifact on dev yet - no baseline - passing (first run)."
             exit 0
           fi
 
           if ! gh run download "$RUN_ID" --repo "${{ github.repository }}" \
               --name coverage-baseline --dir baseline 2>download.log; then
-            if grep -qi "no artifact" download.log; then
-              echo "No coverage-baseline artifact on the latest successful dev run - passing (first run after this gate was added)."
-              exit 0
-            fi
-            echo "FAIL: could not download coverage baseline - fix the fetch, do not ignore it."
+            echo "FAIL: could not download coverage baseline from run $RUN_ID - fix the fetch, do not ignore it."
             cat download.log
             exit 1
           fi
