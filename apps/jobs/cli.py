@@ -6,7 +6,7 @@ Usage :
 
 Un seul entrypoint, un sous-parser par job (registre dans `jobs.definitions`).
 Le CLI ne fait que parser et dispatcher : l'idempotence et l'accès DB restent
-dans les fonctions métier de `packages/*`.
+dans les fonctions appelées (`packages/*` ou pipelines de `jobs.pipelines`).
 """
 
 import logging

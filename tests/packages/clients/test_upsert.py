@@ -32,3 +32,34 @@ def test_splits_into_batches_over_param_limit(monkeypatch):
     upsert(session, JobRun, rows)
 
     assert session.execute.call_count == 2  # ceil(5 / 3)
+
+
+def test_onupdate_columns_are_refreshed_on_conflict():
+    """`onupdate=func.now()` n'est pas appliqué par SQLAlchemy à ON CONFLICT DO UPDATE."""
+    from clients.db import IucnTaxa
+    from sqlalchemy.dialects import postgresql
+
+    session = MagicMock()
+    row = {
+        "iucn_taxon_id": 1,
+        "source_version": "2026-1",
+        "scientific_name": "Lamna nasus",
+        "category": "VU",
+        "assessment_id": 10,
+    }
+    upsert(session, IucnTaxa, [row])
+
+    stmt = session.execute.call_args.args[0]
+    sql = str(stmt.compile(dialect=postgresql.dialect()))
+    assert "updated_at = now()" in sql
+
+
+def test_onupdate_column_is_not_refreshed_when_only_pk_columns():
+    from clients.db import IucnTaxa
+    from sqlalchemy.dialects import postgresql
+
+    session = MagicMock()
+    upsert(session, IucnTaxa, [{"iucn_taxon_id": 1, "source_version": "2026-1"}])
+
+    sql = str(session.execute.call_args.args[0].compile(dialect=postgresql.dialect()))
+    assert "DO NOTHING" in sql

@@ -119,7 +119,8 @@ packages (voir CLAUDE.md, "Documentation").
 - `upsert(session, model, rows, update_columns=None) -> None` — `INSERT ... ON CONFLICT DO
   UPDATE` en masse sur la PK du modèle. **Seule façon d'écrire/mettre à jour** dans une table
   métier (jamais d'`INSERT` manuel). Chunké automatiquement sous la limite de bind params
-  PostgreSQL.
+  PostgreSQL. Les colonnes à `onupdate` ORM (ex. `updated_at`) absentes des lignes sont
+  rafraîchies au conflit.
 - `JobAlreadySucceeded`, `RunContext` (dataclass), `Base` (déclarative base ORM).
 - Modèles ORM (`clients.db.models`, source de vérité du schéma) : `ZonesHex`,
   `SatelliteFeaturesByZone`, `OsmFeaturesByZone`, `ProtectedAreasByZone`,
@@ -130,7 +131,8 @@ packages (voir CLAUDE.md, "Documentation").
 - `IucnClient(token=None)` — client de l'API IUCN Red List v4 (jeton `IUCN_API_TOKEN` lu dans
   l'env si non fourni ; context manager). `red_list_version() -> str` (ex. `"2026-1"`),
   `iter_country_assessments(country, scope_code=1)` — dernières évaluations d'un pays, toutes
-  pages parcourues. Exception : `IucnApiError`.
+  pages parcourues ; lève `IucnApiError` si la liste reçue ne fait pas le total annoncé par
+  l'API (pas d'import tronqué silencieux), ou si la réponse n'est pas le JSON attendu.
 
 ### `clients.osm` (Geofabrik + osm2pgsql)
 - `snapshot_for(aoi_label, bucket) -> Snapshot` — URLs Geofabrik du snapshot au 1er janvier
@@ -303,7 +305,8 @@ Pipelines existants : `jobs.pipelines.osm_import` (`osm_import_snapshot`,
 `osm_import_scheduled`) — voir `infra/systemd/README.md` pour la planification.
 
 Les pipelines qui orchestrent plusieurs packages (API externe → copie brute → table) vivent
-dans `apps/jobs/pipelines/` : ex. `update_iucn_taxonomy(country="FR")`.
+dans `apps/jobs/pipelines/` : ex. `update_iucn_taxonomy()` (France uniquement pour le MVP : la table n'a pas de colonne
+pays).
 
 ---
 
