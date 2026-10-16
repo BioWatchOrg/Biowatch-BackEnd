@@ -22,6 +22,7 @@ from .h3 import (
 from .h3_grid import (
     compute_h3_cells,  # coverage H3 déterministe d'une AOI du registre (pure, sans DB)
     generate_h3_grid,  # génère et persiste la grille H3 d'une AOI dans zones_hex (DB)
+    point_to_h3_cell,  # point (lat, lon) -> cell H3 (inverse de compute_h3_cells, pure)
 )
 from .intersections import (
     IntersectionError,  # erreur de calcul d'intersection géométrique
@@ -50,6 +51,7 @@ __all__ = [
     "polygon_to_cells",
     "compute_h3_cells",
     "generate_h3_grid",
+    "point_to_h3_cell",
     "IntersectionError",
     "coverage_ratio",
     "filter_intersecting",

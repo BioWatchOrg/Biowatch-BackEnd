@@ -156,6 +156,25 @@ class SpeciesFeaturesByZone(Base):
     )
 
 
+class SpeciesOccurrencesRaw(Base):
+    """Raw GBIF occurrences for an AOI's rolling 10-year window (staging area)."""
+
+    __tablename__ = "species_occurrences_raw"
+    __table_args__ = {"schema": "staging"}
+
+    gbif_occurrence_id: Mapped[str] = mapped_column(String, primary_key=True)
+    event_date: Mapped[datetime.date] = mapped_column(Date, nullable=False)
+    gbif_taxon_key: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    scientific_name: Mapped[str] = mapped_column(String, nullable=False)
+    decimal_latitude: Mapped[float] = mapped_column(Float, nullable=False)
+    decimal_longitude: Mapped[float] = mapped_column(Float, nullable=False)
+    zone_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    aoi_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    ingested_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 class StressScoreByZone(Base):
     """Main business result: ecological stress score per zone × bucket × method."""
 

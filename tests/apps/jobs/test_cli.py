@@ -33,6 +33,8 @@ def test_each_job_dispatches_to_its_run():
         argv = [name]
         if name == "generate_h3_grid":
             argv += ["--aoi", "paris", "--resolution", "8"]
+        elif name == "update_gbif_occurrences":
+            argv += ["--aoi", "paris"]
         args = parser.parse_args(argv)
         assert args._run is job.run
 
