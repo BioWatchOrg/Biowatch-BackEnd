@@ -12,6 +12,7 @@ dependencies = [
     "pandas>=3.0.3",
     "psycopg[binary]>=3.3.4",
     "pyarrow>=24.0.0",
+    "pyproj>=3.8.0",
     "python-dotenv>=1.2.2",
     "shapely>=2.1.2",
     "sqlalchemy>=2.0.51",
@@ -25,6 +26,8 @@ dev = [
     "pytest>=8",
     "ruff>=0.6",
     "mypy>=1.11",
+    "types-shapely>=2.1.0.20260630",
+    "pandas-stubs>=3.0.3.260530",
     "pytest-cov>=7.1.0",
 ]
 
@@ -50,3 +53,7 @@ target-version = "py312"
 
 [tool.pytest.ini_options]
 testpaths = ["apps", "packages", "tests"]
+
+[[tool.mypy.overrides]]
+module = "h3.*"
+ignore_missing_imports = true

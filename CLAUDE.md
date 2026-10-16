@@ -92,6 +92,40 @@ Layout (chaque dossier est un package Python installé en éditable) :
 
 Quand tu proposes du code, **respecter cette séparation**. Pas de logique scoring dans `apps/api`, pas d'accès DB direct dans `packages/scoring`, etc.
 
+### Règle de dépendance entre modules
+
+Le sens des dépendances est fixe et ne remonte jamais :
+
+```
+core (fondation, zéro dépendance interne)
+  ↑
+geo, clients   (dépendent seulement de core)
+  ↑
+scoring        (dépend de core + geo — PAS de clients, calcul pur)
+  ↑
+ml             (dépend de core, geo, clients, scoring)
+
+apps/api   → core, geo, clients   (jamais scoring, jamais ml)
+apps/jobs  → tout (core, geo, clients, scoring, ml)
+```
+
+**Règle forte** : aucun `packages/*` ne dépend d'un `apps/*`. Un package ne dépend jamais d'un package situé au-dessus de lui dans ce graphe (ex. `clients` n'importe jamais `scoring`). `scoring` reste un calcul pur, sans accès DB — c'est `apps/jobs` qui orchestre lecture (`clients`) → calcul (`scoring`) → écriture (`clients`).
+
+### Fonctions communes déjà disponibles
+
+**Avant d'écrire une fonction utilitaire** (géospatial, gestion du temps, idempotence, accès
+DB, logs...), consulter `docs/shared-functions.md` — catalogue des fonctions publiques de
+`packages/core`, `packages/clients` et `packages/geo`. Ne pas réimplémenter une fonction qui y
+existe déjà. Ce fichier doit être mis à jour à chaque MR qui ajoute une fonction publique dans
+un de ces packages.
+
+### Décisions d'architecture
+
+`docs/architecture-decisions.md` trace les choix d'architecture non triviaux avec leur
+raisonnement (ex. Firebase managé vs auto-hébergé, accès Firestore direct depuis le frontend).
+Consulter ce fichier avant de rouvrir un débat déjà tranché — une décision n'est à reconsidérer
+que si son contexte a changé (voir la section "Remise en cause" de chaque entrée).
+
 ### Frontend (rappel)
 
 Séparer composants UI, pages, routes, services API, store Zustand, modèles TypeScript, hooks, composants cartographiques, utilitaires. Pas de mélange affichage / appels API / logique métier.
@@ -274,8 +308,13 @@ Organisation horizontale : responsabilités partagées, montée en compétence c
 
 **Workflow**
 - Sprint de 2 semaines. Réunion sprint chaque lundi (QA avant la réunion). Travail async le reste du temps.
-- Une branche par tâche. Merge uniquement via PR, **≥ 2 reviews**. PR vers `dev`, puis `main` après QA.
+- Une branche par tâche. Merge uniquement via PR, **≥ 1 review**. PR vers `dev` (branche par défaut du repo), puis `main` après QA.
 - Commits au format `<type>: description`. Types autorisés : `feat`, `fix`, `perf`, `refactor`, `test`, `docs`, `style`, `ci`, `build`.
+
+**CI qualité obligatoire avant merge**
+- `lint` (ruff + mypy), `test` (pytest + ratchet de coverage vs `dev`) et `secrets` (gitleaks) tournent automatiquement sur chaque PR vers `dev` — doivent être verts avant merge.
+- Reviewer Claude (`.github/workflows/claude_reviewer.yml`) : déclenché manuellement en appliquant le label `run-review` sur la PR (jamais automatique sur un push). Lit `CLAUDE.md`, `PULL_REQUEST_TEMPLATE.md` et les Acceptance Criteria du ticket lié (`Closes #N`). **Consultatif** — jamais bloquant sur son propre verdict, c'est toujours un reviewer humain qui tranche. Doit avoir tourné au moins une fois sur le dernier commit avant merge (retirer/remettre le label après un nouveau push pour relancer).
+- **Limitation actuelle** : le plan GitHub Free de l'org ne permet pas de rendre ces checks techniquement bloquants (branch protection = GitHub Team). Une ruleset est configurée sur `dev` mais inactive tant que l'org n'upgrade pas — en attendant, le respect de ces checks repose sur la discipline d'équipe et la checklist du `PULL_REQUEST_TEMPLATE.md`.
 
 ## Comment raisonner avant de proposer
 

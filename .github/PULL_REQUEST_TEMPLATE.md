@@ -8,6 +8,9 @@ Closes #<issue-number>
 
 ## ✅ Definition of Done
 
+### 🤖 Review automatisée
+- [ ] Label `run-review` appliqué sur le dernier commit (relancer si de nouveaux commits ont été poussés depuis)
+
 ### 🧠 Code & qualité
 - [ ] Code lisible et structuré (nommage, structure)
 - [ ] Aucun `print`, aucun warning critique

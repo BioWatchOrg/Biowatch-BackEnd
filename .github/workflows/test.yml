@@ -1,0 +1,104 @@
+name: Test
+
+on:
+  pull_request:
+    branches-ignore:
+      - 'main'
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [dev]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # The job must always run and report a status - "test" is a required check,
+      # and GitHub leaves required checks stuck pending forever if the triggering
+      # workflow never runs (e.g. a path filter on `on:` skips it entirely). So the
+      # trigger has no path filter; relevance is decided here instead, and every
+      # step below is skipped (not the job) when it doesn't apply.
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            relevant:
+              - "apps/**"
+              - "packages/**"
+              - "tests/**"
+              - "pyproject.toml"
+              - "uv.lock"
+              - ".github/workflows/test.yml"
+
+      - uses: astral-sh/setup-uv@v3
+        if: steps.filter.outputs.relevant == 'true'
+        with:
+          enable-cache: true
+
+      - run: uv sync --frozen
+        if: steps.filter.outputs.relevant == 'true'
+
+      - name: Run tests with coverage
+        if: steps.filter.outputs.relevant == 'true'
+        run: |
+          uv run pytest --cov=apps --cov=packages --cov-report=xml --cov-report=term
+          uv run coverage report --format=total --precision=4 > coverage-total.txt
+
+      # Publishes today's coverage as tomorrow's baseline. Only on dev — branch
+      # pipelines are the only point that "knows" the coverage of dev HEAD.
+      - name: Publish coverage baseline (dev only)
+        if: steps.filter.outputs.relevant == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/dev'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-baseline
+          path: coverage-total.txt
+          retention-days: 90
+
+      # [HARD] code PRs must strictly increase total coverage vs the dev baseline —
+      # any bump counts (see CLAUDE.md → Exigences de qualité). PRs that don't touch
+      # apps/ or packages/ (config/docs/test-only) are exempt.
+      - name: Coverage must increase vs dev baseline
+        if: steps.filter.outputs.relevant == 'true' && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git fetch -q origin "${{ github.event.pull_request.base.ref }}"
+          if ! git diff --name-only "origin/${{ github.event.pull_request.base.ref }}...HEAD" \
+              | grep -qE '^(apps|packages)/.*\.py$'; then
+            echo "No production source changed - coverage-increase gate not applicable."
+            exit 0
+          fi
+
+          # Look up the latest baseline ARTIFACT, not the latest dev run: a dev push that
+          # touches none of the relevant paths succeeds with every step skipped, so it
+          # carries no artifact.
+          RUN_ID=$(gh api "repos/${{ github.repository }}/actions/artifacts?name=coverage-baseline&per_page=100" \
+            --jq '[.artifacts[] | select(.expired | not) | select(.workflow_run.head_branch == "dev")]
+                  | sort_by(.created_at) | last | .workflow_run.id // empty')
+          if [ -z "$RUN_ID" ]; then
+            echo "No coverage-baseline artifact on dev yet - no baseline - passing (first run)."
+            exit 0
+          fi
+
+          if ! gh run download "$RUN_ID" --repo "${{ github.repository }}" \
+              --name coverage-baseline --dir baseline 2>download.log; then
+            echo "FAIL: could not download coverage baseline from run $RUN_ID - fix the fetch, do not ignore it."
+            cat download.log
+            exit 1
+          fi
+
+          BASE=$(cat baseline/coverage-total.txt)
+          NEW=$(cat coverage-total.txt)
+          [ -n "$NEW" ] || { echo "FAIL: coverage-total.txt is empty - coverage artifact problem, not a coverage issue."; exit 1; }
+          echo "coverage: baseline=$BASE% new=$NEW%"
+          python3 -c "import sys; sys.exit(0 if float('$NEW') > float('$BASE') else 1)" || {
+            echo "FAIL: PRs touching apps/ or packages/ must increase total coverage ($BASE% -> $NEW%). Add a test for what you touched."
+            exit 1
+          }
