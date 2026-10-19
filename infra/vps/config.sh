@@ -88,8 +88,45 @@ SERVICE_FORBIDDEN_GROUPS=(sudo adm docker lxd "$SSH_GROUP")
 # port ouvert sans processus à l'écoute n'offre aucune surface d'attaque.
 FIREWALL_TCP_PORTS=(80 443)
 
-# fail2ban : volontairement absent. Le critère a été retiré de la DoD de
-# #22 et reporté sur #26 — motif et condition de réexamen dans le README.
+# fail2ban : volontairement absent. Retiré de la DoD de #22, toujours sans
+# objet avec #26 (aucune surface authentifiable), réexaminé avec #80 —
+# motif et condition de réexamen dans le README.
+
+# --- Nginx (#26) -------------------------------------------------------------
+
+# Noms servis. « _ » = toute requête : il n'y a pas encore de domaine. À
+# remplacer par le domaine avec le certificat Let's Encrypt.
+NGINX_SERVER_NAME="_"
+
+# Adresses d'écoute. BOUCLE LOCALE tant que l'équipe n'a pas tranché domaine
+# et certificat : nginx tourne mais n'est joignable que par tunnel SSH, bien
+# que UFW autorise 80 et 443. Exposer = passer à "0.0.0.0" et "[::]", et
+# seulement avec un certificat Let's Encrypt (README).
+NGINX_LISTEN_V4="127.0.0.1"
+NGINX_LISTEN_V6="[::1]"
+
+# Certificat TLS. En attendant le domaine : l'auto-signé d'Ubuntu (paquet
+# ssl-cert), qui suffit à prouver la chaîne HTTPS par tunnel. Remplacé par
+# /etc/letsencrypt/live/<domaine>/{fullchain,privkey}.pem.
+NGINX_TLS_CERT="/etc/ssl/certs/ssl-cert-snakeoil.pem"
+NGINX_TLS_KEY="/etc/ssl/private/ssl-cert-snakeoil.key"
+
+# Webroot du challenge HTTP-01 de Let's Encrypt (certbot --webroot).
+NGINX_ACME_ROOT="/var/www/letsencrypt"
+
+# Compte du paquet Ubuntu. Lecture seule sur FRONTEND_DIR, rien d'autre.
+NGINX_USER="www-data"
+
+# Socle : un seul server, qui inclut un fichier par service. Brancher un
+# service = déposer son fichier dans NGINX_SERVICES_DIR, jamais éditer le socle.
+NGINX_SITE="/etc/nginx/sites-available/biowatch.conf"
+NGINX_SITE_LINK="/etc/nginx/sites-enabled/biowatch.conf"
+NGINX_DEFAULT_SITE_LINK="/etc/nginx/sites-enabled/default"
+NGINX_SERVICES_DIR="/etc/nginx/biowatch.d"
+
+# Build du frontend, déposé par la CI (Biowatch-Frontend#76). Hors APP_DIR :
+# nginx n'a pas à pouvoir lire le code backend.
+FRONTEND_DIR="/var/www/biowatch/frontend"   # deploy:www-data 2750
 
 # --- Garde-fous --------------------------------------------------------------
 
