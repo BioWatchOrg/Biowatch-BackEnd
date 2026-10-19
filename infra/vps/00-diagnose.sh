@@ -137,7 +137,26 @@ else
   printf '  ufw non installé\n'
 fi
 
-step "fail2ban (écarté de #22, reporté sur #26)"
+step "Nginx (#26)"
+if command -v nginx >/dev/null; then
+  printf '  %s   enabled=%s active=%s\n' "$(nginx -v 2>&1)" \
+    "$(systemctl is-enabled nginx 2>&1)" "$(systemctl is-active nginx 2>&1)"
+  nginx -t 2>&1 | sed 's/^/  /'
+  printf '  sites activés : %s\n' "$(ls /etc/nginx/sites-enabled 2>/dev/null | tr '\n' ' ')"
+  for f in "$NGINX_SERVICES_DIR"/*.conf; do
+    [[ -e "$f" ]] && printf '  service : %s\n' "$(basename "$f")"
+  done
+  [[ -e "$FRONTEND_DIR" ]] && printf '  %s\n' "$(stat -c '%A %U:%G %n' "$FRONTEND_DIR")"
+else
+  printf '  nginx non installé\n'
+fi
+# Posé par 50-nginx.sh le temps de l'apt install. Resté en place (script
+# tué), il bloque le démarrage de tout service installé ou mis à jour.
+if [[ -e /usr/sbin/policy-rc.d ]]; then
+  printf '  %s/usr/sbin/policy-rc.d présent — aucun service ne démarre via apt, à supprimer%s\n' "$C_RED" "$C_RST"
+fi
+
+step "fail2ban (écarté de #22 et #26, réexaminé avec #80)"
 # Sonde conservée : si quelqu'un l'installe un jour, mieux vaut le voir ici
 # que le découvrir en débuggant un membre banni sans comprendre pourquoi.
 if command -v fail2ban-client >/dev/null; then
