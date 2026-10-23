@@ -1,6 +1,6 @@
 from .logs import request_id_var, run_id_var, setup_logging
 
-from .planetary_computer import PlanetaryComputerError, Scene
+from .planetary_computer import PlanetaryComputerError, Scene, search_scenes
 
 from .sentinel_hub import (
     SentinelHubAuthError,
@@ -56,4 +56,5 @@ __all__ = [
     "SentinelHubRequestError",
     "Scene",
     "PlanetaryComputerError",
+    "search_scenes",
 ]
