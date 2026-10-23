@@ -1,4 +1,4 @@
-"""Tests for clients.planetary_computer.search.search_scenes (no network)."""
+"""Tests for clients.planetary_computer_client.search.search_scenes (no network)."""
 
 import datetime
 import logging
@@ -7,8 +7,12 @@ import pytest
 import requests
 from pystac_client.exceptions import APIError
 
-import clients.planetary_computer.search as search_module
-from clients.planetary_computer import MAX_SCENE_CLOUD_COVER, PlanetaryComputerError, search_scenes
+import clients.planetary_computer_client.search as search_module
+from clients.planetary_computer_client import (
+    MAX_SCENE_CLOUD_COVER,
+    PlanetaryComputerError,
+    search_scenes,
+)
 from planetary_computer_items import load_stac_items
 
 

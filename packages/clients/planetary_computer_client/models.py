@@ -32,12 +32,14 @@ class Scene:
         props = item.properties
         if item.geometry is None:
             raise PlanetaryComputerError(f"STAC item {item.id!r} has no geometry")
+        if item.datetime is None:
+            raise PlanetaryComputerError(f"STAC item {item.id!r} has no acquisition datetime")
         try:
             proj_code = props.get("proj:code") or f"EPSG:{props['proj:epsg']}"
             return cls(
                 scene_id=item.id,
                 tile=props["s2:mgrs_tile"],
-                acquired_at=datetime.datetime.fromisoformat(props["datetime"]),
+                acquired_at=item.datetime,
                 baseline=props["s2:processing_baseline"],
                 epsg=int(str(proj_code).split(":")[1]),
                 cloud_cover=float(props["eo:cloud_cover"]),

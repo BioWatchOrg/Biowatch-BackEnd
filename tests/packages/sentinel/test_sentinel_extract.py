@@ -80,12 +80,16 @@ def fake_record_zone_error(monkeypatch):
 def fake_cells(monkeypatch):
     """Three fake H3 cells instead of a real AOI's thousands."""
     monkeypatch.setattr(
-        sentinel_extract, "compute_h3_cells", lambda aoi_label, resolution: ["cellA", "cellB", "cellC"]
+        sentinel_extract,
+        "compute_h3_cells",
+        lambda aoi_label, resolution: ["cellA", "cellB", "cellC"],
     )
     monkeypatch.setattr(sentinel_extract, "cell_to_geojson", lambda cell: {"cell": cell})
 
 
-def test_happy_path_upserts_every_cell(fake_job_run, fake_upsert, fake_record_zone_error, fake_cells, monkeypatch):
+def test_happy_path_upserts_every_cell(
+    fake_job_run, fake_upsert, fake_record_zone_error, fake_cells, monkeypatch
+):
     monkeypatch.setattr(
         sentinel_extract, "fetch_zone_statistics", lambda geometry, time_range, client: _zone_stat()
     )
@@ -203,7 +207,9 @@ def test_auth_error_aborts_the_whole_run_instead_of_recording_per_zone(
     assert fake_upsert == []  # never reached the upsert call
 
 
-def test_run_id_propagates_into_worker_threads(fake_upsert, fake_record_zone_error, fake_cells, monkeypatch):
+def test_run_id_propagates_into_worker_threads(
+    fake_upsert, fake_record_zone_error, fake_cells, monkeypatch
+):
     """A plain ThreadPoolExecutor does not inherit contextvars — this checks
     the explicit contextvars.copy_context() propagation actually works.
 
@@ -242,7 +248,9 @@ def test_run_id_propagates_into_worker_threads(fake_upsert, fake_record_zone_err
 def test_fetch_cell_row_shape_and_is_valid_data_flag(monkeypatch):
     monkeypatch.setattr(sentinel_extract, "cell_to_geojson", lambda cell: {"cell": cell})
     monkeypatch.setattr(
-        sentinel_extract, "fetch_zone_statistics", lambda geometry, time_range, client: _zone_stat(0.05)
+        sentinel_extract,
+        "fetch_zone_statistics",
+        lambda geometry, time_range, client: _zone_stat(0.05),
     )
 
     row = sentinel_extract._fetch_cell_row(
