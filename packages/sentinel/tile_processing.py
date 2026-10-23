@@ -15,8 +15,7 @@ import numpy.typing as npt
 import pandas as pd
 
 from clients.planetary_computer_client.reader import TileStack, Window, read_block
-from geo import H3Cell
-from geo.raster_h3 import CellAccumulator, cells_to_label_grid
+from geo import CellAccumulator, H3Cell, cells_to_label_grid
 from sentinel.pixels import (
     INDEX_NAMES,
     FloatArray,

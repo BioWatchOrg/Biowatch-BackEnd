@@ -31,8 +31,7 @@ from core import (
     get_bucket_range,
     load_aoi,
 )
-from geo import H3Cell, cell_to_polygon, compute_h3_cells
-from geo.raster_h3 import assign_owner_tiles
+from geo import H3Cell, assign_owner_tiles, cell_to_polygon, compute_h3_cells
 from sentinel.rows import to_feature_rows
 from sentinel.tile_processing import process_tile, reader_with_threads
 
