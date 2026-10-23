@@ -437,6 +437,29 @@ Un spike (2026-10-23, script jetable non versionné) a mesuré la faisabilité s
   valeurs ne sont pas directement comparables à l'ancienne série, d'où une nouvelle
   `source_version`.
 
+**Implémentation (2026-10-23)**
+
+- Code : `packages/clients/planetary_computer_client/` (recherche, dédoublonnage, lecture
+  par blocs), `packages/geo/raster_h3.py` (pixel -> cellule, tuile propriétaire,
+  agrégation par blocs), `packages/sentinel/` (calcul pixel, job, backfill). Le client
+  Sentinel Hub est supprimé (historique git : `e5115b3`).
+- `source_version` = `2.0.0` : les lignes 1.0.0 (Sentinel Hub) ne sont pas écrasées.
+- **Toutes les cellules de l'AOI ont une ligne chaque mois.** Une cellule sans aucune image
+  exploitable (aucune scène, ou toujours masquée) est écrite avec indices NULL,
+  `valid_pixel_ratio = 0`, `is_valid_data = false` : trou explicite, pas une erreur.
+- `is_valid_data` = `valid_pixel_ratio >= 0,1` : la valeur est gardée même sous le seuil,
+  marquée peu fiable (le scoring choisit de l'ignorer ou non).
+- `obs_count` = nombre moyen de dates exploitables par pixel sur le mois (arrondi) ;
+  `cloud_score` = part moyenne des dates masquées (nuages, ombres, neige) parmi les dates où
+  le pixel a été photographié.
+- Scènes à plus de 70 % de nuages écartées dès la recherche ; offset de réflectance
+  appliqué **date par date** (un même mois peut mélanger deux baselines).
+- Une tuile illisible -> `job_run_zone_errors` pour ses cellules (run `partial`). La
+  recherche STAC en échec fait échouer le run (`failed`).
+- Backfill (`backfill_sentinel`) : boucle sur les mois, reprise par l'idempotence de
+  `job_run`, exécuté hors VPS avec écriture dans la base du VPS par tunnel SSH (la base
+  n'écoute que sur `127.0.0.1`).
+
 **Remise en cause**
 
 - Si Planetary Computer devient payant, limité ou indisponible : Earth Search C1 depuis une
