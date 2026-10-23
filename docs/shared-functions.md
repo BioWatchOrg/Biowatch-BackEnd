@@ -18,9 +18,22 @@ packages (voir CLAUDE.md, "Documentation").
 
 ### `core.time_bucket`
 - `biowatch_now() -> date` — date du jour en Europe/Paris.
-- `bucket_id(value=None, format=BucketFormat.MONTHLY) -> BucketId` — normalise une date en
-  identifiant de période (`"2024"`, `"2024-03"`, `"2024-b02"`). `value` accepte `date`,
-  `datetime`, une string ISO 8601, ou `None` (= aujourd'hui).
+- `format_bucket_id(value=None, format=BucketFormat.MONTHLY) -> BucketId` — normalise une date
+  en identifiant de période (`"2024"`, `"2024-03"`, `"2024-b02"`). `value` accepte `date`,
+  `datetime`, une string ISO 8601, ou `None` (= aujourd'hui). (Anciennement nommée `bucket_id` —
+  renommée car le nom laissait penser à l'inverse : elle produit un bucket_id à partir d'une
+  date, elle n'en extrait pas les composants.)
+- `get_bucket_range(bucket) -> tuple[date, date]` — bornes `(start, end)` d'un bucket, **toutes
+  les deux incluses** (le bucket couvre `[start, end]`, pas `[start, end)`). Conversion ISO 8601
+  pour une API externe : dépend du type de filtre côté API.
+  - Filtre par simple inclusion de date (`WHERE created_at <= end`) : mettre l'heure de fin à
+    `23:59:59`, pas `00:00:00`, sinon la dernière journée du bucket est exclue.
+  - Agrégation par intervalle calendaire (ex. Sentinel Hub `aggregationInterval="P1M"`) :
+    `23:59:59` est **faux** — l'intervalle a besoin d'un mois calendaire complet pour rentrer
+    dans `[from, to]`, et s'arrêter à `23:59:59` le laisse une seconde trop court, ce qui fait
+    silencieusement renvoyer zéro intervalle sur **chaque** requête (bug réel rencontré en prod
+    sur `packages/sentinel/sentinel_extract.py`). Utiliser la borne **exclusive** à la place :
+    début du jour suivant `end`.
 - `related_bucket_ids(bucket) -> list[BucketId]` — tous les buckets (année, bimestre, mois)
   qui couvrent la même période que `bucket`. Utile pour retrouver des features à une
   granularité différente.
@@ -70,6 +83,26 @@ packages (voir CLAUDE.md, "Documentation").
 - Modèles ORM (`clients.db.models`, source de vérité du schéma) : `ZonesHex`,
   `SatelliteFeaturesByZone`, `OsmFeaturesByZone`, `ProtectedAreasByZone`,
   `SpeciesFeaturesByZone`, `StressScoreByZone`, `JobRun`, `JobRunZoneError`.
+
+### `clients.sentinel_hub`
+- `fetch_zone_statistics(geometry, time_range, max_cloud_coverage=80, client=None) -> ZoneStatistics`
+  — appelle la Statistical API de Sentinel Hub (Copernicus Data Space Ecosystem) pour une
+  géométrie (GeoJSON Polygon/MultiPolygon EPSG:4326, ex. `geo.h3.cell_to_geojson`) et une
+  période (`(start, end)` ISO 8601, dérivée par l'appelant d'un `bucket_id` mensuel). Une
+  seule requête HTTP calcule NDVI, NDWI, NDBI, SWIR et un masque qualité (nuages via `SCL` +
+  pixels valides) — ne jamais faire un appel par indice. Passer un `httpx.Client` partagé
+  pour enchaîner plusieurs zones (réutilise la connexion et le token OAuth caché).
+- `ZoneStatistics` (dataclass : `ndvi_mean`, `ndwi_mean`, `ndbi_mean`, `swir_mean` — `float |
+  None` si aucun pixel valide sur la période —, `obs_count`, `valid_pixel_ratio`,
+  `cloud_score`).
+- `SentinelHubAuthError` (échec OAuth2 auprès de l'identity server CDSE),
+  `SentinelHubRequestError` (échec de la requête Statistical API, ou réponse inattendue).
+- Auth : OAuth2 client credentials contre
+  `identity.dataspace.copernicus.eu` (`SENTINEL_HUB_CLIENT_ID`/`SENTINEL_HUB_CLIENT_SECRET`
+  en env). Token caché en mémoire (thread-safe) et rafraîchi avec une marge de sécurité avant
+  expiration — jamais de durée de vie codée en dur, CDSE ne la documente pas comme fixe.
+- Retry avec backoff exponentiel **uniquement sur HTTP 429** (respecte `Retry-After`) ; les
+  autres `4xx` (evalscript invalide, auth refusée, quota) remontent immédiatement.
 
 ### `clients.logs`
 - `setup_logging(service="biowatch", level=None) -> None` — configure le logger racine en

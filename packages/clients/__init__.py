@@ -1,5 +1,12 @@
 from .logs import request_id_var, run_id_var, setup_logging
 
+from .sentinel_hub import (
+    SentinelHubAuthError,
+    SentinelHubRequestError,
+    ZoneStatistics,
+    fetch_zone_statistics,
+)
+
 from .db import (
     Base,
     JobAlreadySucceeded,
@@ -41,4 +48,8 @@ __all__ = [
     "setup_logging",
     "run_id_var",
     "request_id_var",
+    "fetch_zone_statistics",
+    "ZoneStatistics",
+    "SentinelHubAuthError",
+    "SentinelHubRequestError",
 ]
