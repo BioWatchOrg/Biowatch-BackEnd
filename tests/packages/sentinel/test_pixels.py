@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from sentinel.pixels import dn_to_reflectance, offset_for_baseline
+from sentinel.pixels import dn_to_reflectance, offset_for_baseline, valid_pixel_mask
 
 
 @pytest.mark.parametrize(
@@ -41,3 +41,39 @@ def test_dn_to_reflectance_does_not_mutate_input():
     dn = np.array([0.0, 1500.0], dtype=np.float32)
     dn_to_reflectance(dn)
     np.testing.assert_array_equal(dn, [0.0, 1500.0])
+
+
+@pytest.mark.parametrize("scl_class", range(12))
+def test_valid_pixel_mask_scl_classes(scl_class):
+    expected = scl_class in (4, 5, 6)
+    assert bool(valid_pixel_mask(np.array([scl_class]))[0]) is expected
+
+
+def test_valid_pixel_mask_scl_nan_is_invalid():
+    assert not valid_pixel_mask(np.array([np.nan], dtype=np.float32))[0]
+
+
+def test_valid_pixel_mask_scl_as_float_is_accepted():
+    assert valid_pixel_mask(np.array([4.0], dtype=np.float32))[0]
+
+
+@pytest.mark.parametrize(
+    ("reflectance", "expected"),
+    [(np.nan, False), (-0.05, False), (0.0, False), (0.0001, True), (1.5, True), (1.51, False)],
+)
+def test_valid_pixel_mask_reflectance_range(reflectance, expected):
+    scl = np.array([4])
+    refl = np.array([reflectance], dtype=np.float32)
+    assert bool(valid_pixel_mask(scl, refl)[0]) is expected
+
+
+def test_valid_pixel_mask_requires_every_band_valid():
+    scl = np.array([4, 4])
+    red = np.array([0.1, 0.1], dtype=np.float32)
+    nir = np.array([0.3, np.nan], dtype=np.float32)
+    np.testing.assert_array_equal(valid_pixel_mask(scl, red, nir), [True, False])
+
+
+def test_valid_pixel_mask_keeps_shape():
+    scl = np.full((3, 2, 2), 5)
+    assert valid_pixel_mask(scl).shape == (3, 2, 2)

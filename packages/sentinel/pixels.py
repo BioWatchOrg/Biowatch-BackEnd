@@ -44,3 +44,27 @@ def dn_to_reflectance(
     reflectance = raw * np.float32(scale) + np.float32(offset)
     reflectance[np.isnan(raw) | (raw == 0)] = np.nan
     return reflectance
+
+
+# Classes SCL (Scene Classification Layer) conservées : 4 végétation, 5 sol nu /
+# non végétalisé (dont une bonne partie du bâti), 6 eau. Tout le reste est exclu :
+# 0 nodata, 1 saturé/défectueux, 2 zone sombre, 3 ombre de nuage, 7 non classifié,
+# 8-9 nuages, 10 cirrus, 11 neige. La classe 7 ne pèse que 0,3 % des pixels à
+# Paris (spike ADR-004) : l'exclure ne vide pas les zones urbaines.
+SCL_KEEP = (4, 5, 6)
+
+# Réflectance de surface plausible : au-delà, artefact (saturation, reflet).
+REFLECTANCE_MAX = 1.5
+
+
+def valid_pixel_mask(scl: npt.ArrayLike, *reflectances: FloatArray) -> npt.NDArray[np.bool_]:
+    """Pixels exploitables : classe SCL conservée ET chaque réflectance dans ]0 ; 1,5].
+
+    `scl` peut arriver en float avec NaN pour le nodata (odc-stac sans
+    métadonnées de type) : NaN n'appartient à aucune classe conservée.
+    """
+    mask = np.isin(np.nan_to_num(np.asarray(scl, dtype=np.float32)), SCL_KEEP)
+    for reflectance in reflectances:
+        with np.errstate(invalid="ignore"):
+            mask &= (reflectance > 0) & (reflectance <= REFLECTANCE_MAX)
+    return mask
