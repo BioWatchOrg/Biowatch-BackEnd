@@ -173,3 +173,15 @@ def test_dates_mismatch_is_detected(scenes, region):
     )
     with pytest.raises(PlanetaryComputerError, match="do not match"):
         open_tile([shifted, scenes[1]], region, sign_url=_no_sign)
+
+
+def test_gdal_http_reads_have_timeouts_and_retries(scenes, region, monkeypatch):
+    """Régression : sans timeout, une connexion qui cale figeait tout le run."""
+    import clients.planetary_computer_client.reader as reader
+
+    seen = {}
+    monkeypatch.setattr(reader.odc.stac, "configure_rio", lambda **kw: seen.update(kw))
+    open_tile(scenes, region, sign_url=_no_sign)
+    assert seen["GDAL_HTTP_TIMEOUT"] > 0
+    assert seen["GDAL_HTTP_CONNECTTIMEOUT"] > 0
+    assert seen["GDAL_HTTP_MAX_RETRY"] > 0

@@ -109,8 +109,17 @@ def open_tile(
     # "05.10" en 5.1 via with_properties) puis vérifiées contre les dates chargées.
     ordered = sorted(scenes, key=lambda scene: scene.acquired_at)
 
-    # Retry des lectures HTTP confié à GDAL (pas de mécanisme maison).
-    odc.stac.configure_rio(cloud_defaults=True, GDAL_HTTP_MAX_RETRY=5, GDAL_HTTP_RETRY_DELAY=2)
+    # Retry des lectures HTTP confié à GDAL (pas de mécanisme maison). Sans
+    # délai d'expiration, GDAL attend indéfiniment une connexion qui cale : le
+    # run entier restait figé (constaté sur un run IDF réel). Avec, une lecture
+    # bloquée devient une erreur, retentée, puis une erreur de tuile.
+    odc.stac.configure_rio(
+        cloud_defaults=True,
+        GDAL_HTTP_MAX_RETRY=5,
+        GDAL_HTTP_RETRY_DELAY=2,
+        GDAL_HTTP_CONNECTTIMEOUT=10,
+        GDAL_HTTP_TIMEOUT=60,
+    )
     dataset = odc.stac.load(
         [scene.item for scene in ordered],
         bands=list(BANDS.values()),
