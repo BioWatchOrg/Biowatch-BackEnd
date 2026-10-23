@@ -10,6 +10,7 @@ from collections.abc import Mapping, Sequence
 
 import numpy as np
 import numpy.typing as npt
+import pandas as pd
 import shapely
 from affine import Affine
 from rasterio.features import rasterize
@@ -21,6 +22,7 @@ from .metrics import SRID_LAMBERT93, SRID_WGS84, _reproject
 logger = logging.getLogger(__name__)
 
 IntArray = npt.NDArray[np.integer]
+FloatArray = npt.NDArray[np.floating]
 
 # Valeur des pixels qui n'appartiennent à aucune des cellules demandées.
 NO_CELL = -1
@@ -90,3 +92,71 @@ def assign_owner_tiles(
     for i in order:
         owners.setdefault(cells[cell_idx[i]], names[tile_idx[i]])
     return owners
+
+
+class CellAccumulator:
+    """Moyennes par cellule H3, calculées bloc de pixels par bloc.
+
+    Une image entière ne tient pas en mémoire : on la traite par blocs. Une
+    cellule pouvant être à cheval sur plusieurs blocs, on ne calcule pas sa
+    moyenne bloc par bloc ; on cumule des sommes et des comptes (`add`), puis
+    on divise une seule fois à la fin (`result`). Le résultat est identique à
+    un calcul sur l'image entière.
+
+    Par cellule :
+    - `n_total_px` : pixels de la cellule vus dans l'image ;
+    - `n_valid_px` : pixels avec au moins une observation (`n_obs > 0`) ;
+    - `<valeur>` : moyenne de chaque valeur sur ses pixels non NaN ;
+    - `mean_n_obs` : nombre moyen d'observations par pixel valide.
+    """
+
+    def __init__(self, cells: Sequence[H3Cell], value_names: Sequence[str]) -> None:
+        self._cells = list(cells)
+        self._value_names = list(value_names)
+        size = len(self._cells)
+        self._n_total = np.zeros(size, dtype=np.int64)
+        self._n_valid = np.zeros(size, dtype=np.int64)
+        self._sum_n_obs = np.zeros(size, dtype=np.int64)
+        self._sums = {name: np.zeros(size, dtype=np.float64) for name in self._value_names}
+        self._counts = {name: np.zeros(size, dtype=np.int64) for name in self._value_names}
+
+    def add(self, labels: IntArray, values: Mapping[str, FloatArray], n_obs: IntArray) -> None:
+        """Cumule un bloc.
+
+        `labels` : index de la cellule de chaque pixel dans `cells`
+        (`NO_CELL` = pixel ignoré), typiquement une fenêtre de
+        `cells_to_label_grid`. `values` et `n_obs` ont la même forme que
+        `labels` ; une valeur NaN ne compte pas dans la moyenne.
+        """
+        in_cell = labels != NO_CELL
+        cell_of_pixel = labels[in_cell]
+        size = len(self._cells)
+        pixel_n_obs = n_obs[in_cell]
+        self._n_total += np.bincount(cell_of_pixel, minlength=size)
+        self._n_valid += np.bincount(cell_of_pixel[pixel_n_obs > 0], minlength=size)
+        self._sum_n_obs += np.bincount(cell_of_pixel, weights=pixel_n_obs, minlength=size).astype(
+            np.int64
+        )
+        for name in self._value_names:
+            pixel_values = values[name][in_cell]
+            has_value = ~np.isnan(pixel_values)
+            self._sums[name] += np.bincount(
+                cell_of_pixel[has_value], weights=pixel_values[has_value], minlength=size
+            )
+            self._counts[name] += np.bincount(cell_of_pixel[has_value], minlength=size)
+
+    def result(self) -> pd.DataFrame:
+        """Une ligne par cellule vue au moins une fois, indexée par `zone_id`.
+
+        Les moyennes sont NaN pour une cellule sans aucun pixel valide.
+        """
+        seen = self._n_total > 0
+        with np.errstate(divide="ignore", invalid="ignore"):
+            columns: dict[str, npt.NDArray[np.generic]] = {
+                name: (self._sums[name] / self._counts[name])[seen] for name in self._value_names
+            }
+            columns["mean_n_obs"] = (self._sum_n_obs / self._n_valid)[seen]
+        columns["n_valid_px"] = self._n_valid[seen]
+        columns["n_total_px"] = self._n_total[seen]
+        index = pd.Index(np.array(self._cells, dtype=object)[seen], name="zone_id")
+        return pd.DataFrame(columns, index=index)
