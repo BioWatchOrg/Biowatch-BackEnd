@@ -35,6 +35,8 @@ def test_each_job_dispatches_to_its_run():
             argv += ["--aoi", "paris", "--resolution", "8"]
         elif name == "extract_sentinel":
             argv += ["--aoi", "paris", "--bucket_id", "2025-05"]
+        elif name == "backfill_sentinel":
+            argv += ["--aoi", "paris", "--from", "2016-01", "--to", "2016-03"]
         args = parser.parse_args(argv)
         assert args._run is job.run
 
@@ -108,3 +110,40 @@ def test_extract_sentinel_explicit_bucket(monkeypatch):
     args._run(args)
     assert seen["bucket"] == "2025-05"
     assert seen["io_threads"] == 4
+
+
+def _backfill_args(*extra):
+    return build_parser().parse_args(
+        ["backfill_sentinel", "--aoi", "idf", "--from", "2016-01", "--to", "2016-03", *extra]
+    )
+
+
+def test_backfill_sentinel_parses_and_dispatches(monkeypatch):
+    import jobs.definitions as definitions
+
+    seen = {}
+
+    def fake_backfill(aoi, first, last, resolution, **kwargs):
+        seen.update(aoi=aoi, first=first, last=last, resolution=resolution, **kwargs)
+        return []
+
+    monkeypatch.setattr(definitions, "backfill_sentinel", fake_backfill)
+    args = _backfill_args("--io_threads", "8")
+    args._run(args)
+    assert seen == {
+        "aoi": "idf",
+        "first": "2016-01",
+        "last": "2016-03",
+        "resolution": 8,
+        "source_version": "2.0.0",
+        "io_threads": 8,
+    }
+
+
+def test_backfill_sentinel_exits_non_zero_when_months_fail(monkeypatch):
+    import jobs.definitions as definitions
+
+    monkeypatch.setattr(definitions, "backfill_sentinel", lambda *a, **k: ["2016-02"])
+    args = _backfill_args()
+    with pytest.raises(SystemExit, match="2016-02"):
+        args._run(args)

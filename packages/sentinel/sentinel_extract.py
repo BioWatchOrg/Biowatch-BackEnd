@@ -50,7 +50,7 @@ SENTINEL_JOB_NAME = "extract_sentinel_data"  # Nom du job pour idempotency_key
 #   2.0.0 : calcul local depuis les COG Planetary Computer, mensuel (ADR-004).
 EXTRACTION_PIPELINE_VERSION = "2.0.0"
 
-_MONTHLY_BUCKET_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+MONTHLY_BUCKET_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 
 
 def previous_month_bucket(today: datetime.date | None = None) -> BucketId:
@@ -95,7 +95,7 @@ def extract_sentinel_data_by_aoi(
         source_version: version du pipeline (voir EXTRACTION_PIPELINE_VERSION).
         io_threads: lectures d'images parallèles par bloc de pixels.
     """
-    if not _MONTHLY_BUCKET_RE.fullmatch(bucket):
+    if not MONTHLY_BUCKET_RE.fullmatch(bucket):
         raise ValueError(
             f"extract_sentinel_data_by_aoi attend un bucket_id mensuel ('YYYY-MM'), reçu {bucket!r}."
         )
