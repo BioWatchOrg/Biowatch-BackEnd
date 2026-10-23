@@ -171,6 +171,22 @@ l'instant.
   aujourd'hui. À remonter en public le jour où un besoin réel apparaît (ex. l'API doit
   parser du GeoJSON/WKT entrant).
 
+### `geo.raster_h3` (raster -> cellules H3, toute source raster)
+Pas encore exportées depuis `geo` (niveau 2) : l'appelant (job d'extraction Sentinel-2,
+ADR-004) arrive en phase 4. Importables via `from geo.raster_h3 import ...`.
+- `cells_to_label_grid(cells, epsg, transform, shape) -> ndarray[int32]` — pour chaque pixel
+  d'une grille (CRS `epsg`, géotransformation affine, `(hauteur, largeur)`), l'index de sa
+  cellule dans `cells`, ou `NO_CELL` (-1). Règle : le **centre** du pixel est dans l'hexagone
+  (rasterisation des hexagones, bien plus rapide qu'un appel h3 par pixel).
+- `assign_owner_tiles(cells, footprints) -> dict[H3Cell, str]` — une seule image
+  propriétaire par cellule quand des images se chevauchent (celle dont le bord est le plus
+  loin du centre de la cellule ; distances en Lambert-93). Évite de compter deux fois une
+  cellule située dans une zone de recouvrement.
+- `CellAccumulator(cells, value_names)` — moyennes par cellule calculées bloc de pixels par
+  bloc : `add(labels, values, n_obs)` cumule des sommes et des comptes, `result()` renvoie
+  un `DataFrame` indexé par `zone_id` (moyennes, `n_valid_px`, `n_total_px`, `mean_n_obs`).
+  Identique à un calcul sur l'image entière, sans jamais la tenir en mémoire.
+
 ### `geo.metrics`
 - `length_m(geom, srid=4326) -> float` — longueur réelle en mètres (reprojette
   automatiquement si `srid != 2154`). Exportée depuis `geo` malgré l'absence d'appelant
