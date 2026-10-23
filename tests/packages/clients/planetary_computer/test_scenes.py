@@ -7,6 +7,13 @@ import pytest
 from shapely.geometry import box
 
 from clients.planetary_computer import Scene, deduplicate_scenes, group_by_tile, tile_footprints
+from planetary_computer_items import load_stac_items
+
+
+@pytest.fixture
+def stac_items():
+    return load_stac_items()
+
 
 UTC = datetime.timezone.utc
 

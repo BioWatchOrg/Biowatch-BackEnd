@@ -9,6 +9,13 @@ from pystac_client.exceptions import APIError
 
 import clients.planetary_computer.search as search_module
 from clients.planetary_computer import MAX_SCENE_CLOUD_COVER, PlanetaryComputerError, search_scenes
+from planetary_computer_items import load_stac_items
+
+
+@pytest.fixture
+def stac_items():
+    return load_stac_items()
+
 
 BBOX = (2.2, 48.8, 2.5, 48.9)
 MAY_START, MAY_END = datetime.date(2025, 5, 1), datetime.date(2025, 5, 31)

@@ -5,6 +5,12 @@ import datetime
 import pytest
 
 from clients.planetary_computer import PlanetaryComputerError, Scene
+from planetary_computer_items import load_stac_items
+
+
+@pytest.fixture
+def stac_items():
+    return load_stac_items()
 
 
 def test_scene_from_item_reads_metadata(stac_items):
