@@ -1,4 +1,4 @@
-"""Items STAC réels de Planetary Computer pour les tests de clients.planetary_computer.
+"""Items STAC réels de Planetary Computer pour les tests de clients.planetary_computer_client.
 
 Module d'aide au nom unique plutôt qu'un `conftest.py` : sans `__init__.py` dans
 tests/, mypy n'accepte qu'un seul module `conftest` dans tout le repo.

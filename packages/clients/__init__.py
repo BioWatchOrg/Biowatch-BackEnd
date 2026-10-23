@@ -1,6 +1,6 @@
 from .logs import request_id_var, run_id_var, setup_logging
 
-from .planetary_computer import (
+from .planetary_computer_client import (
     PlanetaryComputerError,
     Scene,
     deduplicate_scenes,

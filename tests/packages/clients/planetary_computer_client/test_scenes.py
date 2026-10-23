@@ -1,4 +1,4 @@
-"""Tests for clients.planetary_computer.scenes (pure scene preparation)."""
+"""Tests for clients.planetary_computer_client.scenes (pure scene preparation)."""
 
 import dataclasses
 import datetime
@@ -6,7 +6,12 @@ import datetime
 import pytest
 from shapely.geometry import box
 
-from clients.planetary_computer import Scene, deduplicate_scenes, group_by_tile, tile_footprints
+from clients.planetary_computer_client import (
+    Scene,
+    deduplicate_scenes,
+    group_by_tile,
+    tile_footprints,
+)
 from planetary_computer_items import load_stac_items
 
 

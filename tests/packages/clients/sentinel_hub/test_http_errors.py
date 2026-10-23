@@ -4,7 +4,9 @@ from clients.sentinel_hub.http_errors import safe_error_description
 
 
 def test_uses_error_description_field():
-    response = httpx.Response(400, json={"error": "invalid_client", "error_description": "bad secret"})
+    response = httpx.Response(
+        400, json={"error": "invalid_client", "error_description": "bad secret"}
+    )
     assert safe_error_description(response) == "bad secret"
 
 

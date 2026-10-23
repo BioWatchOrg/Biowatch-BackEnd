@@ -1,10 +1,10 @@
-"""Tests for clients.planetary_computer.models.Scene."""
+"""Tests for clients.planetary_computer_client.models.Scene."""
 
 import datetime
 
 import pytest
 
-from clients.planetary_computer import PlanetaryComputerError, Scene
+from clients.planetary_computer_client import PlanetaryComputerError, Scene
 from planetary_computer_items import load_stac_items
 
 
@@ -51,4 +51,11 @@ def test_scene_from_item_without_geometry_raises(stac_items):
     item = stac_items[0]
     item.geometry = None
     with pytest.raises(PlanetaryComputerError, match="no geometry"):
+        Scene.from_item(item)
+
+
+def test_scene_from_item_without_datetime_raises(stac_items):
+    item = stac_items[0]
+    item.datetime = None
+    with pytest.raises(PlanetaryComputerError, match="no acquisition datetime"):
         Scene.from_item(item)
