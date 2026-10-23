@@ -10,10 +10,13 @@ dependencies = [
     "httpx>=0.28.1",
     "mcp>=1.27.2",
     "numpy>=2.5.0",
+    "odc-stac>=0.5.3",
     "pandas>=3.0.3",
+    "planetary-computer>=1.0.0",
     "psycopg[binary]>=3.3.4",
     "pyarrow>=24.0.0",
     "pyproj>=3.8.0",
+    "pystac-client>=0.9.1",
     "python-dotenv>=1.2.2",
     "rasterio>=1.5.2",
     "shapely>=2.1.2",
@@ -57,5 +60,5 @@ target-version = "py312"
 testpaths = ["apps", "packages", "tests"]
 
 [[tool.mypy.overrides]]
-module = ["h3.*", "rasterio.*"]
+module = ["h3.*", "rasterio.*", "planetary_computer.*"]
 ignore_missing_imports = true
