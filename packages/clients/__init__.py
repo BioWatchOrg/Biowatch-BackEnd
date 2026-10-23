@@ -1,6 +1,13 @@
 from .logs import request_id_var, run_id_var, setup_logging
 
-from .planetary_computer import PlanetaryComputerError, Scene, search_scenes
+from .planetary_computer import (
+    PlanetaryComputerError,
+    Scene,
+    deduplicate_scenes,
+    group_by_tile,
+    search_scenes,
+    tile_footprints,
+)
 
 from .sentinel_hub import (
     SentinelHubAuthError,
@@ -57,4 +64,7 @@ __all__ = [
     "Scene",
     "PlanetaryComputerError",
     "search_scenes",
+    "deduplicate_scenes",
+    "group_by_tile",
+    "tile_footprints",
 ]

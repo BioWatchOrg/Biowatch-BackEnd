@@ -24,7 +24,9 @@ from .models import _CachedToken
 
 logger = logging.getLogger(__name__)
 
-TOKEN_URL = "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token"
+TOKEN_URL = (
+    "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token"
+)
 
 # Refresh this many seconds *before* the token actually expires, instead of
 # waiting for it to expire and getting a 401. 120s is a safety margin: it
