@@ -2,12 +2,14 @@
 
 import h3
 import numpy as np
+import pandas as pd
+import pytest
 from affine import Affine
 from pyproj import Transformer
 
 from shapely.geometry import box
 
-from geo.raster_h3 import NO_CELL, assign_owner_tiles, cells_to_label_grid
+from geo.raster_h3 import NO_CELL, CellAccumulator, assign_owner_tiles, cells_to_label_grid
 
 UTM_31N = 32631
 PIXEL_M = 20
@@ -117,3 +119,94 @@ def test_cell_outside_every_tile_is_absent():
 def test_assign_owner_tiles_empty_inputs():
     assert assign_owner_tiles([], {"WEST": TILE_WEST}) == {}
     assert assign_owner_tiles([_cell(2.10, 48.85)], {}) == {}
+
+
+CELLS = ["c0", "c1", "c2", "c3"]
+
+
+def _random_image(seed=0, shape=(60, 70)):
+    """Image synthétique : étiquettes, deux valeurs avec trous (NaN) et n_obs."""
+    rng = np.random.default_rng(seed)
+    labels = rng.integers(NO_CELL, len(CELLS), size=shape)  # inclut des pixels sans cellule
+    n_obs = rng.integers(0, 5, size=shape)
+    ndvi = rng.uniform(-1, 1, size=shape)
+    swir = rng.uniform(0, 0.5, size=shape)
+    ndvi[n_obs == 0] = np.nan
+    swir[n_obs == 0] = np.nan
+    ndvi[rng.random(shape) < 0.05] = np.nan  # valeur manquante sur un pixel valide
+    return labels, {"ndvi": ndvi, "swir": swir}, n_obs
+
+
+def _reference(labels, values, n_obs):
+    """Calcul direct sur l'image entière, avec pandas."""
+    m = labels != NO_CELL
+    df = pd.DataFrame(
+        {
+            "cell": np.array(CELLS)[labels[m]],
+            "ndvi": values["ndvi"][m],
+            "swir": values["swir"][m],
+            "n_obs": n_obs[m],
+        }
+    )
+    valid = df[df.n_obs > 0]
+    return pd.DataFrame(
+        {
+            "ndvi": df.groupby("cell").ndvi.mean(),
+            "swir": df.groupby("cell").swir.mean(),
+            "mean_n_obs": valid.groupby("cell").n_obs.mean(),
+            "n_valid_px": valid.groupby("cell").size(),
+            "n_total_px": df.groupby("cell").size(),
+        }
+    )
+
+
+def test_blockwise_equals_whole_image():
+    """Test clé : cumuler par blocs (de tailles inégales) = calculer sur l'image entière."""
+    labels, values, n_obs = _random_image()
+    acc = CellAccumulator(CELLS, ["ndvi", "swir"])
+    for ys in (slice(0, 25), slice(25, 60)):
+        for xs in (slice(0, 10), slice(10, 70)):
+            acc.add(labels[ys, xs], {k: v[ys, xs] for k, v in values.items()}, n_obs[ys, xs])
+
+    got = acc.result()
+    expected = _reference(labels, values, n_obs)
+    pd.testing.assert_frame_equal(
+        got.sort_index()[expected.columns],
+        expected.rename_axis("zone_id"),
+        check_dtype=False,
+    )
+
+
+def test_single_block_equals_whole_image():
+    labels, values, n_obs = _random_image(seed=1)
+    acc = CellAccumulator(CELLS, ["ndvi", "swir"])
+    acc.add(labels, values, n_obs)
+    blocks = CellAccumulator(CELLS, ["ndvi", "swir"])
+    for ys in (slice(0, 30), slice(30, 60)):
+        blocks.add(labels[ys], {k: v[ys] for k, v in values.items()}, n_obs[ys])
+    pd.testing.assert_frame_equal(acc.result(), blocks.result())
+
+
+def test_cell_without_valid_pixel_has_nan_means():
+    labels = np.array([[0, 0]])
+    acc = CellAccumulator(["c0"], ["ndvi"])
+    acc.add(labels, {"ndvi": np.full((1, 2), np.nan)}, np.zeros((1, 2), dtype=int))
+    row = acc.result().loc["c0"]
+    assert np.isnan(row.ndvi) and np.isnan(row.mean_n_obs)
+    assert row.n_valid_px == 0
+    assert row.n_total_px == 2
+
+
+def test_unseen_cells_are_not_in_result():
+    acc = CellAccumulator(["c0", "c1"], ["ndvi"])
+    acc.add(np.array([[0, NO_CELL]]), {"ndvi": np.array([[0.5, 0.9]])}, np.array([[2, 3]]))
+    result = acc.result()
+    assert list(result.index) == ["c0"]
+    assert result.loc["c0", "ndvi"] == pytest.approx(0.5)
+    assert result.loc["c0", "mean_n_obs"] == pytest.approx(2)
+
+
+def test_empty_accumulator_gives_empty_frame():
+    result = CellAccumulator(["c0"], ["ndvi"]).result()
+    assert result.empty
+    assert result.index.name == "zone_id"
