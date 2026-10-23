@@ -9,12 +9,6 @@ from .planetary_computer_client import (
     tile_footprints,
 )
 
-from .sentinel_hub import (
-    SentinelHubAuthError,
-    SentinelHubRequestError,
-    ZoneStatistics,
-    fetch_zone_statistics,
-)
 
 from .db import (
     Base,
@@ -57,10 +51,6 @@ __all__ = [
     "setup_logging",
     "run_id_var",
     "request_id_var",
-    "fetch_zone_statistics",
-    "ZoneStatistics",
-    "SentinelHubAuthError",
-    "SentinelHubRequestError",
     "Scene",
     "PlanetaryComputerError",
     "search_scenes",
