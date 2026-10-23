@@ -6,6 +6,7 @@ Rien n'est téléchargé à l'ouverture (`open_tile`) : seuls les blocs demandé
 
 import datetime
 import logging
+import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -17,7 +18,7 @@ import odc.stac
 import planetary_computer
 import xarray as xr
 from affine import Affine
-from rasterio.errors import RasterioError
+from rasterio.errors import NotGeoreferencedWarning, RasterioError
 from shapely.geometry import mapping
 from shapely.geometry.base import BaseGeometry
 
@@ -173,7 +174,14 @@ def read_block(
     """
     ys, xs = window
     try:
-        with dask.config.set(scheduler="threads", num_workers=io_threads):
+        with (
+            dask.config.set(scheduler="threads", num_workers=io_threads),
+            warnings.catch_warnings(),
+        ):
+            # Émis par rasterio quand odc-stac reprojette vers un tableau en
+            # mémoire (sans géotransformation propre) : sans effet sur les
+            # valeurs, mais répété à chaque bloc dans les logs.
+            warnings.simplefilter("ignore", NotGeoreferencedWarning)
             block = stack.dataset.isel(y=ys, x=xs).compute()
     except (RasterioError, OSError) as e:
         logger.error(
