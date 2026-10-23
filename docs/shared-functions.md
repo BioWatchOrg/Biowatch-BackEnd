@@ -176,8 +176,7 @@ l'instant.
   parser du GeoJSON/WKT entrant).
 
 ### `geo.raster_h3` (raster -> cellules H3, toute source raster)
-Pas encore exportées depuis `geo` (niveau 2) : l'appelant (job d'extraction Sentinel-2,
-ADR-004) arrive en phase 4. Importables via `from geo.raster_h3 import ...`.
+Exportées depuis `geo` (niveau 3) : utilisées par le job d'extraction Sentinel-2 (ADR-004).
 - `cells_to_label_grid(cells, epsg, transform, shape) -> ndarray[int32]` — pour chaque pixel
   d'une grille (CRS `epsg`, géotransformation affine, `(hauteur, largeur)`), l'index de sa
   cellule dans `cells`, ou `NO_CELL` (-1). Règle : le **centre** du pixel est dans l'hexagone
