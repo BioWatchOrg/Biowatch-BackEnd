@@ -13,7 +13,12 @@ from clients import init_db
 from geo import generate_h3_grid
 
 from jobs.registry import Job, register
-from sentinel import DEFAULT_MAX_WORKERS, EXTRACTION_PIPELINE_VERSION, extract_sentinel_data_by_aoi
+from clients.planetary_computer_client.reader import DEFAULT_IO_THREADS
+from sentinel import (
+    EXTRACTION_PIPELINE_VERSION,
+    extract_sentinel_data_by_aoi,
+    previous_month_bucket,
+)
 
 
 def _configure_generate_h3_grid(parser: ArgumentParser) -> None:
@@ -60,10 +65,10 @@ register(
 def _run_extract_sentinel(args: Namespace) -> None:
     extract_sentinel_data_by_aoi(
         aoi_label=args.aoi,
-        bucket=args.bucket_id,
+        bucket=args.bucket_id or previous_month_bucket(),
         resolution=args.h3_res,
         source_version=args.source_version,
-        max_workers=args.max_workers,
+        io_threads=args.io_threads,
     )
 
 
@@ -75,8 +80,8 @@ def _configure_extract_sentinel(parser: ArgumentParser) -> None:
     )
     parser.add_argument(
         "--bucket_id",
-        required=True,
-        help="Année du bucket, cadence annuelle (ex: '2026') — interroge mai de cette année.",
+        default=None,
+        help="Mois traité, 'YYYY-MM' (ex: '2025-05'). Par défaut : le mois précédent.",
     )
     parser.add_argument(
         "--h3_res",
@@ -91,17 +96,17 @@ def _configure_extract_sentinel(parser: ArgumentParser) -> None:
         f"(défaut : {EXTRACTION_PIPELINE_VERSION}, la version courante du code).",
     )
     parser.add_argument(
-        "--max_workers",
+        "--io_threads",
         type=int,
-        default=DEFAULT_MAX_WORKERS,
-        help=f"Requêtes Sentinel Hub en parallèle (défaut : {DEFAULT_MAX_WORKERS}).",
+        default=DEFAULT_IO_THREADS,
+        help=f"Lectures d'images parallèles par bloc de pixels (défaut : {DEFAULT_IO_THREADS}).",
     )
 
 
 register(
     Job(
         name="extract_sentinel",
-        help="Extrait les données Sentinel pour une AOI et un bucket donnés.",
+        help="Calcule les indices Sentinel-2 mensuels d'une AOI (Planetary Computer, ADR-004).",
         run=_run_extract_sentinel,
         configure=_configure_extract_sentinel,
     )
