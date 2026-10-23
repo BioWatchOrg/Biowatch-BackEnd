@@ -34,7 +34,7 @@ def test_each_job_dispatches_to_its_run():
         if name == "generate_h3_grid":
             argv += ["--aoi", "paris", "--resolution", "8"]
         elif name == "extract_sentinel":
-            argv += ["--aoi", "paris", "--bucket_id", "2026", "--source_version", "1.0.0"]
+            argv += ["--aoi", "paris", "--bucket_id", "2025-05"]
         args = parser.parse_args(argv)
         assert args._run is job.run
 
@@ -78,3 +78,33 @@ def test_unknown_job_is_rejected():
     parser = build_parser()
     with pytest.raises(SystemExit):
         parser.parse_args(["does_not_exist"])
+
+
+def test_extract_sentinel_bucket_defaults_to_previous_month(monkeypatch):
+    """Sans --bucket_id, le job traite le mois précédent (run mensuel du timer)."""
+    import jobs.definitions as definitions
+
+    seen = {}
+    monkeypatch.setattr(definitions, "previous_month_bucket", lambda: "2026-09")
+    monkeypatch.setattr(
+        definitions, "extract_sentinel_data_by_aoi", lambda **kwargs: seen.update(kwargs)
+    )
+    args = build_parser().parse_args(["extract_sentinel", "--aoi", "idf"])
+    args._run(args)
+    assert seen["bucket"] == "2026-09"
+    assert seen["io_threads"] == 16
+
+
+def test_extract_sentinel_explicit_bucket(monkeypatch):
+    import jobs.definitions as definitions
+
+    seen = {}
+    monkeypatch.setattr(
+        definitions, "extract_sentinel_data_by_aoi", lambda **kwargs: seen.update(kwargs)
+    )
+    args = build_parser().parse_args(
+        ["extract_sentinel", "--aoi", "idf", "--bucket_id", "2025-05", "--io_threads", "4"]
+    )
+    args._run(args)
+    assert seen["bucket"] == "2025-05"
+    assert seen["io_threads"] == 4
