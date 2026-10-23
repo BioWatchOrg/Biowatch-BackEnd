@@ -109,7 +109,7 @@ commerciale avec des exigences de conformité RGPD strictes — pas avant.
 
 ## ADR-003 — Extraction Sentinel-2 : Statistical API synchrone (par zone) plutôt que Batch
 
-**Statut** : actif
+**Statut** : remplacé par ADR-004 (2026-10-23) — conservé comme historique du raisonnement
 
 **Contexte**
 
@@ -364,3 +364,85 @@ deviendrait alors un besoin documenté et justifié, contrairement à aujourd'hu
 confirme que les crédits n'augmentent pas le débit par minute, cette piste doit être réévaluée
 immédiatement** — elle ne résoudrait alors ni le run récurrent ni le backfill dans un délai
 raisonnable, malgré le volume de PU accordé.
+
+---
+
+## ADR-004 — Extraction Sentinel-2 : calcul local depuis les COG Planetary Computer
+
+**Statut** : actif — remplace ADR-003
+
+**Contexte**
+
+ADR-003 reposait sur la Statistical API Sentinel Hub. Le rate-limit par compte (~24 requêtes
+puis `429` de ~130 s) rend un run `idf` mensuel long de 24 à 28 h, le quota gratuit
+(10 000 requêtes/mois) est structurellement trop bas pour la France (~840 000 cellules par
+période), le support a refusé toute hausse et la réponse CREODIAS est incertaine. ADR-003 avait
+écarté le "calcul raster maison" pour éviter une stack raster ; le contexte a changé : la
+limite vient de l'**API**, pas des données, et les mêmes images Sentinel-2 L2A sont publiques
+en COG (lecture partielle par HTTP range) sur des catalogues STAC sans quota par requête.
+
+Un spike (2026-10-23, script jetable non versionné) a mesuré la faisabilité sur `idf`, H3 res 8.
+
+**Décision**
+
+- **Calcul local** des indices depuis les COG Sentinel-2 L2A, tuile MGRS par tuile, en blocs de
+  pixels, sans écrire de raster sur disque. Stack ajoutée : `pystac-client`, `odc-stac`,
+  `rasterio`, `xarray`, `dask`.
+- **Source unique : Planetary Computer, collection `sentinel-2-l2a`**. Jamais de mélange de
+  sources dans une même série.
+- **Cadence mensuelle** (`bucket_id` `"YYYY-MM"`), qui remplace la cadence annuelle de mai
+  d'ADR-003 : elle n'était justifiée que par le quota.
+- **Historique depuis janvier 2016** (première donnée disponible en IDF).
+- Méthode par pixel : réflectance = DN × 0,0001 + offset (−0,1 si baseline ≥ 04.00, 0 sinon),
+  masque SCL ne gardant que {4 végétation, 5 sol nu, 6 eau}, réflectances hors ]0 ; 1,5]
+  exclues, indices calculés par date puis **médiane mensuelle** par pixel. Agrégation par
+  cellule H3 (pixel affecté par son centre), une **tuile propriétaire** par cellule pour ne
+  pas compter deux fois les recouvrements, moyenne cumulée bloc par bloc.
+- Tables et outils existants conservés : `zones_hex`, `satellite_features_by_zone`
+  (`source_version` incrémentée), `job_run` / `job_run_zone_errors`, CLI `biowatch-jobs`.
+- Backfill exécuté hors VPS (Mac ou machine temporaire) via le même job, écriture en base par
+  tunnel SSH. Mensuel sur le VPS.
+
+**Pourquoi (mesures du spike)**
+
+- **Débit** depuis la France sur la même tuile et le même mois : Planetary Computer (Azure,
+  Europe de l'Ouest) 20 s, Earth Search (AWS us-west-2) 679 s. Earth Search est ~35× plus lent
+  (~0,8 Mo/s par flux, contre ~20 Mo/s).
+- **Historique** en IDF : Earth Search `sentinel-2-c1-l2a` (retraitement ESA homogène) n'est
+  complet qu'à partir d'avril 2019. Planetary Computer est complet depuis janvier 2016.
+- **Performance** IDF complète, mai 2025, Mac : 12 min avec 4 blocs en parallèle (RAM pic
+  2,1 Go) ; 18 min avec 1 bloc à la fois + 16 lectures parallèles (RAM pic 1,8 Go). Les
+  18 307 cellules sont produites, aucune vide. Objectif "< 1 h par mois" atteignable.
+- **Plausibilité** : NDVI médian ~0,73 en zone rurale en mai, ~0,24 dans Paris ; NDBI ≈ 0 à
+  Paris ; ~4,3 dates claires par pixel sur le mois.
+- **Masque SCL** : la classe 7 (non classifié), exclue en plus par rapport à l'evalscript
+  Sentinel Hub, ne représente que 0,3 % des pixels à Paris. L'exclure ne vide pas la ville.
+
+**Limites assumées**
+
+- **Série non homogène** : Planetary Computer sert les acquisitions jusqu'en 2021 en baseline
+  02.12 / 03.00, puis 04.00 / 05.xx. Sur une même tuile et un même mois (mai 2021), l'écart avec
+  la version homogène ESA (Earth Search C1) est d'environ −0,01 en NDVI (écart absolu médian
+  0,013, corrélation 0,97 ; une date de plus côté Planetary Computer contribue aussi à
+  l'écart). Ça peut créer une **petite marche artificielle début 2022**, faible face aux
+  signaux recherchés (> 0,1 de NDVI pour une urbanisation), mais à garder en tête dans toute
+  analyse de tendance.
+- Certaines acquisitions 2022-2023 existent en double (deux baselines) : il faut dédoublonner en
+  gardant la baseline la plus récente.
+- Dépendance à un service gratuit sans SLA (Planetary Computer), avec jeton SAS anonyme.
+- Backfill ~125 mois × 12 à 18 min ≈ 25 à 35 h : hors VPS.
+- La stack raster (GDAL via `rasterio`) alourdit l'environnement, et la RAM pic (~1,8 Go)
+  laisse peu de marge sur le VPS (4 Go partagés avec PostgreSQL et l'API).
+- Méthode différente de Sentinel Hub (masque plus strict, médiane au lieu de moyenne) : les
+  valeurs ne sont pas directement comparables à l'ancienne série, d'où une nouvelle
+  `source_version`.
+
+**Remise en cause**
+
+- Si Planetary Computer devient payant, limité ou indisponible : Earth Search C1 depuis une
+  machine AWS us-west-2 (historique réduit à 2019), ou le S3 CDSE.
+- Si l'ESA publie le retraitement homogène complet sur un catalogue rapide depuis l'Europe :
+  rebasculer toute la série (jamais un mélange).
+- Si CREODIAS accorde un débit suffisant, le client Sentinel Hub (`packages/clients/sentinel_hub/`)
+  peut redevenir une option, mais sur une série entière, pas mélangée à celle-ci.
+
