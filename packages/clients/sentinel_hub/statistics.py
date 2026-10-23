@@ -200,9 +200,7 @@ def _raise_for_status(response: httpx.Response) -> None:
             "context": {"status_code": response.status_code, "error_description": description},
         },
     )
-    raise SentinelHubRequestError(
-        f"Statistical API error ({response.status_code}): {description}"
-    )
+    raise SentinelHubRequestError(f"Statistical API error ({response.status_code}): {description}")
 
 
 # Shape of a successful Statistical API response (trimmed):
