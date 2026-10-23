@@ -213,6 +213,34 @@ ReadWritePaths=/var/lib/biowatch/api /var/log/biowatch/api
 Contrôle sur la machine : `systemctl show -p User <unité>` et
 `ps -o user,cmd -C python`.
 
+## Job Sentinel-2 mensuel (#36, ADR-004)
+
+Unité et timer prêts dans [`systemd/`](systemd/) : `extract_sentinel` sur l'AOI `idf`,
+pour le mois précédent, **chaque nuit du 5 au 10 à 01:30**. Les nuits suivant un succès
+ne font rien (idempotence de `job_run`) ; un mois `failed` ou `partial` est retenté la
+nuit suivante — c'est le « retry via job nocturne » du `CLAUDE.md`, sans code dédié.
+
+Garde-fous pour ne pas pénaliser PostgreSQL et l'API sur le même VPS : `MemoryMax=2200M`
+(c'est le job que le noyau tue, jamais la base ; pic mesuré ~1,8 Go pour l'IDF),
+`CPUQuota=150%`, `Nice=10`, `TimeoutStartSec=3h` (un mois IDF prend 15 à 20 min).
+
+Prérequis : code déployé dans `/opt/biowatch/app` avec son venv, grille H3 `idf`
+résolution 8 en base, et `/etc/biowatch/jobs.env` (root, 600) avec `POSTGRES_*`,
+`BIOWATCH_ENV=prod` et `LOG_LEVEL=INFO`.
+
+```bash
+sudo install -m 644 systemd/biowatch-extract-sentinel.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload
+systemd-analyze calendar '*-*-05..10 01:30:00'      # prochains déclenchements
+sudo systemctl start biowatch-extract-sentinel.service  # premier run à la main
+journalctl -u biowatch-extract-sentinel -f              # logs JSON du run
+sudo systemctl enable --now biowatch-extract-sentinel.timer
+systemctl list-timers biowatch-extract-sentinel.timer
+```
+
+L'historique (2016 → aujourd'hui, 25 à 35 h) ne se lance **pas** sur le VPS : voir la
+section « Backfill Sentinel-2 » du README racine (exécution hors VPS, tunnel SSH).
+
 ## Portée
 
 Ces scripts traitent #22, #28 et #25. `AllowGroups biowatch-ssh` (posé par
