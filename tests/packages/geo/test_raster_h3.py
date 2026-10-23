@@ -5,7 +5,9 @@ import numpy as np
 from affine import Affine
 from pyproj import Transformer
 
-from geo.raster_h3 import NO_CELL, cells_to_label_grid
+from shapely.geometry import box
+
+from geo.raster_h3 import NO_CELL, assign_owner_tiles, cells_to_label_grid
 
 UTM_31N = 32631
 PIXEL_M = 20
@@ -71,3 +73,47 @@ def test_empty_cells_gives_empty_grid():
     labels = cells_to_label_grid([], UTM_31N, TRANSFORM, (3, 4))
     assert labels.shape == (3, 4)
     assert np.all(labels == NO_CELL)
+
+
+# Deux "tuiles" (en WGS84) qui se chevauchent sur 2.30 -> 2.40 de longitude.
+TILE_WEST = box(2.00, 48.70, 2.40, 49.00)
+TILE_EAST = box(2.30, 48.70, 2.70, 49.00)
+
+
+def _cell(lng, lat):
+    return h3.latlng_to_cell(lat, lng, RES)
+
+
+def test_every_cell_gets_exactly_one_owner():
+    cells = [_cell(lng, 48.85) for lng in np.linspace(2.05, 2.65, 30)]
+    owners = assign_owner_tiles(cells, {"WEST": TILE_WEST, "EAST": TILE_EAST})
+    assert set(owners) == set(cells)
+    assert set(owners.values()) == {"WEST", "EAST"}
+
+
+def test_cell_only_in_one_tile_belongs_to_it():
+    owners = assign_owner_tiles([_cell(2.10, 48.85)], {"WEST": TILE_WEST, "EAST": TILE_EAST})
+    assert owners == {_cell(2.10, 48.85): "WEST"}
+
+
+def test_overlap_cell_goes_to_tile_whose_edge_is_farther():
+    # 2.32 : à ~0,02° du bord ouest de EAST, à ~0,08° du bord est de WEST.
+    cell = _cell(2.32, 48.85)
+    assert assign_owner_tiles([cell], {"WEST": TILE_WEST, "EAST": TILE_EAST}) == {cell: "WEST"}
+    cell = _cell(2.38, 48.85)
+    assert assign_owner_tiles([cell], {"WEST": TILE_WEST, "EAST": TILE_EAST}) == {cell: "EAST"}
+
+
+def test_tie_is_broken_by_tile_name():
+    cell = _cell(2.20, 48.85)
+    owners = assign_owner_tiles([cell], {"B": TILE_WEST, "A": TILE_WEST})
+    assert owners == {cell: "A"}
+
+
+def test_cell_outside_every_tile_is_absent():
+    assert assign_owner_tiles([MARSEILLE_CELL], {"WEST": TILE_WEST}) == {}
+
+
+def test_assign_owner_tiles_empty_inputs():
+    assert assign_owner_tiles([], {"WEST": TILE_WEST}) == {}
+    assert assign_owner_tiles([_cell(2.10, 48.85)], {}) == {}
