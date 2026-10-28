@@ -101,15 +101,16 @@ core (fondation, zéro dépendance interne)
   ↑
 geo, clients   (dépendent seulement de core)
   ↑
-scoring        (dépend de core + geo — PAS de clients, calcul pur)
+scoring, species   (dépendent de core + geo ; species dépend aussi de clients
+                     pour écrire en DB, scoring reste un calcul pur sans clients)
   ↑
 ml             (dépend de core, geo, clients, scoring)
 
-apps/api   → core, geo, clients   (jamais scoring, jamais ml)
-apps/jobs  → tout (core, geo, clients, scoring, ml)
+apps/api   → core, geo, clients   (jamais scoring, jamais ml, jamais species)
+apps/jobs  → tout (core, geo, clients, scoring, ml, species)
 ```
 
-**Règle forte** : aucun `packages/*` ne dépend d'un `apps/*`. Un package ne dépend jamais d'un package situé au-dessus de lui dans ce graphe (ex. `clients` n'importe jamais `scoring`). `scoring` reste un calcul pur, sans accès DB — c'est `apps/jobs` qui orchestre lecture (`clients`) → calcul (`scoring`) → écriture (`clients`).
+**Règle forte** : aucun `packages/*` ne dépend d'un `apps/*`. Un package ne dépend jamais d'un package situé au-dessus de lui dans ce graphe (ex. `clients` n'importe jamais `scoring`). `scoring` reste un calcul pur, sans accès DB — c'est `apps/jobs` qui orchestre lecture (`clients`) → calcul (`scoring`) → écriture (`clients`). `species` est au même niveau que `scoring` mais écrit directement en DB via `clients` (ingestion, pas calcul pur) — comme `scoring`, `apps/api` ne l'importe jamais : il expose des résultats déjà calculés, jamais de logique d'ingestion.
 
 ### Fonctions communes déjà disponibles
 
