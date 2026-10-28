@@ -108,8 +108,8 @@ def update_gbif_occurrences(aoi_label: AoiLabel, engine: Engine | None = None) -
             scope=aoi_label,
             idempotency_key=idempotency_key,
             engine=engine,
-        ) as (_, session):
-            log_ctx = {"aoi": aoi_label, "year": current_year}
+        ) as (run, session):
+            log_ctx = {"aoi": aoi_label, "year": current_year, "run_id": str(run.run_id)}
             # Same reasoning as the old Search API's `geometry` param: the
             # exact polygon is too complex for GBIF, the convex hull is
             # small and always contains it. Safe here too -- occurrences
@@ -144,6 +144,15 @@ def update_gbif_occurrences(aoi_label: AoiLabel, engine: Engine | None = None) -
                     },
                 )
 
+                # The window-replace delete and every upsert below (potentially
+                # millions of rows) share this one job_run-managed transaction --
+                # deliberate all-or-nothing: either the whole refetched window
+                # lands cleanly or none of it does (rollback), no partial state.
+                # No record_zone_error/job_run_zone_errors granularity here: the
+                # loop below is per-row within a single AOI-wide fetch, not
+                # per-zone, so there's no natural unit to attribute a partial
+                # failure to -- a failure anywhere fails the whole run, and a
+                # rerun is safe and cheap (reviewed and accepted in PR #96).
                 logger.info(
                     "replacing staging rows for the refetched window",
                     extra={"event": "gbif_occurrences.replace_window", "context": log_ctx},

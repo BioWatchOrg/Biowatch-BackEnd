@@ -101,9 +101,11 @@ class _FakeSession:
 
 
 def _fake_job_run_yielding(session):
+    fake_run = type("_FakeRun", (), {"run_id": uuid.uuid4()})()
+
     @contextmanager
     def fake_job_run(*args, idempotency_key="", **kwargs):
-        yield None, session
+        yield fake_run, session
 
     return fake_job_run
 
