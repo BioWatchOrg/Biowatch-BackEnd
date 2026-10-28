@@ -15,6 +15,7 @@ EXPECTED_TABLES = {
     "stress_score_by_zone",
     "job_runs",
     "job_run_zone_errors",
+    "staging.species_occurrences_raw",
 }
 
 EXPECTED_PRIMARY_KEYS = {
@@ -26,6 +27,7 @@ EXPECTED_PRIMARY_KEYS = {
     "stress_score_by_zone": {"zone_id", "bucket_id", "score_method"},
     "job_runs": {"run_id"},
     "job_run_zone_errors": {"run_id", "zone_id"},
+    "staging.species_occurrences_raw": {"gbif_occurrence_id", "aoi_id"},
 }
 
 
@@ -41,7 +43,9 @@ def test_primary_keys_match_expected():
 
 
 def test_every_feature_table_references_zones_hex():
-    referencing = EXPECTED_TABLES - {"zones_hex", "job_runs"}
+    # staging.species_occurrences_raw has no DB-level FK to zones_hex by design
+    # (spec DDL) — zone_id membership is checked in application code instead.
+    referencing = EXPECTED_TABLES - {"zones_hex", "job_runs", "staging.species_occurrences_raw"}
     for table_name in referencing:
         table = Base.metadata.tables[table_name]
         targets = {fk.column.table.name for fk in table.foreign_keys}
@@ -50,11 +54,10 @@ def test_every_feature_table_references_zones_hex():
 
 def test_schema_compiles_to_postgresql_ddl():
     engine = create_mock_engine("postgresql+psycopg://", executor=lambda *a, **k: None)
-    # Compiling every table against the PostgreSQL dialect exercises the
-    # geometry, UUID and timestamp column types without needing a live DB.
     for table in Base.metadata.sorted_tables:
         ddl = str(CreateTable(table).compile(dialect=engine.dialect))
-        assert f"CREATE TABLE {table.name}" in ddl
+        qualified_name = f"{table.schema}.{table.name}" if table.schema else table.name
+        assert f"CREATE TABLE {qualified_name}" in ddl
 
 
 def test_extensions_declared_for_init():
