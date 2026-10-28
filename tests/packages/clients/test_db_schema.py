@@ -27,7 +27,7 @@ EXPECTED_PRIMARY_KEYS = {
     "stress_score_by_zone": {"zone_id", "bucket_id", "score_method"},
     "job_runs": {"run_id"},
     "job_run_zone_errors": {"run_id", "zone_id"},
-    "staging.species_occurrences_raw": {"gbif_occurrence_id"},
+    "staging.species_occurrences_raw": {"gbif_occurrence_id", "aoi_id"},
 }
 
 

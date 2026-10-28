@@ -157,19 +157,27 @@ class SpeciesFeaturesByZone(Base):
 
 
 class SpeciesOccurrencesRaw(Base):
-    """Raw GBIF occurrences for an AOI's rolling 10-year window (staging area)."""
+    """Raw GBIF occurrences for an AOI's rolling 10-year window (staging area).
+
+    PK is composite (gbif_occurrence_id, aoi_id), not gbif_occurrence_id alone:
+    a single GBIF record can legitimately fall inside two overlapping AOIs, and
+    a plain single-column PK would silently drop it from the second one on
+    `ON CONFLICT DO NOTHING`. Reviewed and accepted as a known, near-never-hit
+    edge case rather than a correctness bug (overlap between registered AOIs
+    is expected to be rare) -- see PR #96 review discussion.
+    """
 
     __tablename__ = "species_occurrences_raw"
     __table_args__ = {"schema": "staging"}
 
     gbif_occurrence_id: Mapped[str] = mapped_column(String, primary_key=True)
+    aoi_id: Mapped[str] = mapped_column(String, primary_key=True)
     event_date: Mapped[datetime.date] = mapped_column(Date, nullable=False)
     gbif_taxon_key: Mapped[int | None] = mapped_column(Integer, nullable=True)
     scientific_name: Mapped[str] = mapped_column(String, nullable=False)
     decimal_latitude: Mapped[float] = mapped_column(Float, nullable=False)
     decimal_longitude: Mapped[float] = mapped_column(Float, nullable=False)
     zone_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    aoi_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     ingested_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
