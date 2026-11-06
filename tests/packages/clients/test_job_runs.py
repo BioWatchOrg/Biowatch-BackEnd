@@ -8,6 +8,7 @@ from clients.db import (
     JobRun,
     JobRunZoneError,
     get_failed_zones,
+    get_run_status,
     job_run,
     record_zone_error,
 )
@@ -162,3 +163,28 @@ def test_record_zone_error_is_idempotent(engine):
     assert len(errors) == 2  # zone-a de-duplicated
     assert by_zone["zone-a"] == "nodata again"  # message updated in place
     assert by_zone["zone-b"] == "timeout"
+
+
+def test_output_ref_is_persisted_on_success(engine):
+    with job_run("ingest", scope="idf", idempotency_key=KEY, engine=engine) as (run, _):
+        run.output_ref = "osm_tmp_idf_2016"
+    assert _get_run(engine).output_ref == "osm_tmp_idf_2016"
+
+
+def test_output_ref_is_not_persisted_on_failure(engine):
+    with pytest.raises(ValueError):
+        with job_run("ingest", scope="idf", idempotency_key=KEY, engine=engine) as (run, _):
+            run.output_ref = "osm_tmp_idf_2016"
+            raise ValueError("boom")
+    assert _get_run(engine).output_ref is None
+
+
+def test_get_run_status_reflects_the_run(engine):
+    assert get_run_status(KEY, engine=engine) is None
+    with pytest.raises(ValueError):
+        with job_run("ingest", scope="idf", idempotency_key=KEY, engine=engine):
+            raise ValueError("boom")
+    assert get_run_status(KEY, engine=engine) == "failed"
+    with job_run("ingest", scope="idf", idempotency_key=KEY, engine=engine):
+        pass
+    assert get_run_status(KEY, engine=engine) == "success"

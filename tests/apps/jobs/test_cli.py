@@ -10,6 +10,12 @@ import pytest
 from jobs.cli import build_parser
 from jobs.registry import get_jobs
 
+# Args factices valides pour les jobs qui ont des arguments obligatoires.
+REQUIRED_ARGS = {
+    "generate_h3_grid": ["--aoi", "paris", "--resolution", "8"],
+    "osm_import_snapshot": ["--aoi", "idf", "--bucket", "2016"],
+}
+
 
 def test_every_registered_job_is_a_subcommand():
     """Chaque job du registre est exposé et parse au moins avec `--help`.
@@ -30,9 +36,7 @@ def test_each_job_dispatches_to_its_run():
     parser = build_parser()
     for name, job in get_jobs().items():
         # On donne des args factices valides selon le job connu.
-        argv = [name]
-        if name == "generate_h3_grid":
-            argv += ["--aoi", "paris", "--resolution", "8"]
+        argv = [name, *REQUIRED_ARGS.get(name, [])]
         args = parser.parse_args(argv)
         assert args._run is job.run
 
@@ -76,3 +80,75 @@ def test_unknown_job_is_rejected():
     parser = build_parser()
     with pytest.raises(SystemExit):
         parser.parse_args(["does_not_exist"])
+
+
+def test_osm_import_snapshot_parses_args():
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "osm_import_snapshot",
+            "--aoi",
+            "idf",
+            "--bucket",
+            "2016",
+            "--link",
+            "https://x/a.osm.pbf",
+            "--link",
+            "https://x/b.osm.pbf",
+            "--env",
+            "prod",
+        ]
+    )
+    assert (args.aoi, args.bucket, args.env) == ("idf", "2016", "prod")
+    assert args.link == ["https://x/a.osm.pbf", "https://x/b.osm.pbf"]
+
+
+def test_osm_import_snapshot_defaults_to_dev_without_links():
+    args = build_parser().parse_args(["osm_import_snapshot", "--aoi", "idf", "--bucket", "2016"])
+    assert args.env == "dev"
+    assert args.link is None
+
+
+def test_osm_import_snapshot_requires_aoi_and_bucket():
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["osm_import_snapshot", "--aoi", "idf"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["osm_import_snapshot", "--bucket", "2016"])
+
+
+def test_osm_import_snapshot_rejects_unknown_env():
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(
+            ["osm_import_snapshot", "--aoi", "idf", "--bucket", "2016", "--env", "staging"]
+        )
+
+
+def test_osm_import_scheduled_defaults():
+    args = build_parser().parse_args(["osm_import_scheduled"])
+    assert args.env == "dev"
+    assert args.bucket is None
+
+
+def test_osm_jobs_call_their_pipeline(monkeypatch):
+    import jobs.definitions as definitions
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        definitions, "osm_import_snapshot", lambda **kw: calls.append(("snapshot", kw))
+    )
+    monkeypatch.setattr(
+        definitions, "osm_import_scheduled", lambda **kw: calls.append(("scheduled", kw))
+    )
+    parser = build_parser()
+    for argv in (
+        ["osm_import_snapshot", "--aoi", "idf", "--bucket", "2016"],
+        ["osm_import_scheduled", "--env", "prod"],
+    ):
+        args = parser.parse_args(argv)
+        args._run(args)
+
+    assert calls == [
+        ("snapshot", {"aoi_label": "idf", "bucket": "2016", "env": "dev", "links": None}),
+        ("scheduled", {"env": "prod", "bucket": None}),
+    ]

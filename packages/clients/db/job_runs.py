@@ -48,6 +48,9 @@ class RunContext:
     scope: str
     idempotency_key: str
     bucket_id: str | None = None
+    # Free-form pointer to what the run produced (e.g. a schema name). Set it
+    # inside the `job_run` block; it is persisted with the final status.
+    output_ref: str | None = None
 
 
 def _now() -> datetime.datetime:
@@ -73,6 +76,7 @@ def _start_run(
             existing.started_at = _now()
             existing.ended_at = None
             existing.error_message = None
+            existing.output_ref = None
             run_id = existing.run_id
             # Purge the previous attempt's per-zone errors so the new attempt's
             # success/partial verdict reflects only this run.
@@ -112,7 +116,13 @@ def _count_zone_errors(run_id: uuid.UUID, engine: Engine | None) -> int:
         )
 
 
-def _finish_run(run_id: uuid.UUID, status: str, error_message: str | None, engine: Engine | None):
+def _finish_run(
+    run_id: uuid.UUID,
+    status: str,
+    error_message: str | None,
+    engine: Engine | None,
+    output_ref: str | None = None,
+):
     with session_scope(engine) as session:
         run = session.get(JobRun, run_id)
         if run is None:  # pragma: no cover - defensive
@@ -120,6 +130,7 @@ def _finish_run(run_id: uuid.UUID, status: str, error_message: str | None, engin
         run.status = status
         run.ended_at = _now()
         run.error_message = error_message
+        run.output_ref = output_ref
 
 
 @contextmanager
@@ -144,6 +155,9 @@ def job_run(
       (or `partial` if a per-zone error was recorded via `record_zone_error`);
     - exception → the session is **rolled back** (data reverted), then the run is
       marked `failed` with the error message and the exception is re-raised.
+
+    Set `run.output_ref` inside the block to record what the run produced (e.g.
+    a schema name); it is persisted with the `success` / `partial` status.
 
     The run status is written in a **separate** transaction, so it is persisted
     even when the data session rolls back. Both `partial` and `failed` runs are
@@ -182,7 +196,7 @@ def job_run(
     else:
         # Per-zone errors recorded during the block downgrade success to partial.
         status = "partial" if _count_zone_errors(run.run_id, engine) else "success"
-        _finish_run(run.run_id, status, None, engine)
+        _finish_run(run.run_id, status, None, engine, output_ref=run.output_ref)
         logger.info(
             "CLIENTS-DB-job_run : run %s" % status,
             extra={
@@ -239,4 +253,17 @@ def get_failed_zones(idempotency_key: str, engine: Engine | None = None) -> list
             session.scalars(
                 select(JobRunZoneError.zone_id).where(JobRunZoneError.run_id == run.run_id)
             ).all()
+        )
+
+
+def get_run_status(idempotency_key: str, engine: Engine | None = None) -> str | None:
+    """
+    Return the status of the run for this idempotency_key, or None if no run exists.
+
+    Read-only: lets a scheduler decide what to launch next without entering
+    `job_run` (which would create a run as a side effect).
+    """
+    with session_scope(engine) as session:
+        return session.scalar(
+            select(JobRun.status).where(JobRun.idempotency_key == idempotency_key)
         )
