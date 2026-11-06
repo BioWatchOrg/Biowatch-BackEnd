@@ -14,7 +14,7 @@ from geo import generate_h3_grid
 
 from jobs.registry import Job, register
 from clients.planetary_computer_client.reader import DEFAULT_IO_THREADS
-from sentinel import (
+from jobs.sentinel import (
     EXTRACTION_PIPELINE_VERSION,
     backfill_sentinel,
     extract_sentinel_data_by_aoi,

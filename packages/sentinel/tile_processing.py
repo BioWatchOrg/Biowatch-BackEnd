@@ -1,20 +1,20 @@
 """D'une tuile Sentinel-2 aux moyennes mensuelles par cellule H3 (ADR-004).
 
-Assemble les briques pures (`sentinel.pixels`, `geo.raster_h3`) autour de la
-lecture bloc par bloc (`clients.planetary_computer_client.reader`). La lecture
-est injectable : tout ce module se teste sans réseau.
+Calcul pur : assemble `sentinel.pixels` et `geo.raster_h3`. La lecture des
+pixels est passée en paramètre (`read`) par l'orchestrateur (apps/jobs) : ce
+module ne sait pas d'où viennent les blocs et se teste sans réseau.
 """
 
-import functools
 import warnings
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any
+from typing import Any, Protocol
 
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
 
-from clients.planetary_computer_client.reader import TileStack, Window, read_block
+from affine import Affine
+
 from geo import CellAccumulator, H3Cell, cells_to_label_grid
 from sentinel.pixels import (
     INDEX_NAMES,
@@ -34,8 +34,24 @@ VALUE_NAMES = (*INDEX_NAMES, MASKED_RATIO)
 # Bandes de réflectance lues, dans l'ordre attendu par `compute_indices`.
 INDEX_BANDS = ("green", "red", "nir", "swir")
 
+Window = tuple[slice, slice]
 Block = Mapping[str, npt.NDArray[Any]]
-BlockReader = Callable[[TileStack, Window], Block]
+BlockReader = Callable[[Window], Block]
+
+
+class TileGrid(Protocol):
+    """Grille de pixels d'une tuile ouverte (ex. `TileStack` du client Planetary
+    Computer) : tout ce dont le calcul a besoin, sans dépendre du client."""
+
+    @property
+    def epsg(self) -> int: ...
+    @property
+    def transform(self) -> Affine: ...
+    @property
+    def shape(self) -> tuple[int, int]: ...
+    @property
+    def baselines(self) -> tuple[str, ...]: ...
+    def windows(self) -> list[Window]: ...
 
 
 def _reflectance(dn: npt.NDArray[Any], baselines: Sequence[str]) -> FloatArray:
@@ -74,10 +90,10 @@ def block_composite(
 
 
 def process_tile(
-    stack: TileStack,
+    stack: TileGrid,
     owned_cells: Sequence[H3Cell],
     *,
-    read: BlockReader = read_block,
+    read: BlockReader,
 ) -> pd.DataFrame:
     """Moyennes mensuelles des cellules dont cette tuile est propriétaire.
 
@@ -92,11 +108,6 @@ def process_tile(
         block_labels = labels[window]
         if not np.any(block_labels >= 0):
             continue  # bloc sans cellule propriétaire : rien à télécharger
-        values, n_obs = block_composite(read(stack, window), stack.baselines)
+        values, n_obs = block_composite(read(window), stack.baselines)
         accumulator.add(block_labels, values, n_obs)
     return accumulator.result()
-
-
-def reader_with_threads(io_threads: int) -> BlockReader:
-    """`read_block` avec un nombre de lectures parallèles fixé."""
-    return functools.partial(read_block, io_threads=io_threads)

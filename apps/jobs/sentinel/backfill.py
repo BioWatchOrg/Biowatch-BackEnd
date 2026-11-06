@@ -10,7 +10,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
 from core import BucketId
-from sentinel.sentinel_extract import (
+from jobs.sentinel.extract import (
     EXTRACTION_PIPELINE_VERSION,
     MONTHLY_BUCKET_RE,
     ExtractionStatus,

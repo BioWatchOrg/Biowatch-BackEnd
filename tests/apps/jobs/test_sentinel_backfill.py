@@ -1,8 +1,8 @@
-"""Tests for sentinel.backfill."""
+"""Tests for jobs.sentinel.backfill."""
 
 import pytest
 
-from sentinel import BackfillReport, backfill_sentinel, month_range
+from jobs.sentinel import BackfillReport, backfill_sentinel, month_range
 
 
 def test_month_range_crosses_years():

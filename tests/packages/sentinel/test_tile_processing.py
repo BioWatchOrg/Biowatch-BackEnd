@@ -1,11 +1,12 @@
-"""Tests for sentinel.tile_processing — sans réseau (lecture simulée)."""
+"""Tests for sentinel.tile_processing — calcul pur, lecture simulée."""
+
+from dataclasses import dataclass
 
 import h3
 import numpy as np
 import pytest
 from affine import Affine
 
-from clients.planetary_computer_client.reader import TileStack
 from sentinel.tile_processing import MASKED_RATIO, block_composite, process_tile
 
 # Deux dates, deux versions de traitement : la même réflectance est encodée
@@ -63,20 +64,31 @@ TRANSFORM = Affine(20, 0, 448_000, 0, -20, 5_414_000)
 SHAPE = (100, 100)
 
 
-def _stack(chunk_px=32):
-    return TileStack(
-        tile="31UDQ",
-        epsg=EPSG,
-        transform=TRANSFORM,
-        shape=SHAPE,
-        baselines=BASELINES,
-        chunk_px=chunk_px,
-        dataset=None,  # type: ignore[arg-type]
-    )
+@dataclass(frozen=True)
+class FakeGrid:
+    """Grille minimale qui satisfait `sentinel.TileGrid` (pas de client, pas de réseau)."""
+
+    epsg: int = EPSG
+    transform: Affine = TRANSFORM
+    shape: tuple[int, int] = SHAPE
+    baselines: tuple[str, ...] = BASELINES
+    chunk_px: int = 32
+
+    def windows(self):
+        height, width = self.shape
+        return [
+            (slice(y, min(y + self.chunk_px, height)), slice(x, min(x + self.chunk_px, width)))
+            for y in range(0, height, self.chunk_px)
+            for x in range(0, width, self.chunk_px)
+        ]
+
+
+def _stack():
+    return FakeGrid()
 
 
 def _fake_read(calls):
-    def read(stack, window):
+    def read(window):
         calls.append(window)
         ys, xs = window
         return _block(shape=(ys.stop - ys.start, xs.stop - xs.start))
@@ -115,11 +127,3 @@ def test_process_tile_without_owned_cells_reads_nothing():
     result = process_tile(_stack(), [], read=_fake_read(calls))
     assert calls == []
     assert result.empty
-
-
-def test_reader_with_threads_binds_io_threads():
-    from sentinel.tile_processing import read_block, reader_with_threads
-
-    reader = reader_with_threads(4)
-    assert reader.func is read_block
-    assert reader.keywords == {"io_threads": 4}

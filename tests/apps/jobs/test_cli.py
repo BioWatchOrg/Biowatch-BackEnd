@@ -153,7 +153,7 @@ def _fake_backfill(monkeypatch, report):
 
 
 def test_backfill_sentinel_range(monkeypatch):
-    from sentinel import BackfillReport
+    from jobs.sentinel import BackfillReport
 
     seen = _fake_backfill(monkeypatch, BackfillReport())
     args = _backfill_args("--from", "2016-01", "--to", "2016-03", "--io_threads", "8")
@@ -168,7 +168,7 @@ def test_backfill_sentinel_range(monkeypatch):
 
 
 def test_backfill_sentinel_targeted_months(monkeypatch):
-    from sentinel import BackfillReport
+    from jobs.sentinel import BackfillReport
 
     seen = _fake_backfill(monkeypatch, BackfillReport())
     args = _backfill_args("--months", "2016-04, 2019-07")
@@ -177,7 +177,7 @@ def test_backfill_sentinel_targeted_months(monkeypatch):
 
 
 def test_backfill_sentinel_requires_a_range_or_months(monkeypatch):
-    from sentinel import BackfillReport
+    from jobs.sentinel import BackfillReport
 
     _fake_backfill(monkeypatch, BackfillReport())
     args = _backfill_args("--from", "2016-01")
@@ -187,7 +187,7 @@ def test_backfill_sentinel_requires_a_range_or_months(monkeypatch):
 
 def test_backfill_sentinel_exits_non_zero_with_retry_command(monkeypatch):
     """Les mois à relancer (échec ET incomplets) sont listés, avec la commande ciblée."""
-    from sentinel import BackfillReport
+    from jobs.sentinel import BackfillReport
 
     _fake_backfill(monkeypatch, BackfillReport(failed=["2019-07"], partial=["2016-02"]))
     args = _backfill_args("--from", "2016-01", "--to", "2019-12")

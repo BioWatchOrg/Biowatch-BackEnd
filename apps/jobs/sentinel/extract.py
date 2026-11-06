@@ -1,4 +1,12 @@
+"""Job extract_sentinel : orchestration lecture -> calcul -> écriture (ADR-004).
+
+Lit les images (clients.planetary_computer_client), calcule les indices par
+cellule (packages/sentinel, calcul pur) et écrit dans satellite_features_by_zone
+(clients.db), dans un job_run idempotent.
+"""
+
 import datetime
+import functools
 import logging
 import re
 import time
@@ -21,7 +29,7 @@ from clients import (
     tile_footprints,
     upsert,
 )
-from clients.planetary_computer_client.reader import DEFAULT_IO_THREADS, open_tile
+from clients.planetary_computer_client.reader import DEFAULT_IO_THREADS, open_tile, read_block
 from core import (
     AoiLabel,
     BucketFormat,
@@ -33,8 +41,7 @@ from core import (
     load_aoi,
 )
 from geo import H3Cell, assign_owner_tiles, cell_to_polygon, compute_h3_cells
-from sentinel.rows import to_feature_rows
-from sentinel.tile_processing import process_tile, reader_with_threads
+from sentinel import process_tile, to_feature_rows
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +94,8 @@ def extract_sentinel_data_by_aoi(
     composite tuile par tuile -> une ligne par cellule, en un seul upsert.
 
     - Une tuile illisible -> `record_zone_error` pour chacune de ses cellules
-      (run `partial`, reprise ciblée possible), les autres tuiles continuent.
+      (run `partial`), les autres tuiles continuent. Relancer le mois refait
+      tout le mois (pas seulement la tuile en échec).
     - Une cellule sans aucune image exploitable -> ligne écrite avec indices
       NULL et `is_valid_data = false` (trou explicite, pas une erreur).
     - Recherche STAC en échec -> le run entier échoue (`failed`, exception).
@@ -145,18 +153,23 @@ def extract_sentinel_data_by_aoi(
 
             aggregates: list[pd.DataFrame] = []
             failed_cells: set[H3Cell] = set()
-            read = reader_with_threads(io_threads)
             for tile, owned in sorted(owned_by_tile.items()):
                 tile_ctx = {**log_ctx, "tile": tile, "n_cells": len(owned)}
                 tile_started = time.monotonic()
                 try:
                     stack = open_tile(groups[tile], _region_of(owned))
-                    aggregates.append(process_tile(stack, owned, read=read))
+                    aggregates.append(
+                        process_tile(
+                            stack,
+                            owned,
+                            read=functools.partial(read_block, stack, io_threads=io_threads),
+                        )
+                    )
                 except PlanetaryComputerError as e:
                     record_zone_errors(run.run_id, owned, f"tile {tile}: {e}")
                     failed_cells.update(owned)
                     logger.warning(
-                        "tile extraction failed, its zones recorded for targeted retry",
+                        "tile extraction failed, its zones recorded, month will be partial",
                         extra={
                             "event": "sentinel.tile_error",
                             "context": {**tile_ctx, "error": str(e)},

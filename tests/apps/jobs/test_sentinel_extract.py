@@ -1,5 +1,5 @@
 """
-Tests for sentinel.sentinel_extract.extract_sentinel_data_by_aoi.
+Tests for jobs.sentinel.extract.extract_sentinel_data_by_aoi.
 
 `job_run`, `upsert` and `record_zone_errors` are mocked (same pattern as
 tests/packages/geo/test_generate_h3_grid.py) rather than hit a real Postgres:
@@ -21,9 +21,9 @@ import pandas as pd
 import pytest
 from shapely.geometry import Point, box
 
-import sentinel.sentinel_extract as sentinel_extract
+import jobs.sentinel.extract as sentinel_extract
 from clients import JobAlreadySucceeded, PlanetaryComputerError
-from sentinel import EXTRACTION_PIPELINE_VERSION, previous_month_bucket
+from jobs.sentinel import EXTRACTION_PIPELINE_VERSION, previous_month_bucket
 
 # Deux tuiles : WEST possède cellA et cellB, EAST possède cellC. cellD n'est
 # couverte par aucune tuile ce mois-là.
@@ -57,7 +57,13 @@ def _aggregates(cells):
 def calls(monkeypatch):
     """Remplace DB, recherche et lecture ; renvoie ce qui a été appelé."""
     recorded = SimpleNamespace(
-        job_run=[], upsert=[], zone_errors=[], search=[], opened=[], failing_tiles=set()
+        job_run=[],
+        upsert=[],
+        zone_errors=[],
+        search=[],
+        opened=[],
+        readers=[],
+        failing_tiles=set(),
     )
     run_id = uuid.uuid4()
 
@@ -78,6 +84,7 @@ def calls(monkeypatch):
         return SimpleNamespace(tile=tile, baselines=("05.11",))
 
     def fake_process_tile(stack, owned, read):
+        recorded.readers.append(read)
         return _aggregates(owned)
 
     monkeypatch.setattr(sentinel_extract, "job_run", fake_job_run)
@@ -219,3 +226,11 @@ def test_region_of_covers_the_cells():
     for cell in cells:
         lat, lng = h3.cell_to_latlng(cell)
         assert region.contains(Point(lng, lat))
+
+
+def test_tiles_are_read_with_the_requested_io_threads(calls):
+    sentinel_extract.extract_sentinel_data_by_aoi("idf", "2025-05", resolution=8, io_threads=4)
+    reader = calls.readers[0]
+    assert reader.func is sentinel_extract.read_block
+    assert reader.keywords == {"io_threads": 4}
+    assert reader.args[0].tile in {"WEST", "EAST"}  # lecture liée à la tuile ouverte
