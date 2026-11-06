@@ -169,3 +169,69 @@ PostgreSQL comptent, pas du code Python.
 À revoir si un troisième environnement apparaît (préprod, staging), ou si la prod quitte le
 modèle « un VPS, secrets via systemd » (conteneurs, secret manager) : le marqueur `.env.prod`
 n'aurait alors plus de sens et devrait être remplacé par un signal propre à cette plateforme.
+
+---
+
+## ADR-005 — Déploiement des jobs : compte CI à commande forcée, timers générés depuis le registre
+
+**Statut** : actif (ADR-004 est réservé à la source IUCN, PR #97)
+
+**Contexte**
+
+Les jobs doivent être déployés sur le VPS 1 par **une seule CI** et planifiés par des timers
+systemd (#27), sans qu'un nouveau job demande de toucher au workflow ni au serveur. La CI
+doit se connecter avec des droits limités et ne jamais voir les secrets de prod. #25 a créé
+`deploy`, seul compte autorisé à écrire le code, et prouve à chaque passage qu'il n'a ni
+shell, ni clé SSH, ni sudo.
+
+**Décision**
+
+1. **Un compte dédié à la CI, `biowatch-ci`**, distinct de `deploy`. Sa clé n'exécute qu'une
+   commande forcée (`restrict,command=…biowatch-ci-deploy`) qui accepte trois verbes :
+   `deploy <sha>`, `rollback [<sha>]`, `status`. Il a deux règles sudo, et seulement deux :
+   `biowatch-release` en tant que `deploy`, et `biowatch-install-timers` en root sans argument.
+2. **Le code arrive par `git archive` sur stdin** ; le VPS construit la release
+   (`uv sync --frozen`) dans `/opt/biowatch/releases/<sha>` et bascule le lien `app` de façon
+   atomique. Les 5 dernières releases restent disponibles pour un retour arrière immédiat.
+3. **Le registre est la source des timers** : chaque `Job` déclare `schedule` (expression
+   `OnCalendar`, ou `None`). La release active émet un manifeste `<job>\t<OnCalendar>`
+   (`python -m jobs.systemd`) que `biowatch-install-timers` (root) revalide entièrement avant
+   d'écrire les `biowatch-job@<job>.timer`.
+4. **Une seule unité de service, `biowatch-job@.service`**, installée par un membre via
+   `50-jobs-deploy.sh`, jamais par la CI. Elle fixe l'identité (`biowatch-jobs`), les secrets
+   (`EnvironmentFile=/etc/biowatch/jobs.env`) et le bac à sable.
+5. **`deploy` rejoint le groupe `biowatch`** : le setgid de `/opt/biowatch` (#25) est effacé
+   par le noyau au premier `chmod` d'un propriétaire hors du groupe (tar, uv en font), et le
+   code construit deviendrait illisible pour les jobs. Aucun droit gagné : seul
+   `/opt/biowatch`, qui appartient déjà à `deploy`, utilise ce groupe.
+
+**Pourquoi**
+
+- Rendre `deploy` joignable par SSH aurait demandé un vrai shell, une clé et du sudo : trois
+  exceptions aux garanties de #25, et un `40-service-users.sh` plein de cas particuliers.
+  Un compte de plus coûte moins cher que des invariants affaiblis.
+- Le manifeste ne transporte que des **données** (nom, fréquence), validées par root contre
+  une liste blanche de caractères et `systemd-analyze`. Une release compromise peut au pire
+  planifier un job existant à une autre heure ; elle ne peut pas créer de service, ni
+  changer l'utilisateur d'exécution, ni lancer quoi que ce soit en root.
+- Pousser l'archive plutôt que faire `git pull` sur le VPS : pas de jeton GitHub stocké sur le
+  serveur, et le VPS déploie exactement le commit validé par la CI.
+- Pas d'outil de déploiement (Ansible, Docker) : trois scripts bash relisibles suffisent pour
+  un VPS et une poignée de jobs, sans dépendance à apprendre.
+
+**Limites assumées**
+
+- La clé de la CI n'a pas de passphrase : qui la vole peut redéployer **un commit de son
+  choix**, donc exécuter du code en tant que `biowatch-jobs`. La protection est la commande
+  forcée et l'environnement GitHub `production` (approbation possible), pas la clé elle-même.
+- Le port SSH est ouvert au monde : les runners GitHub n'ont pas d'IP fixe.
+- Un job planifié se lance sans argument : un job paramétré expose une variante `*_scheduled`.
+- Modifier `biowatch-job@.service` (timeout, bac à sable) demande de rejouer `50-jobs-deploy.sh`
+  à la main : c'est voulu, ce fichier fixe les privilèges des jobs.
+
+**Remise en cause**
+
+À revoir si les jobs quittent systemd (conteneurs, orchestrateur), si le nombre de VPS
+dépasse un, ou si un job a besoin d'un timeout ou d'une identité propre : ajouter alors le
+champ au `Job` et au manifeste, validé de la même façon, plutôt qu'une unité par job écrite
+à la main.

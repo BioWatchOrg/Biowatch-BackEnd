@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# biowatch-install-timers — synchronise les timers systemd des jobs (#27).
+#
+# S'exécute en ROOT, via l'unique règle sudo root du compte CI. Lit sur stdin
+# le manifeste produit par la release active (`python -m jobs.systemd`) :
+#
+#   <job>\t<OnCalendar>      une ligne par job planifié
+#
+# Le manifeste vient de code déployé par la CI : il est traité comme NON FIABLE.
+# Il ne fournit que deux valeurs par ligne, validées ici ; le contenu des
+# unités est figé dans ce script. Impossible, par ce chemin, de créer un
+# service arbitraire ou de changer l'identité d'exécution des jobs.
+#
+# Effet : crée/met à jour biowatch-job@<job>.timer pour chaque ligne, désactive
+# et supprime les timers des jobs qui ne sont plus planifiés. Valide TOUT le
+# manifeste avant de toucher à quoi que ce soit.
+#
+# Installé par infra/vps/50-jobs-deploy.sh, qui remplace les @…@.
+
+set -Eeuo pipefail
+umask 022
+
+readonly UNIT_DIR="/etc/systemd/system"
+readonly UNIT_TEMPLATE="@JOBS_UNIT_TEMPLATE@"
+readonly MAX_JOBS=100
+# Mêmes règles que jobs.registry (JOB_NAME_PATTERN, SCHEDULE_PATTERN).
+readonly NAME_RE='^[a-z][a-z0-9_]{0,62}$'
+readonly CAL_RE='^[A-Za-z0-9 :*/,.~+_-]{1,100}$'
+
+log() { printf '%s [timers] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >&2; }
+die() { log "ERREUR : $*"; exit 1; }
+
+[[ "$UNIT_TEMPLATE" != @* ]] || die "script non installé (lancer infra/vps/50-jobs-deploy.sh)"
+(( EUID == 0 )) || die "doit tourner en root"
+(( $# == 0 )) || die "aucun argument attendu : manifeste sur stdin"
+[[ -f "$UNIT_TEMPLATE" ]] || die "${UNIT_TEMPLATE} absent — lancer 50-jobs-deploy.sh"
+
+# ── Lecture et validation complète ───────────────────────────────────────
+
+declare -A wanted=()
+n=0
+while IFS= read -r line || [[ -n "$line" ]]; do
+  n=$((n + 1))
+  [[ -n "$line" ]] || continue
+  (( ${#wanted[@]} < MAX_JOBS )) || die "plus de ${MAX_JOBS} jobs planifiés"
+  # Le contenu d'une ligne invalide n'est jamais réaffiché : seul son numéro.
+  [[ "$line" == *$'\t'* ]] || die "ligne ${n} : séparateur tabulation absent"
+  name="${line%%$'\t'*}"
+  cal="${line#*$'\t'}"
+  [[ "$name" =~ $NAME_RE ]] || die "ligne ${n} : nom de job invalide"
+  [[ "$cal" =~ $CAL_RE ]]   || die "ligne ${n} (${name}) : fréquence invalide"
+  [[ -z "${wanted[$name]+x}" ]] || die "ligne ${n} : job ${name} en double"
+  systemd-analyze calendar "$cal" >/dev/null 2>&1 \
+    || die "ligne ${n} (${name}) : OnCalendar refusé par systemd-analyze"
+  wanted[$name]="$cal"
+done
+
+log "${#wanted[@]} job(s) planifié(s) dans le manifeste"
+
+# ── Suppression des timers orphelins ─────────────────────────────────────
+
+shopt -s nullglob
+for f in "${UNIT_DIR}"/biowatch-job@*.timer; do
+  unit="$(basename "$f")"
+  name="${unit#biowatch-job@}"
+  name="${name%.timer}"
+  [[ -n "${wanted[$name]+x}" ]] && continue
+  # disable --now arrête le timer ; un run en cours du service n'est pas tué.
+  systemctl disable --now "$unit" 2>/dev/null || true
+  rm -f -- "$f"
+  log "timer retiré : ${unit} (job plus planifié)"
+done
+
+# ── Écriture des timers ──────────────────────────────────────────────────
+
+render_timer() {
+  local name="$1" cal="$2"
+  cat <<EOF
+# Généré par biowatch-install-timers (#27) à partir du registre des jobs.
+# NE PAS ÉDITER : réécrit à chaque déploiement. Changer la fréquence = changer
+# \`schedule\` dans apps/jobs/definitions.py.
+[Unit]
+Description=BioWatch - planification du job ${name}
+
+[Timer]
+OnCalendar=${cal}
+# Rattrape un déclenchement manqué (VPS éteint à l'heure prévue).
+Persistent=true
+Unit=biowatch-job@${name}.service
+
+[Install]
+WantedBy=timers.target
+EOF
+}
+
+changed=()
+for name in "${!wanted[@]}"; do
+  unit="biowatch-job@${name}.timer"
+  tmp="$(mktemp)"
+  render_timer "$name" "${wanted[$name]}" > "$tmp"
+  if cmp -s "$tmp" "${UNIT_DIR}/${unit}"; then
+    rm -f -- "$tmp"
+    continue
+  fi
+  install -m 644 -o root -g root "$tmp" "${UNIT_DIR}/${unit}"
+  rm -f -- "$tmp"
+  changed+=("$unit")
+  log "timer écrit : ${unit} (OnCalendar=${wanted[$name]})"
+done
+
+systemctl daemon-reload
+
+for name in "${!wanted[@]}"; do
+  systemctl enable --quiet "biowatch-job@${name}.timer"
+done
+# Un timer actif ne recalcule son prochain déclenchement qu'au redémarrage.
+for unit in "${changed[@]}"; do
+  systemctl restart "$unit"
+done
+
+if (( ${#wanted[@]} > 0 )); then
+  systemctl list-timers --all --no-pager 'biowatch-job@*' >&2
+fi
+log "timers synchronisés (${#changed[@]} modifié(s))"

@@ -119,6 +119,10 @@ TEST_DATABASE_URL=postgresql+psycopg://biowatch:<mot de passe de .env.dev>@127.0
 ### Enregistrer un nouveau job
 Il faut enregistrer le nouveau job dans : apps/jobs/definitions.py
 
+Pour qu'il tourne automatiquement en prod, renseigner sa fréquence (`schedule`, format
+`OnCalendar` systemd, ex. `"*-*-* 02:30:00 Europe/Paris"`). Le déploiement sur `main`
+crée son timer, sans autre modification. Voir `infra/vps/README.md`, « Déploiement des jobs ».
+
 ---
 
 

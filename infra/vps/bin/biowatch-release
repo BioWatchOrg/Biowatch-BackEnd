@@ -1,0 +1,217 @@
+#!/usr/bin/env bash
+# biowatch-release — construit et active les releases du code des jobs (#27).
+#
+# S'exécute en tant que deploy, seul compte autorisé à écrire dans
+# /opt/biowatch. Appelé par biowatch-ci-deploy via « sudo -u deploy » ; jamais
+# directement par la CI.
+#
+#   stage <sha>       lit une archive tar.gz sur stdin, construit releases/<sha>
+#   activate <sha>    bascule app → releases/<sha> (atomique)
+#   rollback [<sha>]  réactive <sha>, par défaut la release précédente
+#   manifest          manifeste des timers de la release active (stdout)
+#   prune             ne garde que les @RELEASES_KEPT@ releases les plus récentes
+#   status            release active et releases disponibles
+#
+# Installé par infra/vps/50-jobs-deploy.sh, qui remplace les @…@.
+
+set -Eeuo pipefail
+# Groupe en lecture, rien pour les autres : /opt/biowatch est setgid biowatch,
+# tout ce qui est créé ici devient lisible par biowatch-jobs, jamais inscriptible.
+umask 027
+
+readonly APP_DIR="@APP_DIR@"
+readonly RELEASES_DIR="@RELEASES_DIR@"
+readonly APP_CURRENT="@APP_CURRENT@"
+readonly PYTHON_DIR="@PYTHON_DIR@"
+readonly RELEASES_KEPT="@RELEASES_KEPT@"
+readonly UV_BIN="@UV_BIN@"
+readonly SERVICE_GROUP="@SERVICE_GROUP@"
+readonly DEPLOY_HOME="@DEPLOY_HOME@"
+readonly HISTORY="${RELEASES_DIR}/.history"
+
+# Python lancé par deploy (fumée, manifeste) n'écrit jamais de .pyc : il en
+# poserait dans l'interpréteur partagé, avec le groupe de deploy, illisibles
+# par les jobs. Le bytecode des dépendances est compilé par uv (--compile-bytecode).
+export PYTHONDONTWRITEBYTECODE=1
+
+log() { printf '%s [release] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >&2; }
+die() { log "ERREUR : $*"; exit 1; }
+
+[[ "$APP_DIR" != @* ]] || die "script non installé (lancer infra/vps/50-jobs-deploy.sh)"
+# sudo garde le répertoire courant de l'appelant (le home de biowatch-ci,
+# illisible par deploy) : find, uv et tar échoueraient à y revenir.
+cd /
+[[ "$(id -un)" == "$(stat -c '%U' "$APP_DIR")" ]] \
+  || die "doit tourner sous le propriétaire de ${APP_DIR} (sudo -u deploy)"
+id -nG | tr ' ' '\n' | grep -qx "$SERVICE_GROUP" \
+  || die "$(id -un) doit être membre de ${SERVICE_GROUP} — rejouer 50-jobs-deploy.sh"
+
+check_sha() {
+  [[ "${1:-}" =~ ^[0-9a-f]{40}$ ]] || die "SHA invalide : 40 caractères hexadécimaux attendus"
+}
+
+release_dir() { printf '%s/%s' "$RELEASES_DIR" "$1"; }
+is_built() { [[ -f "$(release_dir "$1")/.complete" ]]; }
+
+current_sha() {
+  local target
+  target="$(readlink "$APP_CURRENT" 2>/dev/null)" || return 0
+  basename "$target"
+}
+
+# ── stage ────────────────────────────────────────────────────────────────
+
+cmd_stage() {
+  local sha="$1" rel
+  check_sha "$sha"
+  rel="$(release_dir "$sha")"
+
+  if is_built "$sha"; then
+    # Redéploiement du même commit : rien à reconstruire. L'archive est
+    # consommée quand même, sinon le client SSH recevrait un tube fermé.
+    cat >/dev/null
+    log "release ${sha} déjà construite — réutilisée"
+    return 0
+  fi
+
+  # Le venv contient des chemins absolus (shebangs, .pth éditables) : il doit
+  # être construit À SON EMPLACEMENT FINAL, pas déplacé après coup. Une
+  # construction interrompue ne pose pas .complete et sera refaite.
+  rm -rf -- "$rel"
+  mkdir -- "$rel"
+  log "extraction de l'archive dans ${rel}"
+  tar -xzf - -C "$rel" --no-same-owner --no-same-permissions
+  [[ -f "${rel}/pyproject.toml" && -f "${rel}/uv.lock" ]] \
+    || die "archive incomplète : pyproject.toml ou uv.lock absent"
+
+  # Marqueur prod (ADR-003) : sans lui, `--env prod` refuse de démarrer. Aucun
+  # secret ici — ils restent dans /etc/biowatch/jobs.env, lus par systemd.
+  printf '%s\n' "# Marqueur prod (ADR-003), posé par biowatch-release. Aucun secret ici :" \
+    "# ils sont dans /etc/biowatch/jobs.env, injectés par systemd." > "${rel}/.env.prod"
+
+  log "construction du venv (uv ${UV_BIN})"
+  # UV_LINK_MODE=copy : par défaut uv crée des liens durs vers son cache, qui
+  # garderaient le groupe et les droits du cache (illisibles par biowatch-jobs).
+  # UV_PYTHON_INSTALL_DIR : l'interpréteur doit être lisible par biowatch-jobs,
+  # donc sous /opt/biowatch et pas dans le home de deploy.
+  (
+    cd "$rel"
+    env HOME="$DEPLOY_HOME" \
+        UV_LINK_MODE=copy \
+        UV_PYTHON_INSTALL_DIR="$PYTHON_DIR" \
+        UV_CACHE_DIR="${DEPLOY_HOME}/.cache/uv" \
+        UV_PYTHON_PREFERENCE=only-managed \
+        "$UV_BIN" sync --frozen --no-dev --compile-bytecode --no-progress
+  )
+
+  # Fumée : importer tous les jobs (le CLI construit un sous-parser par job).
+  # Ne touche ni la base ni l'environnement prod.
+  "${rel}/.venv/bin/biowatch-jobs" --help >/dev/null \
+    || die "le CLI de la release ne démarre pas"
+
+  assert_readable_by_group "$rel" "$PYTHON_DIR"
+
+  : > "${rel}/.complete"
+  log "release ${sha} construite"
+}
+
+# Le setgid de /opt/biowatch ne suffit pas : tar et uv repositionnent les
+# droits des répertoires qu'ils créent, ce qui efface le bit, et ce qui est
+# créé dessous ensuite prend le groupe de deploy. On repose groupe, droits et
+# setgid explicitement, puis on vérifie plutôt que de supposer : un seul
+# fichier illisible et le job plante en prod.
+assert_readable_by_group() {
+  local bad
+  chgrp -hR "$SERVICE_GROUP" -- "$@"
+  chmod -R g+rX,o-rwx -- "$@"
+  find "$@" -type d -exec chmod g+s {} +
+  bad="$(find "$@" ! -type l ! -group "$SERVICE_GROUP" -print -quit)"
+  [[ -z "$bad" ]] || die "${bad} n'appartient pas au groupe ${SERVICE_GROUP} (illisible par les jobs)"
+}
+
+# ── activate / rollback ──────────────────────────────────────────────────
+
+cmd_activate() {
+  local sha="$1" tmp
+  check_sha "$sha"
+  is_built "$sha" || die "release ${sha} absente ou incomplète"
+
+  if [[ -e "$APP_CURRENT" && ! -L "$APP_CURRENT" ]]; then
+    die "${APP_CURRENT} existe et n'est pas un lien symbolique — à déplacer à la main"
+  fi
+
+  # Lien relatif créé à côté puis renommé : rename(2) est atomique, un job qui
+  # démarre voit l'ancienne ou la nouvelle release, jamais un état mixte.
+  tmp="${APP_DIR}/.app.$$"
+  ln -sfn "releases/${sha}" "$tmp"
+  mv -Tf -- "$tmp" "$APP_CURRENT"
+  printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$sha" >> "$HISTORY"
+  log "release active : ${sha}"
+}
+
+cmd_rollback() {
+  local sha="${1:-}" current
+  current="$(current_sha)"
+  if [[ -z "$sha" ]]; then
+    # Dernière release activée avant l'actuelle et encore présente.
+    sha="$(awk '{print $2}' "$HISTORY" 2>/dev/null | tac \
+           | while read -r s; do
+               [[ "$s" != "$current" ]] && is_built "$s" && { echo "$s"; break; }
+             done || true)"
+    [[ -n "$sha" ]] || die "aucune release précédente disponible"
+  fi
+  [[ "$sha" != "$current" ]] || die "${sha} est déjà la release active"
+  log "retour arrière : ${current:-aucune} → ${sha}"
+  cmd_activate "$sha"
+}
+
+# ── manifest / prune / status ────────────────────────────────────────────
+
+cmd_manifest() {
+  [[ -L "$APP_CURRENT" ]] || die "aucune release active"
+  "${APP_CURRENT}/.venv/bin/python" -m jobs.systemd
+}
+
+cmd_prune() {
+  local current keep dir name
+  current="$(current_sha)"
+  # Les RELEASES_KEPT dernières releases activées, plus l'active.
+  # `|| true` : head ferme le tube tôt, pipefail ferait échouer l'affectation.
+  keep="$( { awk '{print $2}' "$HISTORY" 2>/dev/null | tac | awk '!seen[$0]++' \
+             | head -n "$RELEASES_KEPT"; } || true; echo "$current")"
+  for dir in "$RELEASES_DIR"/*/; do
+    [[ -d "$dir" ]] || continue
+    name="$(basename "$dir")"
+    [[ "$name" =~ ^[0-9a-f]{40}$ ]] || continue
+    grep -qx "$name" <<<"$keep" && continue
+    rm -rf -- "$dir"
+    log "release supprimée : ${name}"
+  done
+}
+
+cmd_status() {
+  local current dir name
+  current="$(current_sha)"
+  printf 'release active : %s\n' "${current:-aucune}"
+  printf 'releases disponibles :\n'
+  for dir in "$RELEASES_DIR"/*/; do
+    [[ -d "$dir" ]] || continue
+    name="$(basename "$dir")"
+    printf '  %s %s%s\n' "$(stat -c '%y' "$dir" | cut -d. -f1)" "$name" \
+      "$( is_built "$name" || echo ' (incomplète)'; [[ "$name" == "$current" ]] && echo ' ← active' || true)"
+  done
+}
+
+# ── dispatch ─────────────────────────────────────────────────────────────
+
+verb="${1:-}"
+shift || true
+case "$verb" in
+  stage)    (( $# == 1 )) || die "usage : stage <sha>";        cmd_stage "$1" ;;
+  activate) (( $# == 1 )) || die "usage : activate <sha>";     cmd_activate "$1" ;;
+  rollback) (( $# <= 1 )) || die "usage : rollback [<sha>]";   cmd_rollback "${1:-}" ;;
+  manifest) (( $# == 0 )) || die "usage : manifest";           cmd_manifest ;;
+  prune)    (( $# == 0 )) || die "usage : prune";              cmd_prune ;;
+  status)   (( $# == 0 )) || die "usage : status";             cmd_status ;;
+  *) die "commande inconnue : stage | activate | rollback | manifest | prune | status" ;;
+esac

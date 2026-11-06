@@ -1,0 +1,37 @@
+# Unité unique de TOUS les jobs BioWatch (#27) : une instance par job.
+#
+#   systemctl start biowatch-job@init_db        lancer un job à la main
+#   journalctl -u biowatch-job@init_db -e       ses logs (JSON)
+#
+# Installée par infra/vps/50-jobs-deploy.sh (les @…@ sont remplacés par les
+# valeurs de config.sh), JAMAIS par la CI : c'est elle qui fixe l'identité et
+# le bac à sable des jobs. La CI ne génère que les timers
+# biowatch-job@<job>.timer, à partir de la fréquence déclarée dans le registre.
+# Modifier ce fichier = rejouer 50-jobs-deploy.sh sur le VPS.
+[Unit]
+Description=BioWatch - job %i
+Wants=network-online.target
+After=network-online.target postgresql.service
+
+[Service]
+Type=oneshot
+User=biowatch-jobs
+Group=biowatch-jobs
+# Secrets prod, lus par systemd en root avant le changement d'identité : le job
+# reçoit ses variables sans pouvoir lire le fichier (cf. #25, ADR-003).
+EnvironmentFile=@JOBS_ENV_FILE@
+WorkingDirectory=@APP_CURRENT@
+# Le venv est construit par deploy : pas de « uv run », qui tenterait
+# d'écrire dans /opt/biowatch. --env prod explicite : jamais le défaut dev.
+ExecStart=@APP_CURRENT@/.venv/bin/biowatch-jobs --env prod %i
+# Oneshot : sans limite explicite, un job bloqué ne serait jamais arrêté.
+TimeoutStartSec=6h
+# Le VPS 1 sert aussi l'API : les jobs passent après.
+Nice=10
+IOSchedulingClass=idle
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=@JOBS_STATE_DIR@ @JOBS_LOG_DIR@
