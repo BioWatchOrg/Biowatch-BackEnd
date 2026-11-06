@@ -444,6 +444,16 @@ Un spike (2026-10-23, script jetable non versionné) a mesuré la faisabilité s
   agrégation par blocs), `packages/sentinel/` (calcul pur : pixels, indices, moyennes par
   cellule), `apps/jobs/sentinel/` (orchestration : job mensuel et backfill). Le client
   Sentinel Hub est supprimé (historique git : `e5115b3`).
+- **Placement du code (ajouté au `CLAUDE.md`, retour de review #99)** : `packages/sentinel`
+  est un package de **calcul pur**, au même niveau que `scoring` (dépend de `core` et `geo`
+  seulement, ni DB ni réseau : la lecture des blocs lui est passée en paramètre). Le job qui
+  orchestre lecture -> calcul -> écriture vit dans `apps/jobs/sentinel/`, comme le prévoit la
+  règle « c'est `apps/jobs` qui orchestre ». Pourquoi un package dédié plutôt que `scoring` :
+  ce calcul produit des **features** d'une source (comme `osm_features_by_zone` en aura),
+  pas un score ; le mélanger à `scoring` brouillerait les deux rôles. Le sens des
+  dépendances du `CLAUDE.md` est inchangé : le graphe gagne un nœud, sans nouvelle flèche.
+  Modèle pour les prochaines sources raster : un package de calcul pur par source, son job
+  dans `apps/jobs/<source>/`. **À valider en équipe** (modifie une règle forte du `CLAUDE.md`).
 - `source_version` = `2.0.0` : les lignes 1.0.0 (Sentinel Hub) ne sont pas écrasées.
 - **Toutes les cellules de l'AOI ont une ligne chaque mois.** Une cellule sans aucune image
   exploitable (aucune scène, ou toujours masquée) est écrite avec indices NULL,
