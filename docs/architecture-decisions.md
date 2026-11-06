@@ -539,6 +539,27 @@ PostgreSQL comptent, pas du code Python.
   son env. L'API devra appeler `load_env_file(resolve_env())` à son démarrage, et ne jamais
   pouvoir tomber sur `prod` par défaut.
 
+**Exception : backfill depuis un poste vers la base de prod**
+
+Les backfills longs (ex. Sentinel-2, 25 à 35 h) sont trop lourds pour le VPS, qui sert aussi la
+base et l'API. Par exception assumée, ils tournent depuis un poste, vers la base de prod, à
+travers un tunnel SSH :
+
+1. Ouvrir le tunnel : `ssh -4 -p 50022 -N -L 15432:127.0.0.1:5432 <user>@<IP_DU_VPS>`.
+2. Créer **temporairement** `.env.prod` à la racine du dépôt (mode 600), avec les identifiants
+   de `biowatch_jobs` (sur le VPS : `sudo cat /etc/biowatch/db-jobs.env`) et
+   `POSTGRES_HOST=127.0.0.1`, `POSTGRES_PORT=15432`.
+3. Lancer avec `--env prod` (le défaut `dev` refuse une base `*_prod`) :
+   `caffeinate -i uv run biowatch-jobs --env prod backfill_sentinel --aoi idf --from 2016-01 --to <mois>`.
+4. **Supprimer `.env.prod` dès la fin**, même en cas d'échec — la procédure du README le fait
+   avec un `trap`.
+
+Aucun code ne change : les deux filets restent actifs. Le marqueur est créé volontairement, et
+le contrôle du suffixe porte sur le nom de la base, pas sur l'hôte : `biowatch_prod` via
+`127.0.0.1:15432` passe en `prod` et reste refusé en `dev`. Exception limitée aux backfills,
+et temporaire. `.env.prod` est gitignoré, mais ne doit jamais rester sur un poste : tant qu'il
+existe, un `--env prod` lancé par erreur avec le tunnel ouvert écrirait en prod.
+
 **Remise en cause**
 
 À revoir si un troisième environnement apparaît (préprod, staging), ou si la prod quitte le
