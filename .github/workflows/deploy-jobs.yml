@@ -7,7 +7,7 @@ name: Deploy jobs
 #
 # La CI ne voit aucun secret applicatif : elle n'a qu'une clé SSH restreinte à
 # une commande forcée (biowatch-ci-deploy). Les secrets prod restent dans
-# /etc/biowatch/jobs.env, sur le VPS. Procédure complète et retour arrière :
+# /etc/biowatch/ (jobs.env, db-jobs.env), sur le VPS. Procédure complète et retour arrière :
 # infra/vps/README.md, section « Déploiement des jobs ».
 
 on:

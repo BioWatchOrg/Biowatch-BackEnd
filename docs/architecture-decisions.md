@@ -501,7 +501,7 @@ PostgreSQL comptent, pas du code Python.
    `--env` > `BIOWATCH_ENV` > `dev`).
 2. **Prod exige la présence de `<racine du dépôt>/.env.prod`** (`ENV_FILE_REQUIRED`). Sur le
    VPS, c'est un **marqueur** posé par le déploiement à côté du code, sans secret : les secrets
-   prod restent dans `/etc/biowatch/jobs.env`, lus par systemd, jamais dans un fichier lisible
+   prod restent dans `/etc/biowatch/` (`jobs.env`, `db-jobs.env`), lus par systemd, jamais dans un fichier lisible
    par le code. Sur un poste de dev, le fichier n'existe pas, donc `--env prod` s'arrête avant
    toute lecture de variable de connexion.
 3. **Le nom de la base doit finir par `_<env>`** (`biowatch_dev` / `biowatch_prod`), vérifié par
@@ -575,7 +575,9 @@ shell, ni clé SSH, ni sudo.
    d'écrire les `biowatch-job@<job>.timer` et les surcharges de plafond mémoire.
 4. **Une seule unité de service, `biowatch-job@.service`**, installée par un membre via
    `60-jobs-deploy.sh`, jamais par la CI. Elle fixe l'identité (`biowatch-jobs`), les secrets
-   (`EnvironmentFile=/etc/biowatch/jobs.env`) et le bac à sable.
+   (`EnvironmentFile=` : `jobs.env` pour les réglages, puis `db-jobs.env` posé par #23 pour
+   les identifiants du rôle `biowatch_jobs`), l'attente de `biowatch-postgres.service` et le
+   bac à sable.
 5. **`deploy` rejoint le groupe `biowatch`** : le setgid de `/opt/biowatch` (#25) est effacé
    par le noyau au premier `chmod` d'un propriétaire hors du groupe (tar, uv en font), et le
    code construit deviendrait illisible pour les jobs. Aucun droit gagné : seul

@@ -219,22 +219,22 @@ Les jobs écrivent leurs artefacts sous `BIOWATCH_DATA_ROOT/<env>` : dans
 `/etc/biowatch/jobs.env`, poser `BIOWATCH_DATA_ROOT=/var/lib/biowatch/jobs`
 (le défaut `data/` tomberait dans `/opt/biowatch/app`, en lecture seule).
 
-### Environnement prod : ce que `/etc/biowatch/jobs.env` doit contenir
+### Environnement prod : deux fichiers, deux propriétaires
 
-```ini
-BIOWATCH_ENV=prod
-BIOWATCH_DATA_ROOT=/var/lib/biowatch/jobs
-POSTGRES_USER=...
-POSTGRES_PASSWORD=...
-POSTGRES_DB=biowatch_prod      # le nom DOIT finir par _prod, sinon refus de connexion
-POSTGRES_HOST=127.0.0.1
-POSTGRES_PORT=5432
-```
+`biowatch-job@.service` lit les deux, dans cet ordre (le dernier gagne) :
+
+| Fichier | Posé par | Contenu |
+|---|---|---|
+| `/etc/biowatch/jobs.env` | `60-jobs-deploy.sh` (#27) | `BIOWATCH_ENV=prod`, `BIOWATCH_DATA_ROOT=/var/lib/biowatch/jobs`, `LOG_LEVEL` |
+| `/etc/biowatch/db-jobs.env` | `55-postgres.sh` (#23) | `POSTGRES_*` du rôle `biowatch_jobs`, base `biowatch_prod` (le nom DOIT finir par `_prod`, sinon refus de connexion) |
+
+Les deux sont `root 600` : ne jamais mettre de `POSTGRES_*` dans `jobs.env`, ils
+seraient écrasés par ceux de #23.
 
 Le code exige en plus la présence de **`/opt/biowatch/app/.env.prod`** pour
 démarrer en prod (`core.config.ENV_FILE_REQUIRED`). C'est un **marqueur**, posé
 par `deploy` à côté du code, pas un fichier de secrets. Les secrets restent
-dans `/etc/biowatch/jobs.env`, lus par systemd, et gagnent sur le fichier
+dans `/etc/biowatch/`, lus par systemd, et gagnent sur le fichier
 (`override=False`). Son absence sur un poste de dev est ce qui fait échouer un
 `--env prod` lancé par erreur — ne jamais le créer ailleurs que sur le VPS.
 
@@ -433,11 +433,14 @@ et jamais par la CI. Une instance par job : `biowatch-job@<job>.service`.
 
 ### Mise en place (une fois)
 
+0. Prérequis : la base prod est en place (`55-postgres.sh`, #23), ce qui pose
+   `/etc/biowatch/db-jobs.env` et l'unité `biowatch-postgres.service` que les jobs
+   attendent au démarrage.
 1. Générer la clé de la CI : [`keys/ci/README.md`](keys/ci/README.md).
 2. Sur le VPS : `./60-jobs-deploy.sh --dry-run` puis `./60-jobs-deploy.sh`.
 3. Si le script signale `biowatch-ci absent de AllowGroups` : rejouer
    `./20-harden-ssh.sh` (même procédure qu'au premier passage, filet armé).
-4. Compléter `/etc/biowatch/jobs.env` (`sudoedit`) une fois la base prod créée (#23).
+4. Vérifier `/etc/biowatch/jobs.env` (posé depuis le modèle, sans secret).
 5. GitHub → Settings → Environments → `production`, secrets :
 
    | Secret | Valeur |
@@ -448,6 +451,7 @@ et jamais par la CI. Une instance par job : `biowatch-job@<job>.service`.
    | `VPS_DEPLOY_KEY` | clé **privée** de la CI |
 
 6. Actions → `Deploy jobs` → Run workflow (branche `main`, champ vide).
+7. Initialiser le schéma une fois le code déployé : `sudo systemctl start biowatch-job@init_db`.
 
 Aucun secret applicatif ne passe par GitHub : la CI n'a que la clé de déploiement.
 
@@ -491,6 +495,7 @@ Job avec arguments (même identité, mêmes secrets, même bac à sable) :
 ```bash
 sudo systemd-run --wait --collect --unit=biowatch-job-manual \
   -p User=biowatch-jobs -p EnvironmentFile=/etc/biowatch/jobs.env \
+  -p EnvironmentFile=/etc/biowatch/db-jobs.env \
   -p WorkingDirectory=/opt/biowatch/app \
   /opt/biowatch/app/.venv/bin/biowatch-jobs --env prod generate_h3_grid --aoi idf
 ```

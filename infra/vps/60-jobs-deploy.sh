@@ -8,7 +8,8 @@
 #   uv              épinglé, pour construire les releases
 #   releases/       une release par commit, app → releases/<sha>
 #   biowatch-job@   unité systemd unique des jobs (identité, bac à sable)
-#   jobs.env        secrets prod, lus par systemd — posé vide s'il manque
+#   jobs.env        réglages prod des jobs, lus par systemd — posé s'il manque
+#                   (les identifiants DB sont dans db-jobs.env, posé par 55-postgres.sh)
 #
 # Ce script ne modifie pas sshd : le groupe CI doit être ajouté à AllowGroups
 # en rejouant 20-harden-ssh.sh (filet armé). Il le vérifie et le signale.
@@ -51,7 +52,7 @@ INSTALL_TIMERS_BIN="${SBIN_DIR}/biowatch-install-timers"
 TEMPLATE_VARS=(
   APP_DIR RELEASES_DIR APP_CURRENT PYTHON_DIR RELEASES_KEPT UV_BIN
   SERVICE_GROUP DEPLOY_ACCOUNT DEPLOY_HOME CI_HOME SBIN_DIR
-  JOBS_UNIT_TEMPLATE JOBS_ENV_FILE JOBS_STATE_DIR JOBS_LOG_DIR
+  JOBS_UNIT_TEMPLATE JOBS_ENV_FILE JOBS_DB_ENV_FILE JOBS_STATE_DIR JOBS_LOG_DIR
 )
 
 # ── Préconditions ────────────────────────────────────────────────────────
@@ -277,21 +278,28 @@ install_unit() {
 }
 
 ensure_jobs_env() {
-  step "Secrets prod (${JOBS_ENV_FILE})"
+  step "Configuration prod (${JOBS_ENV_FILE}, ${JOBS_DB_ENV_FILE})"
   if [[ ! -f "$JOBS_ENV_FILE" ]]; then
     run install -m 600 -o root -g root "${INFRA_ROOT}/systemd/jobs.env.example" "$JOBS_ENV_FILE"
     done_ok "${JOBS_ENV_FILE} créé depuis le modèle"
-    warn "à compléter À LA MAIN (mot de passe de la base, cf. #23) : sudoedit ${JOBS_ENV_FILE}"
-    return 0
+  else
+    # Jamais réécrit : il a pu être ajusté à la main. On ne corrige que ses droits.
+    run chown root:root "$JOBS_ENV_FILE"
+    run chmod 600 "$JOBS_ENV_FILE"
+    grep -qx "BIOWATCH_DATA_ROOT=${JOBS_STATE_DIR}" "$JOBS_ENV_FILE" \
+      || warn "BIOWATCH_DATA_ROOT=${JOBS_STATE_DIR} absent de ${JOBS_ENV_FILE} (le code est en lecture seule)"
+    grep -q '^POSTGRES_' "$JOBS_ENV_FILE" \
+      && warn "${JOBS_ENV_FILE} contient des POSTGRES_* : ignorés (écrasés par ${JOBS_DB_ENV_FILE}), à retirer"
+    ok "${JOBS_ENV_FILE} présent (root 600)"
   fi
-  # Jamais réécrit : il contient les vrais secrets. On ne corrige que ses droits.
-  run chown root:root "$JOBS_ENV_FILE"
-  run chmod 600 "$JOBS_ENV_FILE"
-  grep -qx "BIOWATCH_DATA_ROOT=${JOBS_STATE_DIR}" "$JOBS_ENV_FILE" \
-    || warn "BIOWATCH_DATA_ROOT=${JOBS_STATE_DIR} absent de ${JOBS_ENV_FILE} (le code est en lecture seule)"
-  grep -q 'change-me' "$JOBS_ENV_FILE" \
-    && warn "${JOBS_ENV_FILE} contient encore « change-me » : à compléter"
-  ok "${JOBS_ENV_FILE} présent (root 600)"
+
+  # Propriété de #23 : lu, jamais créé ni modifié ici. Sans lui, chaque job
+  # échoue au démarrage (EnvironmentFile= obligatoire), ce qui est voulu.
+  if [[ -f "$JOBS_DB_ENV_FILE" ]]; then
+    ok "${JOBS_DB_ENV_FILE} présent (identifiants DB, #23)"
+  else
+    warn "${JOBS_DB_ENV_FILE} absent : lancer 55-postgres.sh (#23) — les jobs ne démarreront pas sans lui"
+  fi
 }
 
 # ── Preuves ──────────────────────────────────────────────────────────────
@@ -396,7 +404,8 @@ Reste à faire (voir « Déploiement des jobs » dans infra/vps/README.md) :
 
   1. Secrets GitHub (environnement « production ») : VPS_HOST, VPS_SSH_PORT,
      VPS_KNOWN_HOSTS, VPS_DEPLOY_KEY (clé PRIVÉE de ${CI_KEY_FILE}).
-  2. Compléter ${JOBS_ENV_FILE} une fois la base prod créée (#23).
-  3. Lancer le workflow « Deploy jobs » (Actions → Run workflow, branche main).
+  2. Base prod : 55-postgres.sh (#23) doit avoir posé ${JOBS_DB_ENV_FILE}.
+  3. Lancer le workflow « Deploy jobs » (Actions → Run workflow, branche main),
+     puis initialiser le schéma : sudo systemctl start biowatch-job@init_db
 
 EOF

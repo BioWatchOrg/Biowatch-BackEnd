@@ -85,9 +85,9 @@ cmd_stage() {
     || die "archive incomplète : pyproject.toml ou uv.lock absent"
 
   # Marqueur prod (ADR-005) : sans lui, `--env prod` refuse de démarrer. Aucun
-  # secret ici — ils restent dans /etc/biowatch/jobs.env, lus par systemd.
+  # secret ici — ils restent dans /etc/biowatch/, lus par systemd.
   printf '%s\n' "# Marqueur prod (ADR-005), posé par biowatch-release. Aucun secret ici :" \
-    "# ils sont dans /etc/biowatch/jobs.env, injectés par systemd." > "${rel}/.env.prod"
+    "# ils sont dans /etc/biowatch/, injectés par systemd." > "${rel}/.env.prod"
 
   log "construction du venv (uv ${UV_BIN})"
   # UV_LINK_MODE=copy : par défaut uv crée des liens durs vers son cache, qui

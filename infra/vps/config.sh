@@ -109,7 +109,8 @@ UV_VERSION="0.13.6"
 UV_BIN="/usr/local/bin/uv"
 
 SBIN_DIR="/usr/local/sbin"
-JOBS_ENV_FILE="${SERVICE_CONFIG_DIR}/jobs.env"
+JOBS_ENV_FILE="${SERVICE_CONFIG_DIR}/jobs.env"         # réglages des jobs (#27)
+JOBS_DB_ENV_FILE="${SERVICE_CONFIG_DIR}/db-jobs.env"   # identifiants DB, posé par 55-postgres.sh (#23)
 JOBS_UNIT_TEMPLATE="/etc/systemd/system/biowatch-job@.service"
 SUDOERS_CI_FILE="/etc/sudoers.d/91-biowatch-ci"
 

@@ -10,16 +10,22 @@
 # Modifier ce fichier = rejouer 60-jobs-deploy.sh sur le VPS.
 [Unit]
 Description=BioWatch - job %i
-Wants=network-online.target
-After=network-online.target postgresql.service
+# biowatch-postgres.service (#23) : oneshot qui ne rend la main qu'une fois
+# PostgreSQL prêt (docker compose up --wait).
+Wants=network-online.target biowatch-postgres.service
+After=network-online.target biowatch-postgres.service
 
 [Service]
 Type=oneshot
 User=biowatch-jobs
 Group=biowatch-jobs
-# Secrets prod, lus par systemd en root avant le changement d'identité : le job
-# reçoit ses variables sans pouvoir lire le fichier (cf. #25, ADR-005).
+# Config prod, lue par systemd en root avant le changement d'identité : le job
+# reçoit ses variables sans pouvoir lire les fichiers (cf. #25, ADR-005).
+# Deux fichiers, deux propriétaires : jobs.env (#27, réglages des jobs) puis
+# db-jobs.env (#23, identifiants du rôle biowatch_jobs). Le dernier gagne : les
+# POSTGRES_* viennent toujours de #23.
 EnvironmentFile=@JOBS_ENV_FILE@
+EnvironmentFile=@JOBS_DB_ENV_FILE@
 WorkingDirectory=@APP_CURRENT@
 # Le venv est construit par deploy : pas de « uv run », qui tenterait
 # d'écrire dans /opt/biowatch. --env prod explicite : jamais le défaut dev.
