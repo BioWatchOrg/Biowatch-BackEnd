@@ -156,14 +156,16 @@ uv run biowatch-jobs backfill_sentinel --aoi idf --h3_res 8 --months 2016-04,201
 ```
 Relancer un mois refait tout le mois (8 à 15 min pour l'IDF) ; les mois déjà réussis sont
 sautés. Même règle pour `extract_sentinel` : un mois incomplet sort avec un code != 0
-(visible par systemd), et le timer le retente les nuits suivantes (du 5 au 10).
+(visible par systemd). En prod, le run mensuel est `extract_sentinel_monthly`, planifié par
+le registre chaque nuit du 5 au 10 : un mois incomplet est retenté la nuit suivante.
 
 ### Enregistrer un nouveau job
 Il faut enregistrer le nouveau job dans : apps/jobs/definitions.py
 
 Pour qu'il tourne automatiquement en prod, renseigner sa fréquence (`schedule`, format
-`OnCalendar` systemd, ex. `"*-*-* 02:30:00 Europe/Paris"`). Le déploiement sur `main`
-crée son timer, sans autre modification. Voir `infra/vps/README.md`, « Déploiement des jobs ».
+`OnCalendar` systemd, ex. `"*-*-* 02:30:00 Europe/Paris"`), et son plafond mémoire mesuré
+si besoin (`memory_max`, ex. `"2200M"`). Le déploiement sur `main` crée son timer, sans
+autre modification. Voir `infra/vps/README.md`, « Déploiement des jobs ».
 
 ---
 

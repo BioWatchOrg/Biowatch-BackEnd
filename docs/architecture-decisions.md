@@ -569,9 +569,10 @@ shell, ni clé SSH, ni sudo.
    (`uv sync --frozen`) dans `/opt/biowatch/releases/<sha>` et bascule le lien `app` de façon
    atomique. Les 5 dernières releases restent disponibles pour un retour arrière immédiat.
 3. **Le registre est la source des timers** : chaque `Job` déclare `schedule` (expression
-   `OnCalendar`, ou `None`). La release active émet un manifeste `<job>\t<OnCalendar>`
+   `OnCalendar`, ou `None`) et, s'il le faut, `memory_max` (plafond mémoire mesuré). La
+   release active émet un manifeste `<job>\t<OnCalendar>\t<MemoryMax>`
    (`python -m jobs.systemd`) que `biowatch-install-timers` (root) revalide entièrement avant
-   d'écrire les `biowatch-job@<job>.timer`.
+   d'écrire les `biowatch-job@<job>.timer` et les surcharges de plafond mémoire.
 4. **Une seule unité de service, `biowatch-job@.service`**, installée par un membre via
    `60-jobs-deploy.sh`, jamais par la CI. Elle fixe l'identité (`biowatch-jobs`), les secrets
    (`EnvironmentFile=/etc/biowatch/jobs.env`) et le bac à sable.
@@ -608,5 +609,5 @@ shell, ni clé SSH, ni sudo.
 
 À revoir si les jobs quittent systemd (conteneurs, orchestrateur), si le nombre de VPS
 dépasse un, ou si un job a besoin d'un timeout ou d'une identité propre : ajouter alors le
-champ au `Job` et au manifeste, validé de la même façon, plutôt qu'une unité par job écrite
-à la main.
+champ au `Job` et au manifeste, validé de la même façon (comme `memory_max`, ajouté pour
+l'extraction Sentinel-2), plutôt qu'une unité par job écrite à la main.

@@ -25,9 +25,12 @@ JOB_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 # (retour à la ligne, `=`, `;`, `%`) ne doit passer, même avant.
 SCHEDULE_PATTERN = re.compile(r"^[A-Za-z0-9 :*/,.~+_-]{1,100}$")
 
+# Plafond mémoire au format systemd `MemoryMax=` : un entier suivi de K, M ou G.
+MEMORY_MAX_PATTERN = re.compile(r"^[1-9][0-9]{0,5}[KMG]$")
+
 
 class InvalidJobError(ValueError):
-    """Nom de job ou fréquence de lancement invalide (bug de déclaration)."""
+    """Nom, fréquence ou plafond mémoire d'un job invalide (bug de déclaration)."""
 
 
 @dataclass(frozen=True)
@@ -42,7 +45,10 @@ class Job:
       systemd (`"*-*-* 02:30:00 Europe/Paris"` = nocturne, `"*-01-15 03:00:00
       Europe/Paris"` = annuelle). `None` = pas de planification (job lancé à la
       main). Un job planifié est lancé SANS argument : s'il en a besoin, lui
-      donner des défauts ou exposer un job `<nom>_scheduled` dédié.
+      donner des défauts ou exposer un job dédié (ex. `extract_sentinel_monthly`).
+    - `memory_max` : plafond mémoire du run systemd (`"2200M"`), à déclarer
+      d'après un pic MESURÉ. Au-delà, le noyau tue le job, jamais PostgreSQL
+      ni l'API qui partagent le VPS. `None` = pas de plafond propre au job.
     """
 
     name: str
@@ -50,6 +56,7 @@ class Job:
     run: Callable[[Namespace], None]
     configure: Callable[[ArgumentParser], None] = field(default=lambda _parser: None)
     schedule: str | None = None
+    memory_max: str | None = None
 
     def __post_init__(self) -> None:
         if not JOB_NAME_PATTERN.fullmatch(self.name):
@@ -62,6 +69,19 @@ class Job:
                 f"(attendu : une expression OnCalendar systemd, ex. "
                 f"'*-*-* 02:30:00 Europe/Paris')."
             )
+        if self.memory_max is not None:
+            if not MEMORY_MAX_PATTERN.fullmatch(self.memory_max):
+                raise InvalidJobError(
+                    f"memory_max invalide pour le job '{self.name}' : {self.memory_max!r} "
+                    f"(attendu : un entier suivi de K, M ou G, ex. '2200M')."
+                )
+            if self.schedule is None:
+                # Le plafond voyage dans le manifeste des timers, qui ne liste que
+                # les jobs planifiés : sur un job manuel, il serait ignoré.
+                raise InvalidJobError(
+                    f"memory_max sur le job '{self.name}' sans schedule : "
+                    f"il ne s'appliquerait à aucun run."
+                )
 
 
 _JOBS: dict[str, Job] = {}

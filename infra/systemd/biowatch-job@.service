@@ -26,9 +26,14 @@ WorkingDirectory=@APP_CURRENT@
 ExecStart=@APP_CURRENT@/.venv/bin/biowatch-jobs --env prod %i
 # Oneshot : sans limite explicite, un job bloqué ne serait jamais arrêté.
 TimeoutStartSec=6h
-# Le VPS 1 sert aussi l'API : les jobs passent après.
+# Le VPS 1 sert aussi PostgreSQL et l'API : les jobs passent après. Priorité
+# disque basse plutôt qu'« idle », qui affamerait un job pendant que la base
+# écrit. Plafond mémoire propre à un job : `memory_max` dans le registre
+# (posé en surcharge biowatch-job@<job>.service.d/ par le déploiement).
 Nice=10
-IOSchedulingClass=idle
+CPUQuota=150%
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
 
 NoNewPrivileges=yes
 ProtectSystem=strict

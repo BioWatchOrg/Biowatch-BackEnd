@@ -454,16 +454,26 @@ Aucun secret applicatif ne passe par GitHub : la CI n'a que la clé de déploiem
 ### Planifier un job
 
 Dans `apps/jobs/definitions.py`, renseigner `schedule` avec une expression
-`OnCalendar` systemd. Un job planifié est lancé **sans argument**.
+`OnCalendar` systemd, **avec le fuseau** (sinon c'est celui du VPS, en UTC). Un job
+planifié est lancé **sans argument** : s'il en a besoin, exposer une variante
+dédiée qui les fixe (ex. `extract_sentinel_monthly`).
 
 ```python
-register(Job(name="osm_import_scheduled", ..., schedule="*-*-05 03:00:00 Europe/Paris"))
+register(Job(name="extract_sentinel_monthly", ...,
+             schedule="*-*-05..10 01:30:00 Europe/Paris",
+             memory_max="2200M"))
 ```
 
-`schedule=None` (défaut) : pas de timer, lancement à la main. Vérifier une
-expression : `systemd-analyze calendar "<expr>"` (aussi fait par les tests en CI
-et par `biowatch-install-timers`). Retirer `schedule` supprime le timer au
-déploiement suivant.
+- `schedule=None` (défaut) : pas de timer, lancement à la main.
+- `memory_max` (optionnel, job planifié uniquement) : plafond mémoire du run,
+  d'après un pic **mesuré**. Au-delà, le noyau tue ce job, jamais PostgreSQL ni
+  l'API. Posé en surcharge `biowatch-job@<job>.service.d/biowatch-limits.conf`.
+- Limites communes à tous les jobs (dans `biowatch-job@.service`) : `CPUQuota=150%`,
+  `Nice=10`, priorité disque basse, 6 h maximum par run.
+
+Vérifier une expression : `systemd-analyze calendar "<expr>"` (aussi fait par les
+tests en CI et par `biowatch-install-timers`). Retirer `schedule` supprime le timer
+au déploiement suivant.
 
 ### Exploiter
 

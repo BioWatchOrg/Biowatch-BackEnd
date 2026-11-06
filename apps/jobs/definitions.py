@@ -125,6 +125,39 @@ register(
         help="Calcule les indices Sentinel-2 mensuels d'une AOI (Planetary Computer, ADR-004).",
         run=_run_extract_sentinel,
         configure=_configure_extract_sentinel,
+        # Lancé à la main (un mois, une AOI au choix). Le run mensuel planifié
+        # est extract_sentinel_monthly, ci-dessous.
+        schedule=None,
+    )
+)
+
+
+def _run_extract_sentinel_monthly(args: Namespace) -> None:
+    # Un job planifié est lancé sans argument : ses paramètres sont fixés ici,
+    # mêmes défauts que `extract_sentinel` sans option (mois précédent).
+    _run_extract_sentinel(
+        Namespace(
+            aoi="idf",
+            bucket_id=None,
+            h3_res=8,
+            source_version=EXTRACTION_PIPELINE_VERSION,
+            io_threads=DEFAULT_IO_THREADS,
+        )
+    )
+
+
+register(
+    Job(
+        name="extract_sentinel_monthly",
+        help="Run mensuel planifié : extract_sentinel sur l'AOI idf pour le mois précédent.",
+        run=_run_extract_sentinel_monthly,
+        # ADR-004 : chaque nuit du 5 au 10. Le 5 laisse au catalogue le temps
+        # d'ingérer les dernières images du mois ; les nuits suivantes servent de
+        # retry (un mois déjà en success est sauté par l'idempotence de job_run).
+        schedule="*-*-05..10 01:30:00 Europe/Paris",
+        # Pic mesuré ~1,8 Go pour l'IDF (#99) : au-delà, le noyau tue ce job,
+        # jamais PostgreSQL ni l'API.
+        memory_max="2200M",
     )
 )
 
@@ -196,5 +229,7 @@ register(
         help="Extrait les indices Sentinel-2 mois par mois sur une plage (reprise automatique).",
         run=_run_backfill_sentinel,
         configure=_configure_backfill_sentinel,
+        # Historique 2016 → aujourd'hui (25 à 35 h) : lancé à la main, hors VPS.
+        schedule=None,
     )
 )
