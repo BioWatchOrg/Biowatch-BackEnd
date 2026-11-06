@@ -1,7 +1,7 @@
-# Configuration VPS — durcissement SSH, firewall et comptes de service
+# Configuration VPS — SSH, firewall, comptes de service et Nginx
 
-Scripts couvrant les issues **#22** (accès SSH sécurisés), **#28** (firewall UFW)
-et **#25** (comptes de service et isolation).
+Scripts couvrant les issues **#22** (accès SSH sécurisés), **#28** (firewall UFW),
+**#25** (comptes de service et isolation) et **#26** (Nginx).
 
 Cible : Ubuntu 26.04 LTS, `sshd` démarré par **activation socket**.
 
@@ -24,6 +24,7 @@ cette preuve, et arment une restauration automatique en cas d'oubli.
 | `20-harden-ssh.sh` | #22 | Coupe mot de passe, root, port 22 | ⚠️ porte de non-retour |
 | `30-firewall.sh` | #28 | UFW deny incoming | ⚠️ |
 | `40-service-users.sh` | #25 | Comptes `biowatch-api`, `biowatch-jobs`, `deploy` et leurs répertoires | aucun, ne touche ni SSH ni réseau |
+| `50-nginx.sh` | #26 | Nginx HTTPS, socle + un fichier par service, placeholder du frontend. Boucle locale tant que non exposé | aucun pour l'accès : ne touche ni SSH ni UFW |
 
 Chaque script accepte `--dry-run`. **Toujours l'utiliser en première passe.**
 
@@ -80,8 +81,9 @@ sudo systemctl stop biowatch-ufw-rollback.timer
 
 ## Fail2ban : écarté délibérément
 
-Le critère « fail2ban installé et actif » a été **retiré de la DoD de #22** et
-reporté sur #26.
+Le critère « fail2ban installé et actif » a été **retiré de la DoD de #22**.
+Envisagé ensuite pour #26, il n'y figure pas non plus : il est réexaminé avec
+#80.
 
 Fail2ban répond au brute-force d'authentification. Cette menace n'existe pas
 ici : l'accès est exclusivement par clé ed25519, `AllowGroups` rejette tout
@@ -92,9 +94,10 @@ Elle introduirait en revanche un risque réel : avec `MaxAuthTries 3`, un membre
 dont le client propose plusieurs clés (absence de `IdentitiesOnly yes`) épuise
 ses tentatives et se fait bannir alors qu'il est légitime.
 
-**Ce raisonnement devient caduc avec #26.** Nginx exposera une surface
-authentifiable et scannable, où fail2ban retrouve son utilité — avec des jails
-`nginx-*`, pas la jail `sshd`.
+**#26 ne change pas ce constat.** Nginx n'y sert qu'une page statique et des
+503 : rien à deviner, rien à forcer. **Il deviendra caduc avec #80**, quand
+l'API exposera derrière Nginx une surface authentifiable et scannable. fail2ban
+y retrouve son utilité, avec des jails `nginx-*`, pas la jail `sshd`.
 
 ## Si l'accès est perdu
 
@@ -213,11 +216,157 @@ ReadWritePaths=/var/lib/biowatch/api /var/log/biowatch/api
 Contrôle sur la machine : `systemctl show -p User <unité>` et
 `ps -o user,cmd -C python`.
 
+## Nginx (#26)
+
+```bash
+./50-nginx.sh --dry-run
+./50-nginx.sh
+```
+
+Nginx est le **seul point d'entrée HTTP(S)** du VPS. Le frontend comme l'API
+passent par lui ; aucun process applicatif n'écoute hors de `127.0.0.1`.
+Le port 80 ne sert jamais de contenu : il redirige vers HTTPS et répond au
+challenge Let's Encrypt.
+
+**État actuel : rien d'exposé.** Domaine et certificat ne sont pas encore
+tranchés. Nginx écoute donc **uniquement sur la boucle locale**
+(`NGINX_LISTEN_V4/V6` dans `config.sh`), avec le certificat auto-signé
+d'Ubuntu. UFW autorise 80 et 443, mais rien n'y écoute côté public : une
+connexion depuis l'extérieur est refusée. La chaîne HTTPS complète se teste
+par tunnel SSH :
+
+```bash
+ssh -N -L 8443:127.0.0.1:443 biowatch
+curl -k https://localhost:8443/          # -k : certificat auto-signé
+```
+
+Exposer est ce qui reste pour fermer #26 : voir « Exposer » plus bas.
+
+**Installation sans exposition.** Le paquet nginx démarre son site par
+défaut sur `0.0.0.0:80` dès l'`apt install`, et UFW autorise 80 : il serait
+joignable le temps que le script le remplace. `50-nginx.sh` pose donc un
+`/usr/sbin/policy-rc.d` (`exit 101`, mécanisme Debian) pendant
+l'installation, puis le retire, y compris en cas d'échec. Si le script est
+tué brutalement (`kill -9`, coupure), vérifier que ce fichier a disparu : il
+bloque le démarrage de **tout** service installé ou mis à jour par apt.
+
+### Organisation
+
+Les fichiers versionnés sont dans [`nginx/`](nginx/). `50-nginx.sh` les
+installe en remplaçant les marqueurs `__XXX__` par les valeurs de `config.sh`.
+**Ne jamais éditer la configuration directement sur le serveur** : la
+prochaine exécution du script l'écraserait.
+
+| Dépôt | Serveur | Rôle | Qui le modifie |
+|---|---|---|---|
+| `nginx/biowatch.conf` | `/etc/nginx/sites-available/biowatch.conf` | Socle : 80 → HTTPS, 443 (TLS, en-têtes de sécurité, `include` des services) | #26 seulement |
+| `nginx/biowatch.d/frontend.conf` | `/etc/nginx/biowatch.d/frontend.conf` | Sert le frontend (SPA) | rarement : le déploiement ne le touche pas |
+| `nginx/biowatch.d/api.conf` | `/etc/nginx/biowatch.d/api.conf` | `/v1/*` et `/health`, réservés (503) | #80 |
+| `nginx/placeholder/index.html` | `/var/www/biowatch/frontend/index.html` | Prouve la chaîne avant tout déploiement | posé une fois, sur répertoire vide |
+
+Le site `default` du paquet est désactivé : il se déclare lui aussi
+`default_server` sur le port 80.
+
+**Piège `add_header`.** Les en-têtes de sécurité du socle ne sont hérités
+par une `location` que si elle ne déclare **aucun** `add_header`. Un seul
+suffit à les effacer tous, sans erreur. Pour le cache, utiliser `expires`,
+qui n'est pas un `add_header`.
+
+### Brancher l'API (#80)
+
+1. Le process API écoute **uniquement** en `127.0.0.1:<port>` (ou socket
+   unix). `50-nginx.sh` échoue s'il trouve un port en écoute hors boucle
+   locale autre que SSH, 80 et 443.
+2. Remplacer le contenu de `nginx/biowatch.d/api.conf` dans le dépôt, puis
+   rejouer `./50-nginx.sh` :
+
+   ```nginx
+   location /v1/ {
+       proxy_pass http://127.0.0.1:<port>;
+       proxy_set_header Host              $host;
+       proxy_set_header X-Real-IP         $remote_addr;
+       proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+       proxy_set_header X-Forwarded-Proto $scheme;
+   }
+
+   location = /health {
+       proxy_pass http://127.0.0.1:<port>;
+   }
+   ```
+
+   Sans barre finale après le port, `proxy_pass` transmet le chemin complet
+   (`/v1/zones` reste `/v1/zones`).
+3. Les vérifications de `50-nginx.sh` attendent alors 200 au lieu de 503 sur
+   `/health` : mettre à jour `verify()` dans le même PR.
+
+### Déployer le frontend (Biowatch-Frontend#76)
+
+Le déploiement **ne touche pas à Nginx** : il remplace le contenu de
+`/var/www/biowatch/frontend/`, rien d'autre.
+
+| Répertoire | Propriétaire | Mode | Effet |
+|---|---|---|---|
+| `/var/www/biowatch/frontend` | `deploy:www-data` | `2750` | `deploy` écrit, nginx (`www-data`) lit, personne d'autre |
+
+Le bit setgid fait hériter du groupe `www-data` tout ce que `deploy` dépose :
+nginx peut le lire sans `chgrp`. Les fichiers doivent rester lisibles par le
+groupe (umask `022` par défaut, ou `rsync --chmod=D2750,F640`).
+
+```bash
+# depuis une session membre, build Vite dans ./dist
+sudo -u deploy rsync -r --delete --chmod=D2750,F640 dist/ /var/www/biowatch/frontend/
+```
+
+Le frontend appelle l'API en chemin relatif (`/v1/...`), jamais en
+`localhost:<port>` : Nginx reste le seul point d'entrée, y compris en
+same-VPS.
+
+> **À trancher dans #76.** `deploy` écrit aussi dans `/opt/biowatch` (code
+> backend, #25). Une clé CI du frontend qui agirait comme `deploy` pourrait
+> donc réécrire le backend. #76 demande un rôle limité au répertoire du
+> frontend : créer un compte dédié et changer le propriétaire de
+> `FRONTEND_DIR` dans `config.sh`.
+
+### Exposer (reste à faire pour fermer #26)
+
+**À trancher par l'équipe** : le domaine, et l'adresse email du compte
+Let's Encrypt (avertissements d'expiration, de préférence une adresse
+d'équipe).
+
+Prérequis : un enregistrement DNS `A` (et `AAAA` si le VPS a de l'IPv6) qui
+pointe vers le VPS.
+
+Le challenge HTTP-01 de Let's Encrypt passe par le port 80 public : il faut
+exposer **avant** d'avoir le vrai certificat. `50-nginx.sh` refuse
+d'exposer avec le certificat auto-signé, d'où l'ordre suivant.
+
+1. `config.sh` : `NGINX_SERVER_NAME` = le domaine.
+2. Première émission, nginx arrêté :
+   `certbot certonly --standalone -d <domaine>`. Certbot écoute lui-même
+   sur le port 80 public le temps du challenge, puis le libère. Jamais le
+   plugin `--nginx` : il réécrirait les fichiers gérés par le dépôt.
+3. `config.sh` : `NGINX_TLS_CERT` / `NGINX_TLS_KEY` vers
+   `/etc/letsencrypt/live/<domaine>/fullchain.pem` et `privkey.pem`, puis
+   `NGINX_LISTEN_V4="0.0.0.0"` et `NGINX_LISTEN_V6="[::]"`. Rejouer
+   `./50-nginx.sh`.
+4. Dans le socle : `Strict-Transport-Security`, et un `default_server` 443
+   en `ssl_reject_handshake on` pour ne pas servir le site sur l'IP nue.
+5. Renouvellement : basculer le certificat en webroot, nginx étant
+   désormais exposé sur 80 (`certbot certonly --webroot -w /var/www/letsencrypt
+   -d <domaine> --deploy-hook "systemctl reload nginx"`). Le `certbot.timer`
+   du paquet renouvelle ensuite seul. Tester avec `certbot renew --dry-run`.
+
+Les fichiers de `biowatch.d/` n'ont rien à changer : c'est l'intérêt du
+découpage.
+
 ## Portée
 
-Ces scripts traitent #22, #28 et #25. `AllowGroups biowatch-ssh` (posé par
-`20-harden-ssh.sh`) interdit d'avance toute connexion SSH aux comptes de
-service ; `40-service-users.sh` le vérifie et prévient s'il est absent.
+Ces scripts traitent #22, #28, #25 et #26 (hors exposition). `AllowGroups biowatch-ssh`
+(posé par `20-harden-ssh.sh`) interdit d'avance toute connexion SSH aux
+comptes de service ; `40-service-users.sh` le vérifie et prévient s'il est
+absent.
 
-Les ports 80 et 443 sont ouverts par anticipation pour #26. Sans processus à
-l'écoute derrière, un port ouvert n'offre aucune surface d'attaque.
+Les ports 80 et 443 sont ouverts dans UFW par anticipation. Tant que nginx
+n'écoute que sur la boucle locale, aucun processus n'y répond côté public :
+un port ouvert sans rien derrière n'offre aucune surface d'attaque.
+`50-nginx.sh` le vérifie à chaque exécution.
