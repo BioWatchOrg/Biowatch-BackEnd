@@ -71,6 +71,19 @@ def test_unparseable_event_date_is_rejected():
     assert quality_filter(record, DATE_MIN, DATE_MAX) is None
 
 
+def test_event_date_interval_uses_start_date():
+    # GBIF returns ISO 8601 intervals for records observed over a period.
+    record = {**VALID_RECORD, "eventDate": "2020-01-01/2020-02-01"}
+    result = quality_filter(record, DATE_MIN, DATE_MAX)
+    assert result is not None
+    assert result["event_date"] == date(2020, 1, 1)
+
+
+def test_event_date_interval_with_unparseable_start_is_rejected():
+    record = {**VALID_RECORD, "eventDate": "not-a-date/2020-02-01"}
+    assert quality_filter(record, DATE_MIN, DATE_MAX) is None
+
+
 def test_event_date_before_window_is_rejected():
     record = {**VALID_RECORD, "eventDate": "2010-01-01T00:00:00"}
     assert quality_filter(record, DATE_MIN, DATE_MAX) is None

@@ -13,10 +13,12 @@ _LON_RANGE = (-180.0, 180.0)
 
 
 def _parse_event_date(raw: object) -> date | None:
+    """Parse a GBIF `eventDate`. ISO 8601 intervals (`start/end`) keep their start date."""
     if not isinstance(raw, str) or not raw:
         return None
+    start = raw.split("/", 1)[0]
     try:
-        return datetime.fromisoformat(raw.replace("Z", "+00:00")).date()
+        return datetime.fromisoformat(start.replace("Z", "+00:00")).date()
     except ValueError:
         return None
 
