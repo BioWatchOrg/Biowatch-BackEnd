@@ -13,6 +13,7 @@ import numpy as np
 import pystac
 import pytest
 import rasterio
+import rasterio.errors
 from affine import Affine
 from pyproj import Transformer
 from shapely.geometry import box, mapping
@@ -151,8 +152,10 @@ def test_read_failure_is_wrapped(scenes, region, tmp_path):
     stack = open_tile(scenes, region, chunk_px=16, sign_url=_no_sign)
     for path in tmp_path.glob("*_B04.tif"):
         path.unlink()
-    with pytest.raises(PlanetaryComputerError, match="31UDQ"):
-        read_block(stack, stack.windows()[0], io_threads=1)
+    sleeps = []
+    with pytest.raises(PlanetaryComputerError, match="31UDQ.*after 3 attempts"):
+        read_block(stack, stack.windows()[0], io_threads=1, sleep=sleeps.append)
+    assert sleeps == [10, 30]  # deux nouvelles tentatives avant d'abandonner
 
 
 def test_open_tile_rejects_empty_and_mixed_tiles(tmp_path, region):
@@ -185,3 +188,24 @@ def test_gdal_http_reads_have_timeouts_and_retries(scenes, region, monkeypatch):
     assert seen["GDAL_HTTP_TIMEOUT"] > 0
     assert seen["GDAL_HTTP_CONNECTTIMEOUT"] > 0
     assert seen["GDAL_HTTP_MAX_RETRY"] > 0
+
+
+def test_read_block_recovers_from_a_transient_failure(scenes, region, tmp_path, monkeypatch):
+    """Un échec passager (réseau) est absorbé par le retry : le bloc est lu."""
+    import clients.planetary_computer_client.reader as reader
+
+    stack = open_tile(scenes, region, chunk_px=16, sign_url=_no_sign)
+    real_compute = reader._compute_block
+    calls = []
+
+    def flaky(*args):
+        calls.append(1)
+        if len(calls) == 1:
+            raise rasterio.errors.RasterioIOError("HTTP error code: 0")
+        return real_compute(*args)
+
+    monkeypatch.setattr(reader, "_compute_block", flaky)
+    sleeps = []
+    block = read_block(stack, stack.windows()[0], io_threads=1, sleep=sleeps.append)
+    assert len(calls) == 2 and sleeps == [10]
+    assert np.all(block["red"][:, 2:-2, 2:-2][0] == 1000)

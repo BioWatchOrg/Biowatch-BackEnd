@@ -6,6 +6,7 @@ Rien n'est téléchargé à l'ouverture (`open_tile`) : seuls les blocs demandé
 
 import datetime
 import logging
+import time
 import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -172,33 +173,65 @@ def _check_dates_match(tile: str, dataset: xr.Dataset, ordered: Sequence[Scene])
         )
 
 
+# Retry au niveau du bloc, au-dessus des retries HTTP de GDAL : quand la
+# connexion se dégrade, GDAL abandonne une lecture en quelques secondes. Sans
+# ce filet, un seul bloc en échec faisait perdre toute la tuile (~7 000
+# cellules, constaté sur un run IDF réel). Pauses entre tentatives, en secondes.
+BLOCK_RETRY_DELAYS_S = (10, 30)
+
+
 def read_block(
-    stack: TileStack, window: Window, *, io_threads: int = DEFAULT_IO_THREADS
+    stack: TileStack,
+    window: Window,
+    *,
+    io_threads: int = DEFAULT_IO_THREADS,
+    retry_delays_s: Sequence[float] = BLOCK_RETRY_DELAYS_S,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, npt.NDArray[Any]]:
     """Télécharge un bloc : {rôle: tableau (date, y, x)} pour green/red/nir/swir/scl.
 
     Les valeurs sont les DN bruts (uint16, 0 = nodata ; SCL en uint8) : la
     conversion en réflectance se fait côté calcul, date par date, avec
-    `stack.baselines`.
+    `stack.baselines`. Une lecture en échec est retentée après chaque pause de
+    `retry_delays_s` ; au-delà, `PlanetaryComputerError`.
     """
     ys, xs = window
-    try:
-        with (
-            dask.config.set(scheduler="threads", num_workers=io_threads),
-            warnings.catch_warnings(),
-        ):
-            # Émis par rasterio quand odc-stac reprojette vers un tableau en
-            # mémoire (sans géotransformation propre) : sans effet sur les
-            # valeurs, mais répété à chaque bloc dans les logs.
-            warnings.simplefilter("ignore", NotGeoreferencedWarning)
-            block = stack.dataset.isel(y=ys, x=xs).compute()
-    except (RasterioError, OSError) as e:
-        logger.error(
-            "planetary computer block read failed",
-            extra={
-                "event": "planetary_computer.read_error",
-                "context": {"tile": stack.tile, "window": str(window), "error": str(e)},
-            },
-        )
-        raise PlanetaryComputerError(f"Failed to read tile {stack.tile} {window}: {e}") from e
-    return {role: np.asarray(block[asset].values) for role, asset in BANDS.items()}
+    context = {"tile": stack.tile, "window": str(window)}
+    for attempt, delay in enumerate([*retry_delays_s, None], start=1):
+        try:
+            block = _compute_block(stack, ys, xs, io_threads)
+        except (RasterioError, OSError) as e:
+            if delay is None:
+                logger.error(
+                    "planetary computer block read failed",
+                    extra={
+                        "event": "planetary_computer.read_error",
+                        "context": {**context, "attempts": attempt, "error": str(e)},
+                    },
+                )
+                raise PlanetaryComputerError(
+                    f"Failed to read tile {stack.tile} {window} after {attempt} attempts: {e}"
+                ) from e
+            logger.warning(
+                "planetary computer block read failed, retrying",
+                extra={
+                    "event": "planetary_computer.read_retry",
+                    "context": {**context, "attempt": attempt, "delay_s": delay, "error": str(e)},
+                },
+            )
+            sleep(delay)
+            continue
+        return {role: np.asarray(block[asset].values) for role, asset in BANDS.items()}
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
+def _compute_block(stack: TileStack, ys: slice, xs: slice, io_threads: int) -> xr.Dataset:
+    with (
+        dask.config.set(scheduler="threads", num_workers=io_threads),
+        warnings.catch_warnings(),
+    ):
+        # Émis par rasterio quand odc-stac reprojette vers un tableau en
+        # mémoire (sans géotransformation propre) : sans effet sur les
+        # valeurs, mais répété à chaque bloc dans les logs.
+        warnings.simplefilter("ignore", NotGeoreferencedWarning)
+        return stack.dataset.isel(y=ys, x=xs).compute()
