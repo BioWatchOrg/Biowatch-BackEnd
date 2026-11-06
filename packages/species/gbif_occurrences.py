@@ -152,7 +152,7 @@ def update_gbif_occurrences(aoi_label: AoiLabel, engine: Engine | None = None) -
                 # loop below is per-row within a single AOI-wide fetch, not
                 # per-zone, so there's no natural unit to attribute a partial
                 # failure to -- a failure anywhere fails the whole run, and a
-                # rerun is safe and cheap (reviewed and accepted in PR #96).
+                # rerun is safe and cheap.
                 logger.info(
                     "replacing staging rows for the refetched window",
                     extra={"event": "gbif_occurrences.replace_window", "context": log_ctx},

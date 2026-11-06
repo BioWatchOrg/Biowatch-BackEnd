@@ -162,9 +162,8 @@ class SpeciesOccurrencesRaw(Base):
     PK is composite (gbif_occurrence_id, aoi_id), not gbif_occurrence_id alone:
     a single GBIF record can legitimately fall inside two overlapping AOIs, and
     a plain single-column PK would silently drop it from the second one on
-    `ON CONFLICT DO NOTHING`. Reviewed and accepted as a known, near-never-hit
-    edge case rather than a correctness bug (overlap between registered AOIs
-    is expected to be rare) -- see PR #96 review discussion.
+    `ON CONFLICT DO NOTHING`. Overlap between registered AOIs is expected to be
+    rare, hence a composite PK rather than a dedicated link table.
     """
 
     __tablename__ = "species_occurrences_raw"
