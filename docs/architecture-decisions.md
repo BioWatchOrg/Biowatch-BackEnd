@@ -480,3 +480,157 @@ Un spike (2026-10-23, script jetable non versionné) a mesuré la faisabilité s
 - Si CREODIAS accorde un débit suffisant, le client Sentinel Hub (`packages/clients/sentinel_hub/`)
   peut redevenir une option, mais sur une série entière, pas mélangée à celle-ci.
 
+---
+
+## ADR-005 — Garde-fous dev / prod : marqueur `.env.prod` et suffixe `_<env>` du nom de base
+
+**Statut** : actif
+
+**Contexte**
+
+Un seul VPS de prod et des postes de dev qui, pour inspecter la prod, ouvrent un tunnel SSH
+vers sa base (issue #18). Le risque à couvrir est l'**erreur** : un job lancé depuis un laptop
+qui atteint `biowatch_prod` parce qu'un `DATABASE_URL` traîne dans le shell, ou parce qu'on a
+tapé `--env prod` sur la mauvaise machine. Le risque à ne pas couvrir ici est l'action
+délibérée d'un membre de l'équipe : contre ça, seuls les droits réseau et les comptes
+PostgreSQL comptent, pas du code Python.
+
+**Décision**
+
+1. **`dev` est le défaut**, résolu à un seul endroit (`core.config.resolve_env` :
+   `--env` > `BIOWATCH_ENV` > `dev`).
+2. **Prod exige la présence de `<racine du dépôt>/.env.prod`** (`ENV_FILE_REQUIRED`). Sur le
+   VPS, c'est un **marqueur** posé par le déploiement à côté du code, sans secret : les secrets
+   prod restent dans `/etc/biowatch/` (`jobs.env`, `db-jobs.env`), lus par systemd, jamais dans un fichier lisible
+   par le code. Sur un poste de dev, le fichier n'existe pas, donc `--env prod` s'arrête avant
+   toute lecture de variable de connexion.
+3. **Le nom de la base doit finir par `_<env>`** (`biowatch_dev` / `biowatch_prod`), vérifié par
+   `clients.db` avant d'ouvrir la connexion, quelle que soit l'origine de la variable (fichier,
+   shell, systemd). C'est le filet qui couvre le cas « dev par défaut + tunnel vers la prod ».
+4. **`load_env_file(env)` est l'unique point d'activation d'un environnement** : il fige
+   `BIOWATCH_ENV` puis charge `<racine>/.env.<env>` (jamais le cwd ni ses parents). C'est un
+   effet de bord sur `os.environ`, assumé et localisé : tout entrypoint (CLI aujourd'hui, API
+   demain) l'appelle au démarrage, et `clients.db` le rappelle en filet (idempotent) pour les
+   usages en librairie. Partout ailleurs, l'env est lu via `resolve_env()`, jamais passé en
+   paramètre : c'est un état de process, pas un argument métier.
+5. **`env` entre dans la clé d'idempotence** : la ligne `job_runs` dit dans quel environnement
+   le travail a été fait, et un `success` de dev ne vaut jamais pour prod (copie de prod en
+   dev, restauration). Conséquence assumée au merge : les runs déjà en `success` se relancent
+   une fois.
+
+**Pourquoi**
+
+- Deux filets indépendants plutôt qu'un seul : le marqueur bloque `--env prod` hors VPS, le
+  suffixe bloque une base prod atteinte *sans* `--env prod`. Aucun des deux ne dépend de ce
+  qui traîne dans le shell.
+- Pas de mécanisme de confirmation (`--yes`, prompt) : une case à cocher s'automatise et se
+  copie-colle ; l'absence d'un fichier et une convention de nommage, non.
+- Les secrets prod ne descendent jamais dans un `.env.prod` lisible par `biowatch-jobs` :
+  cohérent avec le modèle du VPS (`EnvironmentFile=` lu par systemd en root, cf.
+  `infra/vps/README.md`).
+
+**Limites assumées**
+
+- Un `.env.prod` créé volontairement sur un laptop, ou une base prod renommée `*_dev`,
+  contourne ces garde-fous : ils protègent contre l'erreur, pas contre l'intention. La
+  protection contre l'intention est réseau (DB jamais exposée, tunnel nominatif) et
+  PostgreSQL (comptes, droits).
+- `load_env_file` mute `os.environ` : acceptable tant que chaque entrypoint est explicite sur
+  son env. L'API devra appeler `load_env_file(resolve_env())` à son démarrage, et ne jamais
+  pouvoir tomber sur `prod` par défaut.
+
+**Exception : backfill depuis un poste vers la base de prod**
+
+Les backfills longs (ex. Sentinel-2, 25 à 35 h) sont trop lourds pour le VPS, qui sert aussi la
+base et l'API. Par exception assumée, ils tournent depuis un poste, vers la base de prod, à
+travers un tunnel SSH :
+
+1. Ouvrir le tunnel : `ssh -4 -p 50022 -N -L 15432:127.0.0.1:5432 <user>@<IP_DU_VPS>`.
+2. Créer **temporairement** `.env.prod` à la racine du dépôt (mode 600), avec les identifiants
+   de `biowatch_jobs` (sur le VPS : `sudo cat /etc/biowatch/db-jobs.env`) et
+   `POSTGRES_HOST=127.0.0.1`, `POSTGRES_PORT=15432`.
+3. Lancer avec `--env prod` (le défaut `dev` refuse une base `*_prod`) :
+   `caffeinate -i uv run biowatch-jobs --env prod backfill_sentinel --aoi idf --from 2016-01 --to <mois>`.
+4. **Supprimer `.env.prod` dès la fin**, même en cas d'échec — la procédure du README le fait
+   avec un `trap`.
+
+Aucun code ne change : les deux filets restent actifs. Le marqueur est créé volontairement, et
+le contrôle du suffixe porte sur le nom de la base, pas sur l'hôte : `biowatch_prod` via
+`127.0.0.1:15432` passe en `prod` et reste refusé en `dev`. Exception limitée aux backfills,
+et temporaire. `.env.prod` est gitignoré, mais ne doit jamais rester sur un poste : tant qu'il
+existe, un `--env prod` lancé par erreur avec le tunnel ouvert écrirait en prod.
+
+**Remise en cause**
+
+À revoir si un troisième environnement apparaît (préprod, staging), ou si la prod quitte le
+modèle « un VPS, secrets via systemd » (conteneurs, secret manager) : le marqueur `.env.prod`
+n'aurait alors plus de sens et devrait être remplacé par un signal propre à cette plateforme.
+
+---
+
+## ADR-007 — Déploiement des jobs : compte CI à commande forcée, timers générés depuis le registre
+
+**Statut** : actif (ADR-006 est réservé à la source IUCN, PR #97)
+
+**Contexte**
+
+Les jobs doivent être déployés sur le VPS 1 par **une seule CI** et planifiés par des timers
+systemd (#27), sans qu'un nouveau job demande de toucher au workflow ni au serveur. La CI
+doit se connecter avec des droits limités et ne jamais voir les secrets de prod. #25 a créé
+`deploy`, seul compte autorisé à écrire le code, et prouve à chaque passage qu'il n'a ni
+shell, ni clé SSH, ni sudo.
+
+**Décision**
+
+1. **Un compte dédié à la CI, `biowatch-ci`**, distinct de `deploy`. Sa clé n'exécute qu'une
+   commande forcée (`restrict,command=…biowatch-ci-deploy`) qui accepte trois verbes :
+   `deploy <sha>`, `rollback [<sha>]`, `status`. Il a deux règles sudo, et seulement deux :
+   `biowatch-release` en tant que `deploy`, et `biowatch-install-timers` en root sans argument.
+2. **Le code arrive par `git archive` sur stdin** ; le VPS construit la release
+   (`uv sync --frozen`) dans `/opt/biowatch/releases/<sha>` et bascule le lien `app` de façon
+   atomique. Les 5 dernières releases restent disponibles pour un retour arrière immédiat.
+3. **Le registre est la source des timers** : chaque `Job` déclare `schedule` (expression
+   `OnCalendar`, ou `None`) et, s'il le faut, `memory_max` (plafond mémoire mesuré). La
+   release active émet un manifeste `<job>\t<OnCalendar>\t<MemoryMax>`
+   (`python -m jobs.systemd`) que `biowatch-install-timers` (root) revalide entièrement avant
+   d'écrire les `biowatch-job@<job>.timer` et les surcharges de plafond mémoire.
+4. **Une seule unité de service, `biowatch-job@.service`**, installée par un membre via
+   `60-jobs-deploy.sh`, jamais par la CI. Elle fixe l'identité (`biowatch-jobs`), les secrets
+   (`EnvironmentFile=` : `jobs.env` pour les réglages, puis `db-jobs.env` posé par #23 pour
+   les identifiants du rôle `biowatch_jobs`), l'attente de `biowatch-postgres.service` et le
+   bac à sable.
+5. **`deploy` rejoint le groupe `biowatch`** : le setgid de `/opt/biowatch` (#25) est effacé
+   par le noyau au premier `chmod` d'un propriétaire hors du groupe (tar, uv en font), et le
+   code construit deviendrait illisible pour les jobs. Aucun droit gagné : seul
+   `/opt/biowatch`, qui appartient déjà à `deploy`, utilise ce groupe.
+
+**Pourquoi**
+
+- Rendre `deploy` joignable par SSH aurait demandé un vrai shell, une clé et du sudo : trois
+  exceptions aux garanties de #25, et un `40-service-users.sh` plein de cas particuliers.
+  Un compte de plus coûte moins cher que des invariants affaiblis.
+- Le manifeste ne transporte que des **données** (nom, fréquence), validées par root contre
+  une liste blanche de caractères et `systemd-analyze`. Une release compromise peut au pire
+  planifier un job existant à une autre heure ; elle ne peut pas créer de service, ni
+  changer l'utilisateur d'exécution, ni lancer quoi que ce soit en root.
+- Pousser l'archive plutôt que faire `git pull` sur le VPS : pas de jeton GitHub stocké sur le
+  serveur, et le VPS déploie exactement le commit validé par la CI.
+- Pas d'outil de déploiement (Ansible, Docker) : trois scripts bash relisibles suffisent pour
+  un VPS et une poignée de jobs, sans dépendance à apprendre.
+
+**Limites assumées**
+
+- La clé de la CI n'a pas de passphrase : qui la vole peut redéployer **un commit de son
+  choix**, donc exécuter du code en tant que `biowatch-jobs`. La protection est la commande
+  forcée et l'environnement GitHub `production` (approbation possible), pas la clé elle-même.
+- Le port SSH est ouvert au monde : les runners GitHub n'ont pas d'IP fixe.
+- Un job planifié se lance sans argument : un job paramétré expose une variante `*_scheduled`.
+- Modifier `biowatch-job@.service` (timeout, bac à sable) demande de rejouer `60-jobs-deploy.sh`
+  à la main : c'est voulu, ce fichier fixe les privilèges des jobs.
+
+**Remise en cause**
+
+À revoir si les jobs quittent systemd (conteneurs, orchestrateur), si le nombre de VPS
+dépasse un, ou si un job a besoin d'un timeout ou d'une identité propre : ajouter alors le
+champ au `Job` et au manifeste, validé de la même façon (comme `memory_max`, ajouté pour
+l'extraction Sentinel-2), plutôt qu'une unité par job écrite à la main.

@@ -1,0 +1,142 @@
+name: Deploy jobs
+
+# Déploie le code des jobs (apps/jobs + packages/*) sur le VPS 1 et synchronise
+# leurs timers systemd (#27). Une seule CI pour tous les jobs : la liste des
+# jobs planifiés vient du registre (`schedule` dans apps/jobs/definitions.py),
+# lu SUR LE VPS par la release déployée — ajouter un job ne touche pas ce fichier.
+#
+# La CI ne voit aucun secret applicatif : elle n'a qu'une clé SSH restreinte à
+# une commande forcée (biowatch-ci-deploy). Les secrets prod restent dans
+# /etc/biowatch/ (jobs.env, db-jobs.env), sur le VPS. Procédure complète et retour arrière :
+# infra/vps/README.md, section « Déploiement des jobs ».
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      rollback_to:
+        description: "Retour arrière : SHA complet (40 car.) d'une release déjà déployée, ou « previous ». Vide = déployer main."
+        required: false
+        default: ""
+
+# Un déploiement à la fois, jamais annulé en cours de route (release à moitié
+# construite). Le VPS a son propre verrou en plus.
+concurrency:
+  group: deploy-jobs-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # CI qualité rejouée sur le commit exact qui part en prod : lint et test ne
+  # tournent que sur les PR vers dev, rien ne garantit sinon l'état de main.
+  quality:
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.rollback_to == '')
+    runs-on: ubuntu-latest
+    services:
+      postgis:
+        image: postgis/postgis:16-3.4-alpine
+        env:
+          POSTGRES_USER: biowatch
+          POSTGRES_PASSWORD: biowatch
+          POSTGRES_DB: biowatch_dev
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U biowatch -d biowatch_dev"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - run: uv sync --frozen
+
+      - name: ruff check
+        run: uv run ruff check .
+
+      - name: ruff format --check
+        run: uv run ruff format --check .
+
+      - name: mypy
+        run: uv run mypy .
+
+      - name: pytest
+        env:
+          TEST_DATABASE_URL: postgresql+psycopg://biowatch:biowatch@127.0.0.1:5432/biowatch_dev
+        run: uv run pytest
+
+  deploy:
+    needs: quality
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.rollback_to == '')
+    runs-on: ubuntu-latest
+    # Les secrets VPS_* sont rangés dans l'environnement « production » : il
+    # peut exiger une approbation manuelle avant chaque déploiement.
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure SSH
+        env:
+          VPS_DEPLOY_KEY: ${{ secrets.VPS_DEPLOY_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$VPS_DEPLOY_KEY" > ~/.ssh/biowatch_ci
+          chmod 600 ~/.ssh/biowatch_ci
+          # Empreinte du VPS épinglée : jamais de « StrictHostKeyChecking=no »,
+          # qui enverrait le code à quiconque se ferait passer pour le VPS.
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      # L'archive du commit (fichiers suivis par git, rien d'autre) part sur
+      # stdin ; le VPS la construit, l'active et synchronise les timers.
+      - name: Deploy ${{ github.sha }}
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_PORT: ${{ secrets.VPS_SSH_PORT }}
+        run: |
+          git archive --format=tar.gz "$GITHUB_SHA" \
+            | ssh -i ~/.ssh/biowatch_ci -p "$VPS_SSH_PORT" \
+                -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes \
+                "biowatch-ci@${VPS_HOST}" "deploy ${GITHUB_SHA}"
+
+  rollback:
+    if: github.event_name == 'workflow_dispatch' && inputs.rollback_to != ''
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Check target
+        env:
+          TARGET: ${{ inputs.rollback_to }}
+        run: |
+          [[ "$TARGET" == "previous" || "$TARGET" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "rollback_to : SHA complet (40 caractères hexadécimaux) ou « previous » attendu."
+            exit 1
+          }
+
+      - name: Configure SSH
+        env:
+          VPS_DEPLOY_KEY: ${{ secrets.VPS_DEPLOY_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$VPS_DEPLOY_KEY" > ~/.ssh/biowatch_ci
+          chmod 600 ~/.ssh/biowatch_ci
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      - name: Roll back to ${{ inputs.rollback_to }}
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_PORT: ${{ secrets.VPS_SSH_PORT }}
+          TARGET: ${{ inputs.rollback_to }}
+        run: |
+          [[ "$TARGET" == "previous" ]] && TARGET=""
+          ssh -i ~/.ssh/biowatch_ci -p "$VPS_SSH_PORT" \
+            -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes \
+            "biowatch-ci@${VPS_HOST}" "rollback ${TARGET}" </dev/null

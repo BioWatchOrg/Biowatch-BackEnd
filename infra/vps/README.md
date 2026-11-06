@@ -1,7 +1,8 @@
-# Configuration VPS — SSH, firewall, comptes de service et Nginx
+# Configuration VPS — SSH, firewall, comptes de service, Nginx et déploiement des jobs
 
 Scripts couvrant les issues **#22** (accès SSH sécurisés), **#28** (firewall UFW),
-**#25** (comptes de service et isolation) et **#26** (Nginx).
+**#25** (comptes de service et isolation), **#26** (Nginx) et **#27** (déploiement
+des jobs et timers systemd).
 
 Cible : Ubuntu 26.04 LTS, `sshd` démarré par **activation socket**.
 
@@ -25,6 +26,7 @@ cette preuve, et arment une restauration automatique en cas d'oubli.
 | `30-firewall.sh` | #28 | UFW deny incoming | ⚠️ |
 | `40-service-users.sh` | #25 | Comptes `biowatch-api`, `biowatch-jobs`, `deploy` et leurs répertoires | aucun, ne touche ni SSH ni réseau |
 | `50-nginx.sh` | #26 | Nginx HTTPS, socle + un fichier par service, placeholder du frontend. Boucle locale tant que non exposé | aucun pour l'accès : ne touche ni SSH ni UFW |
+| `60-jobs-deploy.sh` | #27 | Compte CI `biowatch-ci`, uv, scripts de déploiement, unité `biowatch-job@` | aucun, ne touche ni SSH ni réseau |
 
 Chaque script accepte `--dry-run`. **Toujours l'utiliser en première passe.**
 
@@ -213,6 +215,32 @@ PrivateTmp=yes
 ReadWritePaths=/var/lib/biowatch/api /var/log/biowatch/api
 ```
 
+Les jobs écrivent leurs artefacts sous `BIOWATCH_DATA_ROOT/<env>` : dans
+`/etc/biowatch/jobs.env`, poser `BIOWATCH_DATA_ROOT=/var/lib/biowatch/jobs`
+(le défaut `data/` tomberait dans `/opt/biowatch/app`, en lecture seule).
+
+### Environnement prod : deux fichiers, deux propriétaires
+
+`biowatch-job@.service` lit les deux, dans cet ordre (le dernier gagne) :
+
+| Fichier | Posé par | Contenu |
+|---|---|---|
+| `/etc/biowatch/jobs.env` | `60-jobs-deploy.sh` (#27) | `BIOWATCH_ENV=prod`, `BIOWATCH_DATA_ROOT=/var/lib/biowatch/jobs`, `LOG_LEVEL` |
+| `/etc/biowatch/db-jobs.env` | `55-postgres.sh` (#23) | `POSTGRES_*` du rôle `biowatch_jobs`, base `biowatch_prod` (le nom DOIT finir par `_prod`, sinon refus de connexion) |
+
+Les deux sont `root 600` : ne jamais mettre de `POSTGRES_*` dans `jobs.env`, ils
+seraient écrasés par ceux de #23.
+
+Le code exige en plus la présence de **`/opt/biowatch/app/.env.prod`** pour
+démarrer en prod (`core.config.ENV_FILE_REQUIRED`). C'est un **marqueur**, posé
+par `deploy` à côté du code, pas un fichier de secrets. Les secrets restent
+dans `/etc/biowatch/`, lus par systemd, et gagnent sur le fichier
+(`override=False`). Son absence sur un poste de dev est ce qui fait échouer un
+`--env prod` lancé par erreur — ne jamais le créer ailleurs que sur le VPS.
+
+Depuis #27, il est posé automatiquement dans chaque release par
+`biowatch-release` : plus rien à créer à la main.
+
 Contrôle sur la machine : `systemctl show -p User <unité>` et
 `ps -o user,cmd -C python`.
 
@@ -359,29 +387,157 @@ d'exposer avec le certificat auto-signé, d'où l'ordre suivant.
 Les fichiers de `biowatch.d/` n'ont rien à changer : c'est l'intérêt du
 découpage.
 
-## Job Sentinel-2 mensuel (#36, ADR-004)
+## Déploiement des jobs (#27)
 
-Unité et timer prêts dans [`systemd/`](systemd/) : `extract_sentinel` sur l'AOI `idf`,
-pour le mois précédent, **chaque nuit du 5 au 10 à 01:30**. Les nuits suivant un succès
-ne font rien (idempotence de `job_run`) ; un mois `failed` ou `partial` est retenté la
-nuit suivante — c'est le « retry via job nocturne » du `CLAUDE.md`, sans code dédié.
+Une seule CI déploie **tous** les jobs : `.github/workflows/deploy-jobs.yml`,
+sur chaque push sur `main`, après avoir rejoué ruff, mypy et pytest sur le
+commit exact qui part. Les timers sont dérivés du registre des jobs : ajouter
+un job ne touche ni le workflow ni le VPS.
 
-Garde-fous pour ne pas pénaliser PostgreSQL et l'API sur le même VPS : `MemoryMax=2200M`
-(c'est le job que le noyau tue, jamais la base ; pic mesuré ~1,8 Go pour l'IDF),
-`CPUQuota=150%`, `Nice=10`, `TimeoutStartSec=3h` (un mois IDF prend 15 à 20 min).
+### Chaîne de déploiement
 
-Prérequis : code déployé dans `/opt/biowatch/app` avec son venv, grille H3 `idf`
-résolution 8 en base, et `/etc/biowatch/jobs.env` (root, 600) avec `POSTGRES_*`,
-`BIOWATCH_ENV=prod` et `LOG_LEVEL=INFO`.
+```
+GitHub Actions ── git archive | ssh biowatch-ci@vps "deploy <sha>"
+                                  │  (clé à commande forcée)
+                                  ▼
+            biowatch-ci-deploy   (biowatch-ci)  liste fermée : deploy | rollback | status
+              ├─ sudo -u deploy biowatch-release stage <sha>     extrait, uv sync, marqueur .env.prod
+              ├─ sudo -u deploy biowatch-release activate <sha>  app → releases/<sha>, atomique
+              ├─ sudo -u deploy biowatch-release manifest        python -m jobs.systemd
+              │     └─ | sudo biowatch-install-timers   (root)   valide, écrit biowatch-job@<job>.timer
+              └─ sudo -u deploy biowatch-release prune           garde les 5 dernières releases
+```
+
+| Qui | Peut | Ne peut pas |
+|---|---|---|
+| CI (clé GitHub) | lancer `biowatch-ci-deploy` avec 3 verbes | shell, tunnel, scp, autre commande |
+| `biowatch-ci` | `biowatch-release` en `deploy`, `biowatch-install-timers` en root | lire le code, les secrets, l'état des jobs |
+| `biowatch-install-timers` | écrire des **timers** à partir d'un nom + une fréquence validés | écrire un service, changer `User=` |
+| `deploy` | écrire `/opt/biowatch` | sudo, SSH (garanties de #25 inchangées) |
+
+`60-jobs-deploy.sh` ajoute `deploy` au groupe `biowatch`. Sans cela, le setgid
+de `/opt/biowatch` ne tient pas : le noyau efface le bit dès qu'un propriétaire
+hors du groupe fait un `chmod`, ce que font tar et uv, et ce qui est créé
+ensuite devient illisible pour les jobs. Aucun droit en plus : seul
+`/opt/biowatch`, qui appartient déjà à `deploy`, utilise ce groupe.
+`biowatch-release` repose groupe et setgid après chaque construction et refuse
+d'activer une release dont un fichier sortirait du groupe.
+
+Pourquoi un compte `biowatch-ci` en plus de `deploy` : donner une clé SSH, un
+shell et du sudo à `deploy` aurait cassé les invariants que
+`40-service-users.sh` prouve à chaque passage. Voir ADR-007.
+
+L'identité et le bac à sable des jobs vivent dans **une seule unité**,
+`biowatch-job@.service` (`infra/systemd/`), installée par `60-jobs-deploy.sh`
+et jamais par la CI. Une instance par job : `biowatch-job@<job>.service`.
+
+### Mise en place (une fois)
+
+0. Prérequis : la base prod est en place (`55-postgres.sh`, #23), ce qui pose
+   `/etc/biowatch/db-jobs.env` et l'unité `biowatch-postgres.service` que les jobs
+   attendent au démarrage.
+1. Générer la clé de la CI : [`keys/ci/README.md`](keys/ci/README.md).
+2. Sur le VPS : `./60-jobs-deploy.sh --dry-run` puis `./60-jobs-deploy.sh`.
+3. Si le script signale `biowatch-ci absent de AllowGroups` : rejouer
+   `./20-harden-ssh.sh` (même procédure qu'au premier passage, filet armé).
+4. Vérifier `/etc/biowatch/jobs.env` (posé depuis le modèle, sans secret).
+5. GitHub → Settings → Environments → `production`, secrets :
+
+   | Secret | Valeur |
+   |---|---|
+   | `VPS_HOST` | IP ou nom du VPS |
+   | `VPS_SSH_PORT` | `50022` |
+   | `VPS_KNOWN_HOSTS` | sortie de `ssh-keyscan -p 50022 <VPS>`, **vérifiée** contre `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` sur le VPS |
+   | `VPS_DEPLOY_KEY` | clé **privée** de la CI |
+
+6. Actions → `Deploy jobs` → Run workflow (branche `main`, champ vide).
+7. Initialiser le schéma une fois le code déployé : `sudo systemctl start biowatch-job@init_db`.
+
+Aucun secret applicatif ne passe par GitHub : la CI n'a que la clé de déploiement.
+
+### Planifier un job
+
+Dans `apps/jobs/definitions.py`, renseigner `schedule` avec une expression
+`OnCalendar` systemd, **avec le fuseau** (sinon c'est celui du VPS, en UTC). Un job
+planifié est lancé **sans argument** : s'il en a besoin, exposer une variante
+dédiée qui les fixe (ex. `extract_sentinel_monthly`).
+
+```python
+register(Job(name="extract_sentinel_monthly", ...,
+             schedule="*-*-05..10 01:30:00 Europe/Paris",
+             memory_max="2200M"))
+```
+
+- `schedule=None` (défaut) : pas de timer, lancement à la main.
+- `memory_max` (optionnel, job planifié uniquement) : plafond mémoire du run,
+  d'après un pic **mesuré**. Au-delà, le noyau tue ce job, jamais PostgreSQL ni
+  l'API. Posé en surcharge `biowatch-job@<job>.service.d/biowatch-limits.conf`.
+- Limites communes à tous les jobs (dans `biowatch-job@.service`) : `CPUQuota=150%`,
+  `Nice=10`, priorité disque basse, 6 h maximum par run.
+
+Vérifier une expression : `systemd-analyze calendar "<expr>"` (aussi fait par les
+tests en CI et par `biowatch-install-timers`). Retirer `schedule` supprime le timer
+au déploiement suivant.
+
+### Exploiter
 
 ```bash
-sudo install -m 644 systemd/biowatch-extract-sentinel.{service,timer} /etc/systemd/system/
-sudo systemctl daemon-reload
-systemd-analyze calendar '*-*-05..10 01:30:00'      # prochains déclenchements
-sudo systemctl start biowatch-extract-sentinel.service  # premier run à la main
-journalctl -u biowatch-extract-sentinel -f              # logs JSON du run
-sudo systemctl enable --now biowatch-extract-sentinel.timer
-systemctl list-timers biowatch-extract-sentinel.timer
+systemctl list-timers 'biowatch-job@*'          # prochains déclenchements
+sudo systemctl start biowatch-job@<job>          # lancer un job sans argument
+journalctl -u 'biowatch-job@*' -e                # logs JSON de tous les jobs
+journalctl -u biowatch-job@<job> --since today   # logs d'un job
+journalctl -t biowatch-deploy                    # historique des déploiements
+sudo -u biowatch-ci /usr/local/sbin/biowatch-ci-deploy status
+```
+
+Job avec arguments (même identité, mêmes secrets, même bac à sable) :
+
+```bash
+sudo systemd-run --wait --collect --unit=biowatch-job-manual \
+  -p User=biowatch-jobs -p EnvironmentFile=/etc/biowatch/jobs.env \
+  -p EnvironmentFile=/etc/biowatch/db-jobs.env \
+  -p WorkingDirectory=/opt/biowatch/app \
+  /opt/biowatch/app/.venv/bin/biowatch-jobs --env prod generate_h3_grid --aoi idf
+```
+
+### Retour arrière
+
+Les 5 dernières releases restent sur le VPS (`/opt/biowatch/releases/<sha>`).
+Revenir en arrière ne reconstruit rien : on rebascule le lien et on resynchronise
+les timers de la release visée.
+
+- **Depuis GitHub** : Actions → `Deploy jobs` → Run workflow, `rollback_to` =
+  `previous` ou un SHA complet.
+- **Depuis le VPS** :
+  `sudo -u biowatch-ci /usr/local/sbin/biowatch-ci-deploy rollback [<sha>]`
+
+Un `revert` sur `main` reste la voie normale : le retour arrière sert à rétablir
+la prod **avant** que ce revert soit mergé. Tant que `main` n'est pas corrigé, le
+prochain push redéploie la version fautive.
+
+Un déploiement en échec n'active rien : la release précédente reste en place.
+Seul cas intermédiaire : code activé mais timers non synchronisés (échec de
+`biowatch-install-timers`) — le message le dit, relancer le workflow suffit.
+
+## Job Sentinel-2 mensuel (#36, ADR-004)
+
+Planifié par le registre, comme tout job (voir « Déploiement des jobs ») :
+`extract_sentinel_monthly` traite le mois précédent sur l'AOI `idf` (résolution 8),
+**chaque nuit du 5 au 10 à 01:30, heure de Paris**. Les nuits suivant un succès ne font
+rien (idempotence de `job_run`) ; un mois `failed` ou `partial` est retenté la nuit
+suivante — c'est le « retry via job nocturne » du `CLAUDE.md`, sans code dédié.
+
+Garde-fous pour ne pas pénaliser PostgreSQL et l'API : `memory_max="2200M"` déclaré sur le
+job (c'est lui que le noyau tue, jamais la base ; pic mesuré ~1,8 Go pour l'IDF), plus les
+limites communes à tous les jobs de `biowatch-job@.service` (`CPUQuota=150%`, `Nice=10`,
+E/S en priorité basse).
+
+Prérequis : grille H3 `idf` résolution 8 en base (`generate_h3_grid --aoi idf --resolution 8`).
+
+```bash
+systemctl list-timers biowatch-job@extract_sentinel_monthly.timer
+sudo systemctl start biowatch-job@extract_sentinel_monthly   # premier run à la main
+journalctl -u biowatch-job@extract_sentinel_monthly -f      # logs JSON du run
 ```
 
 L'historique (2016 → aujourd'hui, 25 à 35 h) ne se lance **pas** sur le VPS : voir la
@@ -389,10 +545,10 @@ section « Backfill Sentinel-2 » du README racine (exécution hors VPS, tunnel 
 
 ## Portée
 
-Ces scripts traitent #22, #28, #25 et #26 (hors exposition). `AllowGroups biowatch-ssh`
-(posé par `20-harden-ssh.sh`) interdit d'avance toute connexion SSH aux
-comptes de service ; `40-service-users.sh` le vérifie et prévient s'il est
-absent.
+Ces scripts traitent #22, #28, #25, #26 (hors exposition) et #27. `AllowGroups` (posé
+par `20-harden-ssh.sh`) n'admet que `biowatch-ssh` et `biowatch-ci`, dont la clé est
+restreinte à une commande forcée : il interdit d'avance toute connexion SSH aux comptes
+de service ; `40-service-users.sh` le vérifie et prévient s'il est absent.
 
 Les ports 80 et 443 sont ouverts dans UFW par anticipation. Tant que nginx
 n'écoute que sur la boucle locale, aucun processus n'y répond côté public :
