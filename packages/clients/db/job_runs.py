@@ -65,12 +65,13 @@ def _start_run(
     engine: Engine | None,
 ) -> RunContext:
     """Create a new run, or reuse a retryable one. Raise if already succeeded."""
+    succeeded_run_id: uuid.UUID | None = None
     with session_scope(engine) as session:
         existing = session.scalar(select(JobRun).where(JobRun.idempotency_key == idempotency_key))
 
-        if existing is not None:
-            if existing.status == "success":
-                raise JobAlreadySucceeded(idempotency_key, existing.run_id)
+        if existing is not None and existing.status == "success":
+            succeeded_run_id = existing.run_id
+        elif existing is not None:
             # Retry: reset the existing run in place (failed / partial / running).
             existing.status = "running"
             existing.started_at = _now()
@@ -93,6 +94,12 @@ def _start_run(
                     idempotency_key=idempotency_key,
                 )
             )
+
+    # Raised outside `session_scope`: a skip is the normal outcome of a re-run
+    # (e.g. the monthly timer's retry nights), not a DB error to roll back and
+    # log at ERROR level.
+    if succeeded_run_id is not None:
+        raise JobAlreadySucceeded(idempotency_key, succeeded_run_id)
 
     return RunContext(
         run_id=run_id,

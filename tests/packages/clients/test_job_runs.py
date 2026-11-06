@@ -183,3 +183,16 @@ def test_record_zone_errors_empty_is_noop(engine):
     with job_run("ingest", scope="idf", idempotency_key=KEY, engine=engine) as (run, session):
         record_zone_errors(run.run_id, [], "nothing", engine=engine)
     assert _get_run(engine).status == "success"
+
+
+def test_skip_of_succeeded_job_logs_no_error(engine, caplog):
+    """Régression : un skip (cas normal d'une relance) était journalisé en ERROR
+    par session_scope (`db.session_error`), d'où de fausses alertes."""
+    import logging
+
+    with job_run("ingest", scope="idf", idempotency_key=KEY, engine=engine):
+        pass
+    with caplog.at_level(logging.INFO), pytest.raises(JobAlreadySucceeded):
+        with job_run("ingest", scope="idf", idempotency_key=KEY, engine=engine):
+            pass  # pragma: no cover
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
