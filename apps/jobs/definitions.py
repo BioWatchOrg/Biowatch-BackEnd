@@ -18,6 +18,7 @@ from sentinel import (
     EXTRACTION_PIPELINE_VERSION,
     backfill_sentinel,
     extract_sentinel_data_by_aoi,
+    month_range,
     previous_month_bucket,
 )
 
@@ -64,13 +65,20 @@ register(
 
 
 def _run_extract_sentinel(args: Namespace) -> None:
-    extract_sentinel_data_by_aoi(
+    bucket = args.bucket_id or previous_month_bucket()
+    status = extract_sentinel_data_by_aoi(
         aoi_label=args.aoi,
-        bucket=args.bucket_id or previous_month_bucket(),
+        bucket=bucket,
         resolution=args.h3_res,
         source_version=args.source_version,
         io_threads=args.io_threads,
     )
+    if status == "partial":
+        # Code de sortie != 0 : systemd marque l'unité en échec (visible, alertable).
+        # Le timer retente le mois les nuits suivantes ; à la main, relancer la commande.
+        raise SystemExit(
+            f"extract_sentinel : {bucket} incomplet (tuile(s) illisible(s)), à relancer"
+        )
 
 
 def _configure_extract_sentinel(parser: ArgumentParser) -> None:
@@ -115,18 +123,29 @@ register(
 
 
 def _run_backfill_sentinel(args: Namespace) -> None:
-    failed = backfill_sentinel(
+    if args.months:
+        months = [m.strip() for m in args.months.split(",") if m.strip()]
+    elif args.from_bucket and args.to_bucket:
+        months = month_range(args.from_bucket, args.to_bucket)
+    else:
+        raise SystemExit("backfill_sentinel : donner --from et --to, ou --months")
+    report = backfill_sentinel(
         args.aoi,
-        args.from_bucket,
-        args.to_bucket,
+        months,
         args.h3_res,
         source_version=args.source_version,
         io_threads=args.io_threads,
     )
-    if failed:
+    if report.to_retry:
         # Code de sortie != 0 : visible par systemd / le shell. Relancer la même
         # commande ne refait que ces mois (les autres sont déjà en success).
-        raise SystemExit(f"backfill_sentinel : {len(failed)} mois en échec : {', '.join(failed)}")
+        raise SystemExit(
+            f"backfill_sentinel : {len(report.to_retry)} mois à relancer "
+            f"(échec : {', '.join(report.failed) or 'aucun'} ; "
+            f"incomplets : {', '.join(report.partial) or 'aucun'}).\n"
+            f"Pour ne relancer que ceux-là : uv run biowatch-jobs backfill_sentinel "
+            f"--aoi {args.aoi} --h3_res {args.h3_res} --months {','.join(report.to_retry)}"
+        )
 
 
 def _configure_backfill_sentinel(parser: ArgumentParser) -> None:
@@ -138,14 +157,17 @@ def _configure_backfill_sentinel(parser: ArgumentParser) -> None:
     parser.add_argument(
         "--from",
         dest="from_bucket",
-        required=True,
-        help="Premier mois, 'YYYY-MM' (ex: '2016-01').",
+        help="Premier mois de la plage, 'YYYY-MM' (ex: '2016-01'). Avec --to.",
     )
     parser.add_argument(
         "--to",
         dest="to_bucket",
-        required=True,
-        help="Dernier mois inclus, 'YYYY-MM'.",
+        help="Dernier mois inclus de la plage, 'YYYY-MM'. Avec --from.",
+    )
+    parser.add_argument(
+        "--months",
+        help="Liste de mois à (re)lancer, séparés par des virgules (ex: '2016-04,2019-07') — "
+        "à la place de --from/--to, typiquement les mois signalés par un backfill précédent.",
     )
     parser.add_argument("--h3_res", type=int, default=8, help="Résolution H3 (défaut : 8).")
     parser.add_argument(

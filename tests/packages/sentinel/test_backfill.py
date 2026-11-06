@@ -2,7 +2,7 @@
 
 import pytest
 
-from sentinel import backfill_sentinel, month_range
+from sentinel import BackfillReport, backfill_sentinel, month_range
 
 
 def test_month_range_crosses_years():
@@ -30,10 +30,15 @@ def test_month_range_rejects_reversed_range():
 
 def test_backfill_runs_every_month_in_order():
     calls = []
-    failed = backfill_sentinel(
-        "idf", "2016-01", "2016-03", 8, extract=lambda **kw: calls.append(kw), io_threads=4
+
+    def extract(**kw):
+        calls.append(kw)
+        return "success"
+
+    report = backfill_sentinel(
+        "idf", month_range("2016-01", "2016-03"), 8, extract=extract, io_threads=4
     )
-    assert failed == []
+    assert report.to_retry == []
     assert [call["bucket"] for call in calls] == ["2016-01", "2016-02", "2016-03"]
     assert calls[0] == {
         "aoi_label": "idf",
@@ -51,10 +56,46 @@ def test_backfill_continues_after_a_failed_month():
         if kw["bucket"] == "2016-02":
             raise RuntimeError("tunnel SSH coupé")
         done.append(kw["bucket"])
+        return "success"
 
-    failed = backfill_sentinel("idf", "2016-01", "2016-03", 8, extract=extract)
-    assert failed == ["2016-02"]
+    report = backfill_sentinel("idf", month_range("2016-01", "2016-03"), 8, extract=extract)
+    assert report.failed == ["2016-02"]
+    assert report.partial == []
     assert done == ["2016-01", "2016-03"]
+
+
+def test_backfill_reports_partial_months():
+    """Régression : un mois incomplet (tuile illisible) passait pour réussi."""
+    statuses = {"2016-01": "success", "2016-02": "partial", "2016-03": "skipped"}
+
+    report = backfill_sentinel(
+        "idf", month_range("2016-01", "2016-03"), 8, extract=lambda **kw: statuses[kw["bucket"]]
+    )
+    assert report.partial == ["2016-02"]
+    assert report.failed == []
+    assert report.to_retry == ["2016-02"]
+
+
+def test_to_retry_merges_failed_and_partial_in_order():
+    report = BackfillReport(failed=["2019-07"], partial=["2016-02", "2020-01"])
+    assert report.to_retry == ["2016-02", "2019-07", "2020-01"]
+
+
+def test_backfill_targeted_months_only():
+    """Relance ciblée : seuls les mois donnés sont traités, dans l'ordre donné."""
+    calls = []
+
+    def extract(**kw):
+        calls.append(kw["bucket"])
+        return "success"
+
+    backfill_sentinel("idf", ["2016-02", "2019-07"], 8, extract=extract)
+    assert calls == ["2016-02", "2019-07"]
+
+
+def test_backfill_rejects_non_monthly_month():
+    with pytest.raises(ValueError, match="mensuel"):
+        backfill_sentinel("idf", ["2016-02", "2019"], 8, extract=lambda **kw: "success")
 
 
 def test_backfill_does_not_swallow_keyboard_interrupt():
@@ -62,4 +103,4 @@ def test_backfill_does_not_swallow_keyboard_interrupt():
         raise KeyboardInterrupt
 
     with pytest.raises(KeyboardInterrupt):
-        backfill_sentinel("idf", "2016-01", "2016-02", 8, extract=extract)
+        backfill_sentinel("idf", month_range("2016-01", "2016-02"), 8, extract=extract)

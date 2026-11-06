@@ -3,6 +3,7 @@ import logging
 import re
 import time
 from collections import defaultdict
+from typing import Literal
 
 import pandas as pd
 import shapely
@@ -51,6 +52,10 @@ EXTRACTION_PIPELINE_VERSION = "2.0.0"
 
 MONTHLY_BUCKET_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 
+# Issue d'un mois : "partial" = au moins une tuile illisible, ses cellules sont
+# dans job_run_zone_errors et n'ont pas de ligne -> le mois est à relancer.
+ExtractionStatus = Literal["success", "partial", "skipped"]
+
 
 def previous_month_bucket(today: datetime.date | None = None) -> BucketId:
     """Bucket du mois précédent (ex. le 5 novembre -> "YYYY-10").
@@ -72,7 +77,7 @@ def extract_sentinel_data_by_aoi(
     resolution: int,
     source_version: str = EXTRACTION_PIPELINE_VERSION,
     io_threads: int = DEFAULT_IO_THREADS,
-) -> None:
+) -> ExtractionStatus:
     """
     Calcule les indices Sentinel-2 mensuels d'une AOI et les persiste dans
     `satellite_features_by_zone` (ADR-004).
@@ -85,7 +90,10 @@ def extract_sentinel_data_by_aoi(
       (run `partial`, reprise ciblée possible), les autres tuiles continuent.
     - Une cellule sans aucune image exploitable -> ligne écrite avec indices
       NULL et `is_valid_data = false` (trou explicite, pas une erreur).
-    - Recherche STAC en échec -> le run entier échoue (`failed`).
+    - Recherche STAC en échec -> le run entier échoue (`failed`, exception).
+
+    Renvoie "success", "partial" (au moins une tuile en échec : relancer le
+    même mois refait tout le mois) ou "skipped" (mois déjà réussi).
 
     Args:
         aoi_label: label de l'AOI (voir packages/core/aoi/aoi_registry.json).
@@ -196,3 +204,5 @@ def extract_sentinel_data_by_aoi(
             "sentinel data already extracted, skipping",
             extra={"event": "sentinel.skip", "context": log_ctx},
         )
+        return "skipped"
+    return "partial" if failed_cells else "success"

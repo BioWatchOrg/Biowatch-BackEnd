@@ -108,7 +108,7 @@ def calls(monkeypatch):
 
 
 def _run(bucket="2025-05"):
-    sentinel_extract.extract_sentinel_data_by_aoi("idf", bucket, resolution=8)
+    return sentinel_extract.extract_sentinel_data_by_aoi("idf", bucket, resolution=8)
 
 
 def _rows_by_zone(calls):
@@ -117,7 +117,7 @@ def _rows_by_zone(calls):
 
 
 def test_every_cell_gets_a_row(calls):
-    _run()
+    assert _run() == "success"
     rows = _rows_by_zone(calls)
     assert set(rows) == set(CELLS)
     assert rows["cellA"]["ndvi"] == pytest.approx(0.7)
@@ -142,7 +142,7 @@ def test_searches_the_whole_month(calls):
 
 def test_failed_tile_records_zone_errors_and_others_continue(calls):
     calls.failing_tiles.add("WEST")
-    _run()
+    assert _run() == "partial"
     assert sorted(zone for zone, _ in calls.zone_errors) == ["cellA", "cellB"]
     assert all("WEST" in message for _, message in calls.zone_errors)
     rows = _rows_by_zone(calls)
@@ -164,7 +164,7 @@ def test_search_failure_fails_the_whole_run(calls, monkeypatch):
 def test_month_without_any_scene_writes_only_gaps(calls, monkeypatch):
     monkeypatch.setattr(sentinel_extract, "search_scenes", lambda bbox, start, end: [])
     monkeypatch.setattr(sentinel_extract, "assign_owner_tiles", lambda cells, fp: {})
-    _run()
+    assert _run() == "success"  # des trous ne sont pas des erreurs
     rows = _rows_by_zone(calls)
     assert set(rows) == set(CELLS)
     assert all(row["ndvi"] is None for row in rows.values())
@@ -193,7 +193,7 @@ def test_job_already_succeeded_is_a_noop(calls, monkeypatch):
         yield  # pragma: no cover
 
     monkeypatch.setattr(sentinel_extract, "job_run", already_done)
-    _run()
+    assert _run() == "skipped"
     assert calls.upsert == [] and calls.search == []
 
 

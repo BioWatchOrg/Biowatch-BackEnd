@@ -73,7 +73,15 @@ ssh -p 50022 -i ~/.ssh/biowatch_ed25519 -N \
 # identifiants de prod — jamais commités)
 caffeinate -i uv run biowatch-jobs backfill_sentinel --aoi idf --from 2016-01 --to 2026-09
 ```
-Code de sortie != 0 s'il reste des mois en échec : relancer la même commande.
+En fin de backfill, les mois **à relancer** sont listés : ceux en échec (exception) et ceux
+**incomplets** (une tuile illisible : ses cellules sont dans `job_run_zone_errors`, sans ligne).
+Le code de sortie est alors != 0 et le message donne la commande pour ne relancer qu'eux :
+```bash
+uv run biowatch-jobs backfill_sentinel --aoi idf --h3_res 8 --months 2016-04,2019-07
+```
+Relancer un mois refait tout le mois (8 à 15 min pour l'IDF) ; les mois déjà réussis sont
+sautés. Même règle pour `extract_sentinel` : un mois incomplet sort avec un code != 0
+(visible par systemd), et le timer le retente les nuits suivantes (du 5 au 10).
 
 ### Enregistrer un nouveau job
 Il faut enregistrer le nouveau job dans : apps/jobs/definitions.py
