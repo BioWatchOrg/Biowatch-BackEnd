@@ -12,7 +12,7 @@
 #   prune             ne garde que les @RELEASES_KEPT@ releases les plus récentes
 #   status            release active et releases disponibles
 #
-# Installé par infra/vps/50-jobs-deploy.sh, qui remplace les @…@.
+# Installé par infra/vps/60-jobs-deploy.sh, qui remplace les @…@.
 
 set -Eeuo pipefail
 # Groupe en lecture, rien pour les autres : /opt/biowatch est setgid biowatch,
@@ -37,14 +37,14 @@ export PYTHONDONTWRITEBYTECODE=1
 log() { printf '%s [release] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >&2; }
 die() { log "ERREUR : $*"; exit 1; }
 
-[[ "$APP_DIR" != @* ]] || die "script non installé (lancer infra/vps/50-jobs-deploy.sh)"
+[[ "$APP_DIR" != @* ]] || die "script non installé (lancer infra/vps/60-jobs-deploy.sh)"
 # sudo garde le répertoire courant de l'appelant (le home de biowatch-ci,
 # illisible par deploy) : find, uv et tar échoueraient à y revenir.
 cd /
 [[ "$(id -un)" == "$(stat -c '%U' "$APP_DIR")" ]] \
   || die "doit tourner sous le propriétaire de ${APP_DIR} (sudo -u deploy)"
 id -nG | tr ' ' '\n' | grep -qx "$SERVICE_GROUP" \
-  || die "$(id -un) doit être membre de ${SERVICE_GROUP} — rejouer 50-jobs-deploy.sh"
+  || die "$(id -un) doit être membre de ${SERVICE_GROUP} — rejouer 60-jobs-deploy.sh"
 
 check_sha() {
   [[ "${1:-}" =~ ^[0-9a-f]{40}$ ]] || die "SHA invalide : 40 caractères hexadécimaux attendus"
@@ -84,9 +84,9 @@ cmd_stage() {
   [[ -f "${rel}/pyproject.toml" && -f "${rel}/uv.lock" ]] \
     || die "archive incomplète : pyproject.toml ou uv.lock absent"
 
-  # Marqueur prod (ADR-003) : sans lui, `--env prod` refuse de démarrer. Aucun
+  # Marqueur prod (ADR-005) : sans lui, `--env prod` refuse de démarrer. Aucun
   # secret ici — ils restent dans /etc/biowatch/jobs.env, lus par systemd.
-  printf '%s\n' "# Marqueur prod (ADR-003), posé par biowatch-release. Aucun secret ici :" \
+  printf '%s\n' "# Marqueur prod (ADR-005), posé par biowatch-release. Aucun secret ici :" \
     "# ils sont dans /etc/biowatch/jobs.env, injectés par systemd." > "${rel}/.env.prod"
 
   log "construction du venv (uv ${UV_BIN})"

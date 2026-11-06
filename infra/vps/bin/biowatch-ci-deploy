@@ -13,7 +13,7 @@
 # Depuis une session membre sur le VPS (mêmes droits que la CI) :
 #   sudo -u biowatch-ci /usr/local/sbin/biowatch-ci-deploy rollback [<sha>]
 #
-# Installé par infra/vps/50-jobs-deploy.sh, qui remplace les @…@.
+# Installé par infra/vps/60-jobs-deploy.sh, qui remplace les @…@.
 
 set -Eeuo pipefail
 umask 077
@@ -30,7 +30,7 @@ log() {
 }
 die() { log "ERREUR : $*"; exit 1; }
 
-[[ "$DEPLOY_ACCOUNT" != @* ]] || die "script non installé (lancer infra/vps/50-jobs-deploy.sh)"
+[[ "$DEPLOY_ACCOUNT" != @* ]] || die "script non installé (lancer infra/vps/60-jobs-deploy.sh)"
 
 # `read -a` découpe sur les blancs sans glob ni expansion : « deploy $(rm …) »
 # donne trois mots, refusés plus bas, jamais exécutés.

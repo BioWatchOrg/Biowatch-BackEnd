@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 50-jobs-deploy.sh — issue #27.
+# 60-jobs-deploy.sh — issue #27.
 #
 # Prépare le VPS à recevoir les déploiements des jobs par la CI. À lancer une
 # fois par un membre (puis à rejouer si ce script ou config.sh change) :
@@ -13,10 +13,10 @@
 # Ce script ne modifie pas sshd : le groupe CI doit être ajouté à AllowGroups
 # en rejouant 20-harden-ssh.sh (filet armé). Il le vérifie et le signale.
 #
-#   ./50-jobs-deploy.sh --dry-run
-#   ./50-jobs-deploy.sh
+#   ./60-jobs-deploy.sh --dry-run
+#   ./60-jobs-deploy.sh
 
-USAGE="Usage: ./50-jobs-deploy.sh [--dry-run]
+USAGE="Usage: ./60-jobs-deploy.sh [--dry-run]
 
 Installe le compte CI, uv, les scripts de déploiement et l'unité des jobs,
 puis PROUVE les droits du compte CI en testant ses accès. Idempotent. Aucun
@@ -245,7 +245,7 @@ install_sudoers() {
   # Le "" final interdit tout argument : le manifeste arrive sur stdin, rien
   # d'autre ne peut être passé à un script qui tourne en root.
   cat > "$tmp" <<EOF
-# Généré par infra/vps/50-jobs-deploy.sh — issue #27.
+# Généré par infra/vps/60-jobs-deploy.sh — issue #27.
 # Seuls droits du compte CI : construire/activer une release en tant que
 # ${DEPLOY_ACCOUNT}, et synchroniser les timers des jobs en root.
 ${CI_ACCOUNT} ALL=(${DEPLOY_ACCOUNT}) NOPASSWD: ${RELEASE_BIN}

@@ -5,7 +5,7 @@ le workflow `Deploy jobs` pour déployer sur le VPS. Sa clé privée vit
 **uniquement** dans les secrets GitHub (`VPS_DEPLOY_KEY`, environnement
 `production`) : jamais dans le dépôt, jamais sur un poste après sa création.
 
-Sur le VPS, la clé est installée par `../../50-jobs-deploy.sh` avec le préfixe
+Sur le VPS, la clé est installée par `../../60-jobs-deploy.sh` avec le préfixe
 `restrict,command="/usr/local/sbin/biowatch-ci-deploy"` : elle ne peut ouvrir
 ni shell, ni tunnel, ni transfert de fichiers. Elle ne sait faire que
 `deploy <sha>`, `rollback [<sha>]` et `status`.
@@ -25,4 +25,4 @@ ssh-keygen -t ed25519 -N "" -C "biowatch-ci@github-actions" -f ./biowatch-ci
 ## Rotation (clé compromise ou membre sortant qui l'a manipulée)
 
 Régénérer la paire, remplacer le `.pub` ici, mettre à jour le secret, puis
-rejouer `50-jobs-deploy.sh` : l'ancienne clé est remplacée, donc révoquée.
+rejouer `60-jobs-deploy.sh` : l'ancienne clé est remplacée, donc révoquée.

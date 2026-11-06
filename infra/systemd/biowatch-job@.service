@@ -3,11 +3,11 @@
 #   systemctl start biowatch-job@init_db        lancer un job à la main
 #   journalctl -u biowatch-job@init_db -e       ses logs (JSON)
 #
-# Installée par infra/vps/50-jobs-deploy.sh (les @…@ sont remplacés par les
+# Installée par infra/vps/60-jobs-deploy.sh (les @…@ sont remplacés par les
 # valeurs de config.sh), JAMAIS par la CI : c'est elle qui fixe l'identité et
 # le bac à sable des jobs. La CI ne génère que les timers
 # biowatch-job@<job>.timer, à partir de la fréquence déclarée dans le registre.
-# Modifier ce fichier = rejouer 50-jobs-deploy.sh sur le VPS.
+# Modifier ce fichier = rejouer 60-jobs-deploy.sh sur le VPS.
 [Unit]
 Description=BioWatch - job %i
 Wants=network-online.target
@@ -18,7 +18,7 @@ Type=oneshot
 User=biowatch-jobs
 Group=biowatch-jobs
 # Secrets prod, lus par systemd en root avant le changement d'identité : le job
-# reçoit ses variables sans pouvoir lire le fichier (cf. #25, ADR-003).
+# reçoit ses variables sans pouvoir lire le fichier (cf. #25, ADR-005).
 EnvironmentFile=@JOBS_ENV_FILE@
 WorkingDirectory=@APP_CURRENT@
 # Le venv est construit par deploy : pas de « uv run », qui tenterait

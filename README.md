@@ -37,7 +37,7 @@ Avec ce contrôle, la connexion est refusée avant d'être ouverte.
 Ces deux garde-fous protègent contre **l'erreur**, pas contre une action délibérée :
 créer soi-même `.env.prod` sur un laptop les contourne. La protection contre
 l'intention est réseau et PostgreSQL (DB jamais exposée, comptes, droits). Raisonnement
-complet dans `docs/architecture-decisions.md` (ADR-003).
+complet dans `docs/architecture-decisions.md` (ADR-005).
 
 Les tokens d'outillage (Notion) restent dans `.env`, commun aux deux envs.
 
@@ -116,6 +116,48 @@ TEST_DATABASE_URL=postgresql+psycopg://biowatch:<mot de passe de .env.dev>@127.0
     uv run biowatch-jobs <job> --help # Pour voir les arguments à mettre 
     uv run biowatch-jobs generate_h3_grid --aoi idf --resolution 5
 ````
+
+### Extraction Sentinel-2
+Indices NDVI / NDWI / NDBI / SWIR mensuels par cellule H3, calculés localement depuis les
+images Sentinel-2 L2A de Planetary Computer (gratuit, sans compte ni clé — voir ADR-004 dans
+`docs/architecture-decisions.md`). Résultat dans `satellite_features_by_zone`, une ligne par
+cellule et par mois (`bucket_id` = `YYYY-MM`).
+
+La grille H3 de l'AOI doit exister (`satellite_features_by_zone.zone_id` référence
+`zones_hex` — lancer `generate_h3_grid` d'abord, **même résolution**).
+```bash
+uv run biowatch-jobs generate_h3_grid --aoi idf --resolution 8
+uv run biowatch-jobs extract_sentinel --aoi idf --bucket_id 2025-05   # un mois
+uv run biowatch-jobs extract_sentinel --aoi idf                       # le mois précédent (run mensuel)
+```
+Ordre de grandeur (IDF, résolution 8, ~18 300 cellules) : 12 à 18 min et ~1,8 Go de RAM par
+mois. Relancer un mois déjà réussi ne fait rien (idempotence) ; une tuile illisible est
+enregistrée dans `job_run_zone_errors` pour ses cellules.
+
+### Backfill Sentinel-2 (historique)
+Enchaîne le job mois par mois. Relancer la même commande reprend là où elle s'est arrêtée
+(les mois déjà réussis sont sautés). Compter 25 à 35 h pour l'IDF depuis 2016 : à lancer
+**hors VPS** (Mac branché, `caffeinate -i`), en écrivant dans la base du VPS via un tunnel SSH.
+```bash
+# terminal 1 : tunnel SSH (port local 15432 -> PostgreSQL du VPS, jamais exposé à Internet)
+ssh -p 50022 -i ~/.ssh/biowatch_ed25519 -N \
+    -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+    -L 15432:127.0.0.1:5432 <user>@<IP_DU_VPS>
+
+# terminal 2 : .env pointant sur le tunnel (POSTGRES_HOST=127.0.0.1, POSTGRES_PORT=15432,
+# identifiants de prod — jamais commités)
+caffeinate -i uv run biowatch-jobs backfill_sentinel --aoi idf --from 2016-01 --to 2026-09
+```
+En fin de backfill, les mois **à relancer** sont listés : ceux en échec (exception) et ceux
+**incomplets** (une tuile illisible : ses cellules sont dans `job_run_zone_errors`, sans ligne).
+Le code de sortie est alors != 0 et le message donne la commande pour ne relancer qu'eux :
+```bash
+uv run biowatch-jobs backfill_sentinel --aoi idf --h3_res 8 --months 2016-04,2019-07
+```
+Relancer un mois refait tout le mois (8 à 15 min pour l'IDF) ; les mois déjà réussis sont
+sautés. Même règle pour `extract_sentinel` : un mois incomplet sort avec un code != 0
+(visible par systemd), et le timer le retente les nuits suivantes (du 5 au 10).
+
 ### Enregistrer un nouveau job
 Il faut enregistrer le nouveau job dans : apps/jobs/definitions.py
 

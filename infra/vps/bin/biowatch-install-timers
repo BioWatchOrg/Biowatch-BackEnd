@@ -15,7 +15,7 @@
 # et supprime les timers des jobs qui ne sont plus planifiés. Valide TOUT le
 # manifeste avant de toucher à quoi que ce soit.
 #
-# Installé par infra/vps/50-jobs-deploy.sh, qui remplace les @…@.
+# Installé par infra/vps/60-jobs-deploy.sh, qui remplace les @…@.
 
 set -Eeuo pipefail
 umask 022
@@ -30,10 +30,10 @@ readonly CAL_RE='^[A-Za-z0-9 :*/,.~+_-]{1,100}$'
 log() { printf '%s [timers] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >&2; }
 die() { log "ERREUR : $*"; exit 1; }
 
-[[ "$UNIT_TEMPLATE" != @* ]] || die "script non installé (lancer infra/vps/50-jobs-deploy.sh)"
+[[ "$UNIT_TEMPLATE" != @* ]] || die "script non installé (lancer infra/vps/60-jobs-deploy.sh)"
 (( EUID == 0 )) || die "doit tourner en root"
 (( $# == 0 )) || die "aucun argument attendu : manifeste sur stdin"
-[[ -f "$UNIT_TEMPLATE" ]] || die "${UNIT_TEMPLATE} absent — lancer 50-jobs-deploy.sh"
+[[ -f "$UNIT_TEMPLATE" ]] || die "${UNIT_TEMPLATE} absent — lancer 60-jobs-deploy.sh"
 
 # ── Lecture et validation complète ───────────────────────────────────────
 
