@@ -87,7 +87,7 @@ def _run_osm_import_snapshot(args: Namespace) -> None:
 register(
     Job(
         name="osm_import_snapshot",
-        help="Importe un snapshot OSM (Geofabrik) d'une AOI dans osm_tmp_{aoi}_{bucket}.",
+        help="Importe un snapshot OSM (Geofabrik) d'une AOI dans osm_tmp_{aoi}_{bucket}_{clé}.",
         run=_run_osm_import_snapshot,
         configure=_configure_osm_import_snapshot,
     )

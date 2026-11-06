@@ -10,15 +10,24 @@ import pytest
 from sqlalchemy import create_engine, select
 
 from clients import JobRun, JobRunZoneError
+from clients.osm import snapshot_for
 from clients.db.session import get_sessionmaker
 from jobs.pipelines import osm_import
 from jobs.pipelines.osm_import import (
+    import_idempotency_key,
     osm_import_scheduled,
     osm_import_snapshot,
     tmp_schema_name,
 )
 
 QUEUE_URL = "https://sqs.eu-west-3.amazonaws.com/123456789012/osm_import_done"
+IDF_2016_PBF = "https://download.geofabrik.de/europe/france/ile-de-france-160101.osm.pbf"
+
+
+def _schema(env="dev"):
+    """Schema of the default idf/2016 import (Geofabrik mapping) for `env`."""
+    key = import_idempotency_key(snapshot_for("idf", "2016"), "2016", env)
+    return tmp_schema_name("idf", "2016", key)
 
 
 @pytest.fixture
@@ -89,24 +98,33 @@ def _runs(engine):
         return list(s.scalars(select(JobRun)).all())
 
 
-def test_tmp_schema_name():
-    assert tmp_schema_name("idf", "2016") == "osm_tmp_idf_2016"
+def test_tmp_schema_name_is_suffixed_with_the_key():
+    assert tmp_schema_name("idf", "2016", "0123456789abcdef") == "osm_tmp_idf_2016_01234567"
+
+
+def test_style_version_is_part_of_the_source_version_and_key(monkeypatch):
+    snap = snapshot_for("idf", "2016")
+    assert osm_import.import_source_version(snap) == "geofabrik_2016-01-01_style-v1"
+    key_v1 = import_idempotency_key(snap, "2016", "prod")
+    monkeypatch.setattr(osm_import, "STYLE_VERSION", "2")
+    assert osm_import.import_source_version(snap) == "geofabrik_2016-01-01_style-v2"
+    assert import_idempotency_key(snap, "2016", "prod") != key_v1
 
 
 def test_import_downloads_imports_and_records_success(engine, fakes):
     assert osm_import_snapshot("idf", "2016", engine=engine) is True
 
     assert fakes.events == [
-        ("download", "https://download.geofabrik.de/europe/france/ile-de-france-160101.osm.pbf"),
-        ("create_schema", "osm_tmp_idf_2016"),
-        ("osm2pgsql", "osm_tmp_idf_2016", ["ile-de-france-160101.osm.pbf"]),
+        ("download", IDF_2016_PBF),
+        ("create_schema", _schema()),
+        ("osm2pgsql", _schema(), ["ile-de-france-160101.osm.pbf"]),
     ]
     (run,) = _runs(engine)
     assert run.status == "success"
     assert run.job_name == "osm_import_snapshot"
     assert run.scope == "region:idf"
     assert run.bucket_id == "2016"
-    assert run.output_ref == "osm_tmp_idf_2016"
+    assert run.output_ref == _schema()
 
 
 def test_downloaded_files_are_deleted(engine, fakes):
@@ -129,6 +147,28 @@ def test_env_is_part_of_the_idempotency_key(engine, fakes):
     assert len(_runs(engine)) == 2
 
 
+def test_another_key_never_drops_a_successful_runs_schema(engine, fakes, monkeypatch):
+    osm_import_snapshot("idf", "2016", env="prod", engine=engine)
+    fakes.events.clear()
+
+    # Same AOI and bucket, other keys: other env, manual links, new style version.
+    osm_import_snapshot("idf", "2016", env="dev", engine=engine)
+    osm_import_snapshot(
+        "idf",
+        "2016",
+        env="prod",
+        links=["https://mirror.example/ile-de-france-160101.osm.pbf"],
+        engine=engine,
+    )
+    monkeypatch.setattr(osm_import, "STYLE_VERSION", "2")
+    osm_import_snapshot("idf", "2016", env="prod", engine=engine)
+
+    assert not any(event[0] == "drop_schema" for event in fakes.events)
+    assert _schema("prod") in fakes.existing_schemas
+    schemas = {run.output_ref for run in _runs(engine)}
+    assert len(schemas) == 4 and schemas <= fakes.existing_schemas
+
+
 def test_failure_marks_run_failed_and_cleans_files(engine, fakes):
     fakes.fail_on = "osm2pgsql"
     with pytest.raises(RuntimeError, match="osm2pgsql failed"):
@@ -145,14 +185,14 @@ def test_retry_drops_schema_left_by_failed_attempt(engine, fakes):
     fakes.fail_on = "osm2pgsql"
     with pytest.raises(RuntimeError):
         osm_import_snapshot("idf", "2016", engine=engine)
-    assert "osm_tmp_idf_2016" in fakes.existing_schemas  # leftover of the crash
+    assert _schema() in fakes.existing_schemas  # leftover of the crash
 
     fakes.fail_on = None
     fakes.events.clear()
     assert osm_import_snapshot("idf", "2016", engine=engine) is True
 
-    assert fakes.events[0] == ("drop_schema", "osm_tmp_idf_2016")
-    assert ("create_schema", "osm_tmp_idf_2016") in fakes.events
+    assert fakes.events[0] == ("drop_schema", _schema())
+    assert ("create_schema", _schema()) in fakes.events
     (run,) = _runs(engine)
     assert run.status == "success"
 
@@ -184,11 +224,11 @@ def test_sqs_signal_is_published_when_queue_configured(engine, fakes, monkeypatc
     assert body == {
         "region_id": "idf",
         "bucket_id": "2016",
-        "schema_name": "osm_tmp_idf_2016",
-        "source_version": "geofabrik_2016-01-01",
+        "schema_name": _schema("prod"),
+        "source_version": "geofabrik_2016-01-01_style-v1",
         "h3_res": 8,
         "env": "prod",
-        "pbf_links": ["https://download.geofabrik.de/europe/france/ile-de-france-160101.osm.pbf"],
+        "pbf_links": [IDF_2016_PBF],
         "run_id": str(run.run_id),
     }
 

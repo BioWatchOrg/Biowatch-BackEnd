@@ -2,7 +2,7 @@
 PostgreSQL schema helpers (namespaces, not ORM tables).
 
 Used by jobs that stage data in a temporary schema (e.g. the OSM import writes
-into `osm_tmp_{aoi}_{bucket}`, dropped later by the compute job). The ORM models
+into `osm_tmp_{aoi}_{bucket}_{key}`, dropped later by the compute job). The ORM models
 stay in `public`; these helpers never touch them.
 
 Schema names cannot be passed as bind parameters, so every name is validated

@@ -14,8 +14,8 @@ cours. Une région en échec est retentée au déclenchement suivant avant de pa
 suivante. Quand toutes les régions sont importées, le job ne fait rien jusqu'à l'année
 suivante.
 
-Résultat : schéma `osm_tmp_{aoi}_{année}` + ligne `job_runs` en `success` avec
-`output_ref` = nom du schéma. C'est le signal de fin d'import consommé par #38. Un
+Résultat : schéma `osm_tmp_{aoi}_{année}_{clé}` (8 premiers caractères de
+l'`idempotency_key`) + ligne `job_runs` en `success` avec `output_ref` = nom du schéma. C'est le signal de fin d'import consommé par #38. Un
 message SQS est publié en plus si `OSM_IMPORT_DONE_QUEUE_URL` est renseigné (désactivé tant
 que BioWatch n'a pas de compte AWS).
 

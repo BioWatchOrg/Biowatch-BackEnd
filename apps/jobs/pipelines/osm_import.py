@@ -1,13 +1,16 @@
 """
-OSM snapshot import (ticket #35): Geofabrik `.pbf` → osm2pgsql → `osm_tmp_{aoi}_{bucket}`.
+OSM snapshot import (ticket #35): Geofabrik `.pbf` → osm2pgsql → `osm_tmp_{aoi}_{bucket}_{key}`.
 
 First stage of the OSM pipeline. It only stages raw OSM objects (buildings,
 roads, urban landuse) in a temporary schema; the compute job (#38) aggregates
 them per H3 zone into `osm_features_by_zone` and drops the schema.
 
-Idempotence: one run per (AOI, annual bucket, source version, env). A run in
-`success` is skipped. On retry, a schema left behind by a failed attempt is
-dropped and re-imported (it cannot belong to a successful run).
+Idempotence: one run per (AOI, annual bucket, source version, env), where the
+source version covers both the snapshot and `style.lua` (`STYLE_VERSION`). A
+run in `success` is skipped. The schema name ends with a prefix of the
+idempotency key, so each key has its own schema: on retry, a schema found
+under that name is the leftover of a failed attempt of the same key, never the
+output of a successful run, and is dropped and re-imported.
 
 End-of-import signal: `job_runs.status = success` with `output_ref` = schema
 name is always written. An SQS "import done" message is also published when
@@ -30,6 +33,7 @@ from clients import (
 )
 from clients.osm import (
     GEOFABRIK_REGIONS,
+    STYLE_VERSION,
     Snapshot,
     download,
     run_osm2pgsql,
@@ -52,13 +56,27 @@ DATA_DIR_ENV = "OSM_DATA_DIR"
 DEFAULT_DATA_DIR = "data/osm"
 
 
-def tmp_schema_name(aoi_label: str, bucket: str) -> str:
-    """Temporary schema holding the raw import, consumed then dropped by #38."""
-    return f"osm_tmp_{aoi_label}_{bucket}"
+# Length of the idempotency key prefix in the schema name (hex digits).
+_SCHEMA_KEY_LEN = 8
+
+
+def tmp_schema_name(aoi_label: str, bucket: str, idempotency_key: str) -> str:
+    """
+    Temporary schema holding the raw import, consumed then dropped by #38.
+
+    Suffixed with the idempotency key so that runs with different keys (other
+    env, snapshot or style version) never share, and never drop, a schema.
+    """
+    return f"osm_tmp_{aoi_label}_{bucket}_{idempotency_key[:_SCHEMA_KEY_LEN]}"
 
 
 def _scope(aoi_label: str) -> str:
     return f"region:{aoi_label}"
+
+
+def import_source_version(snapshot: Snapshot) -> str:
+    """Snapshot version + style version: a change to either re-imports the bucket."""
+    return f"{snapshot.source_version}_style-v{STYLE_VERSION}"
 
 
 def import_idempotency_key(snapshot: Snapshot, bucket: str, env: str) -> str:
@@ -66,7 +84,7 @@ def import_idempotency_key(snapshot: Snapshot, bucket: str, env: str) -> str:
         job_name=JOB_NAME,
         scope=_scope(snapshot.aoi_label),
         period=bucket,
-        source_version=snapshot.source_version,
+        source_version=import_source_version(snapshot),
         env=env,
     )
 
@@ -105,13 +123,14 @@ def osm_import_snapshot(
     snapshot = (
         snapshot_from_urls(aoi_label, bucket, links) if links else snapshot_for(aoi_label, bucket)
     )
-    schema = tmp_schema_name(aoi_label, bucket)
+    source_version = import_source_version(snapshot)
     key = import_idempotency_key(snapshot, bucket, env)
+    schema = tmp_schema_name(aoi_label, bucket, key)
     log_ctx = {
         "aoi": aoi_label,
         "bucket": bucket,
         "schema": schema,
-        "source_version": snapshot.source_version,
+        "source_version": source_version,
         "env": env,
     }
     try:
@@ -123,7 +142,8 @@ def osm_import_snapshot(
             engine=engine,
         ) as (run, _session):
             if schema_exists(schema, engine):
-                # Not a success (job_run would have skipped): leftover of a failed attempt.
+                # The name is unique to this key, and this key is not a success
+                # (job_run would have skipped): leftover of a failed attempt.
                 logger.warning(
                     "dropping schema left by a previous failed import",
                     extra={"event": "osm_import.stale_schema", "context": log_ctx},
@@ -149,7 +169,7 @@ def osm_import_snapshot(
                     "region_id": aoi_label,
                     "bucket_id": bucket,
                     "schema_name": schema,
-                    "source_version": snapshot.source_version,
+                    "source_version": source_version,
                     "h3_res": aoi.default_res,
                     "env": env,
                     "pbf_links": list(snapshot.urls),

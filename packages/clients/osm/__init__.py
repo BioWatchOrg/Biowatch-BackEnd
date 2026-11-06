@@ -6,7 +6,7 @@ from .geofabrik import (
     snapshot_for,
     snapshot_from_urls,
 )
-from .osm2pgsql import Osm2pgsqlError, run_osm2pgsql
+from .osm2pgsql import STYLE_VERSION, Osm2pgsqlError, run_osm2pgsql
 
 __all__ = [
     "GEOFABRIK_REGIONS",
@@ -15,6 +15,7 @@ __all__ = [
     "download",
     "snapshot_for",
     "snapshot_from_urls",
+    "STYLE_VERSION",
     "Osm2pgsqlError",
     "run_osm2pgsql",
 ]

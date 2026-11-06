@@ -25,6 +25,12 @@ logger = logging.getLogger(__name__)
 
 STYLE_PATH = Path(__file__).with_name("style.lua")
 
+# Version of `style.lua` (what is extracted, and how) — NOT a date. Bump it by
+# hand whenever the style changes, so already-imported buckets get a new
+# idempotency key and are re-imported instead of keeping the old definitions.
+#   1 : buildings, major roads, urban landuse (ticket #35).
+STYLE_VERSION = "1"
+
 # Override to point at another binary (e.g. a version-pinned install).
 OSM2PGSQL_BIN_ENV = "OSM2PGSQL_BIN"
 
