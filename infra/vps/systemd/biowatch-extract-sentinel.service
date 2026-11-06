@@ -1,0 +1,37 @@
+# Extraction Sentinel-2 mensuelle (ADR-004) : indices du mois précédent pour l'AOI idf.
+# Déclenchée par biowatch-extract-sentinel.timer. Installation : voir infra/vps/README.md.
+[Unit]
+Description=BioWatch — extraction Sentinel-2 du mois précédent (idf)
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+User=biowatch-jobs
+Group=biowatch-jobs
+# POSTGRES_* / BIOWATCH_ENV=prod / LOG_LEVEL — lu par systemd (root) avant le
+# changement d'identité : le compte de service ne peut pas lire ce fichier.
+EnvironmentFile=/etc/biowatch/jobs.env
+# GDAL et dask écrivent leurs caches sous HOME : on le pointe sur l'état du compte.
+Environment=HOME=/var/lib/biowatch/jobs
+WorkingDirectory=/opt/biowatch/app
+# Le venv est construit par deploy : pas de « uv run », qui tenterait d'écrire
+# dans /opt/biowatch. Sans --bucket_id : le mois précédent.
+ExecStart=/opt/biowatch/app/.venv/bin/biowatch-jobs extract_sentinel --aoi idf
+
+# Le VPS 1 héberge aussi PostgreSQL et l'API : en cas de dépassement mémoire,
+# c'est ce job que le noyau tue, jamais la base (mesure : ~1,8 Go pour l'IDF).
+MemoryMax=2200M
+MemorySwapMax=1G
+CPUQuota=150%
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+# Un mois IDF prend 15 à 20 min : au-delà de 3 h, quelque chose est bloqué.
+TimeoutStartSec=3h
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/biowatch/jobs /var/log/biowatch/jobs

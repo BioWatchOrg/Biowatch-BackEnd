@@ -3,7 +3,7 @@ from geo.metrics import (
     SRID_LAMBERT93,
     MetricsError,
     _get_transformer,
-    _reproject,
+    reproject,
     area_m2,
     length_m,
 )
@@ -16,7 +16,7 @@ LINE_WGS84 = LineString([(2.35, 48.85), (2.36, 48.85)])
 
 
 def test_reproject_moves_coordinates_into_lambert93_extent():
-    reprojected = _reproject(SQUARE_WGS84, from_srid=4326, to_srid=SRID_LAMBERT93)
+    reprojected = reproject(SQUARE_WGS84, from_srid=4326, to_srid=SRID_LAMBERT93)
     x_coords = [x for x, _ in reprojected.exterior.coords]
     y_coords = [y for _, y in reprojected.exterior.coords]
     # Emprise officielle Lambert-93 pour la France métropolitaine.
@@ -48,7 +48,7 @@ def test_length_m_with_lambert93_input_skips_reprojection():
 
 def test_reproject_invalid_srid_raises():
     with pytest.raises(MetricsError):
-        _reproject(SQUARE_WGS84, from_srid=4326, to_srid=99_999_999)
+        reproject(SQUARE_WGS84, from_srid=4326, to_srid=99_999_999)
 
 
 def test_get_transformer_is_cached_per_srid_pair():

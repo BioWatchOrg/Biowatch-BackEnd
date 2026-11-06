@@ -1,5 +1,19 @@
 from .logs import request_id_var, run_id_var, setup_logging
 
+from .planetary_computer_client import (
+    DEFAULT_IO_THREADS,
+    PlanetaryComputerError,
+    Scene,
+    TileStack,
+    deduplicate_scenes,
+    group_by_tile,
+    open_tile,
+    read_block,
+    search_scenes,
+    tile_footprints,
+)
+
+
 from .db import (
     Base,
     JobAlreadySucceeded,
@@ -16,6 +30,7 @@ from .db import (
     init_db,
     job_run,
     record_zone_error,
+    record_zone_errors,
     session_scope,
     upsert,
 )
@@ -34,6 +49,7 @@ __all__ = [
     "upsert",
     "job_run",
     "record_zone_error",
+    "record_zone_errors",
     "get_failed_zones",
     "JobAlreadySucceeded",
     "RunContext",
@@ -41,4 +57,14 @@ __all__ = [
     "setup_logging",
     "run_id_var",
     "request_id_var",
+    "Scene",
+    "PlanetaryComputerError",
+    "search_scenes",
+    "deduplicate_scenes",
+    "group_by_tile",
+    "tile_footprints",
+    "TileStack",
+    "open_tile",
+    "read_block",
+    "DEFAULT_IO_THREADS",
 ]
