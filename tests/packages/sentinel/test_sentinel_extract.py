@@ -1,7 +1,7 @@
 """
 Tests for sentinel.sentinel_extract.extract_sentinel_data_by_aoi.
 
-`job_run`, `upsert` and `record_zone_error` are mocked (same pattern as
+`job_run`, `upsert` and `record_zone_errors` are mocked (same pattern as
 tests/packages/geo/test_generate_h3_grid.py) rather than hit a real Postgres:
 the DB plumbing is covered by tests/packages/clients/. Image search and tile
 reading are mocked too (covered by tests/packages/clients/planetary_computer_client
@@ -88,8 +88,10 @@ def calls(monkeypatch):
     )
     monkeypatch.setattr(
         sentinel_extract,
-        "record_zone_error",
-        lambda run_id, zone_id, message: recorded.zone_errors.append((zone_id, message)),
+        "record_zone_errors",
+        lambda run_id, zone_ids, message: recorded.zone_errors.extend(
+            (zone_id, message) for zone_id in zone_ids
+        ),
     )
     monkeypatch.setattr(sentinel_extract, "compute_h3_cells", lambda aoi, res: CELLS)
     monkeypatch.setattr(

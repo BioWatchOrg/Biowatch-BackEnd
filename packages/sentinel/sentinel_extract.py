@@ -15,7 +15,7 @@ from clients import (
     deduplicate_scenes,
     group_by_tile,
     job_run,
-    record_zone_error,
+    record_zone_errors,
     search_scenes,
     tile_footprints,
     upsert,
@@ -145,8 +145,7 @@ def extract_sentinel_data_by_aoi(
                     stack = open_tile(groups[tile], _region_of(owned))
                     aggregates.append(process_tile(stack, owned, read=read))
                 except PlanetaryComputerError as e:
-                    for cell in owned:
-                        record_zone_error(run.run_id, cell, f"tile {tile}: {e}")
+                    record_zone_errors(run.run_id, owned, f"tile {tile}: {e}")
                     failed_cells.update(owned)
                     logger.warning(
                         "tile extraction failed, its zones recorded for targeted retry",

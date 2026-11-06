@@ -26,6 +26,7 @@ from .db import (
     init_db,
     job_run,
     record_zone_error,
+    record_zone_errors,
     session_scope,
     upsert,
 )
@@ -44,6 +45,7 @@ __all__ = [
     "upsert",
     "job_run",
     "record_zone_error",
+    "record_zone_errors",
     "get_failed_zones",
     "JobAlreadySucceeded",
     "RunContext",

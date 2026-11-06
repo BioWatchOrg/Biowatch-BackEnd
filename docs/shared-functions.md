@@ -67,6 +67,9 @@ packages (voir CLAUDE.md, "Documentation").
   là** (voir CLAUDE.md, "Accès base de données").
 - `record_zone_error(run_id, zone_id, error_message, engine=None) -> None` — enregistre un
   échec pour une zone précise (reprise ciblée), idempotent sur `(run_id, zone_id)`.
+- `record_zone_errors(run_id, zone_ids, error_message, engine=None) -> None` — même contrat
+  que `record_zone_error` pour **beaucoup de zones à la fois** (ex. toutes les cellules d'une
+  tuile illisible) : une transaction et quelques requêtes au lieu d'une par zone, un seul log.
 - `get_failed_zones(idempotency_key, engine=None) -> list[str]` — zones en échec du dernier
   run pour une clé d'idempotence donnée ; à appeler **avant** de rentrer dans `job_run` pour
   un retry ciblé.
