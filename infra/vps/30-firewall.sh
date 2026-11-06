@@ -159,7 +159,7 @@ Depuis ton poste, HORS du VPS. Le premier doit répondre, les autres non :
     ./40-service-users.sh --dry-run
     ./40-service-users.sh
 
-fail2ban a été écarté délibérément et reporté sur #26 — voir la section
+fail2ban a été écarté délibérément et réexaminé avec #80 — voir la section
 dédiée du README.
 
 EOF
