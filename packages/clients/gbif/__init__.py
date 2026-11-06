@@ -3,6 +3,9 @@ from .client import (
     GbifCredentials,
     GbifDownloadTimeoutError,
     build_predicate,
+    download_zip,
+    geometry_to_gbif_wkt,
+    iter_zip_rows,
     load_gbif_credentials,
     request_download,
     stream_download,
@@ -11,6 +14,9 @@ from .client import (
 
 __all__ = [
     "build_predicate",
+    "download_zip",
+    "geometry_to_gbif_wkt",
+    "iter_zip_rows",
     "load_gbif_credentials",
     "request_download",
     "stream_download",

@@ -4,9 +4,11 @@ import os
 import uuid
 from contextlib import contextmanager
 from datetime import date
+from pathlib import Path
 
 import httpx
 import pytest
+import shapely
 from sqlalchemy import create_engine, delete, func, select
 
 import species.gbif_occurrences as gbif_occurrences
@@ -123,13 +125,15 @@ _FAKE_CREDS = type("_Creds", (), {"username": "alice", "auth": httpx.BasicAuth("
 
 
 def _patch_download_pipeline(monkeypatch, rows, download_key="key123"):
-    """Patch the request/poll/stream trio so update_gbif_occurrences's HTTP
-    calls never happen -- `rows` is the list of raw CSV-row dicts `stream_download`
-    should yield."""
+    """Patch the request/poll/download/parse steps so update_gbif_occurrences's
+    HTTP calls never happen -- `rows` is the list of raw CSV-row dicts
+    `iter_zip_rows` should yield. `download_zip` returns a path that doesn't
+    exist (the job's cleanup uses `unlink(missing_ok=True)`)."""
     monkeypatch.setattr(gbif_occurrences, "load_gbif_credentials", lambda: _FAKE_CREDS)
     monkeypatch.setattr(gbif_occurrences, "request_download", lambda *a, **k: download_key)
     monkeypatch.setattr(gbif_occurrences, "wait_for_download", lambda *a, **k: None)
-    monkeypatch.setattr(gbif_occurrences, "stream_download", lambda *a, **k: iter(rows))
+    monkeypatch.setattr(gbif_occurrences, "download_zip", lambda *a, **k: Path("fake.zip"))
+    monkeypatch.setattr(gbif_occurrences, "iter_zip_rows", lambda *a, **k: iter(rows))
 
 
 def test_update_gbif_occurrences_skips_record_failing_quality_filter(monkeypatch):
@@ -195,13 +199,68 @@ def test_update_gbif_occurrences_builds_predicate_with_convex_hull(monkeypatch):
 
     monkeypatch.setattr(gbif_occurrences, "request_download", fake_request_download)
     monkeypatch.setattr(gbif_occurrences, "wait_for_download", lambda *a, **k: None)
-    monkeypatch.setattr(gbif_occurrences, "stream_download", lambda *a, **k: iter([]))
+    monkeypatch.setattr(gbif_occurrences, "download_zip", lambda *a, **k: Path("fake.zip"))
+    monkeypatch.setattr(gbif_occurrences, "iter_zip_rows", lambda *a, **k: iter([]))
 
     gbif_occurrences.update_gbif_occurrences(GOLDEN_AOI)
 
     within = next(p for p in captured["predicate"]["predicates"] if p["type"] == "within")
-    assert within["geometry"] == aoi.geom.convex_hull.wkt
+    hull = shapely.from_wkt(within["geometry"])
+    assert hull.equals(aoi.geom.convex_hull)
+    assert hull.exterior.is_ccw  # GBIF rejects a clockwise exterior ring (HTTP 400)
     assert within["geometry"] != aoi.geom.wkt
+
+
+def test_update_gbif_occurrences_downloads_zip_before_window_delete(monkeypatch):
+    """The window-replace DELETE takes row locks: the zip must already be on
+    disk by then, so a network failure or a slow download never happens while
+    those locks are held."""
+    events: list[str] = []
+
+    class _OrderedSession(_FakeSession):
+        def execute(self, stmt):
+            events.append("delete")
+            super().execute(stmt)
+
+    aoi = gbif_occurrences.load_aoi(GOLDEN_AOI)
+    session = _OrderedSession(zone_ids=set())
+    monkeypatch.setattr(gbif_occurrences, "job_run", _fake_job_run_yielding(session))
+    monkeypatch.setattr(gbif_occurrences, "biowatch_now", lambda: date(2025, 1, 1))
+    monkeypatch.setattr(gbif_occurrences, "load_aoi", lambda label: aoi)
+    _patch_download_pipeline(monkeypatch, [])
+
+    def fake_download_zip(*a, **k):
+        events.append("download")
+        return Path("fake.zip")
+
+    monkeypatch.setattr(gbif_occurrences, "download_zip", fake_download_zip)
+
+    gbif_occurrences.update_gbif_occurrences(GOLDEN_AOI)
+
+    assert events == ["download", "delete"]
+
+
+def test_update_gbif_occurrences_deletes_zip_even_when_processing_fails(monkeypatch, tmp_path):
+    zip_path = tmp_path / "gbif.zip"
+    zip_path.write_bytes(b"not a real zip")
+
+    aoi = gbif_occurrences.load_aoi(GOLDEN_AOI)
+    session = _FakeSession(zone_ids=set())
+    monkeypatch.setattr(gbif_occurrences, "job_run", _fake_job_run_yielding(session))
+    monkeypatch.setattr(gbif_occurrences, "biowatch_now", lambda: date(2025, 1, 1))
+    monkeypatch.setattr(gbif_occurrences, "load_aoi", lambda label: aoi)
+    _patch_download_pipeline(monkeypatch, [])
+    monkeypatch.setattr(gbif_occurrences, "download_zip", lambda *a, **k: zip_path)
+
+    def boom(*a, **k):
+        raise GbifApiError("corrupt archive")
+
+    monkeypatch.setattr(gbif_occurrences, "iter_zip_rows", boom)
+
+    with pytest.raises(GbifApiError):
+        gbif_occurrences.update_gbif_occurrences(GOLDEN_AOI)
+
+    assert not zip_path.exists()
 
 
 def test_update_gbif_occurrences_logs_and_reraises_gbif_api_error(monkeypatch):

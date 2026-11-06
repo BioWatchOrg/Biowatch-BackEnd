@@ -17,10 +17,12 @@ from clients import (
     SpeciesOccurrencesRaw,
     ZonesHex,
     build_predicate,
+    download_zip,
+    geometry_to_gbif_wkt,
+    iter_zip_rows,
     job_run,
     load_gbif_credentials,
     request_download,
-    stream_download,
     upsert,
     wait_for_download,
 )
@@ -115,7 +117,7 @@ def update_gbif_occurrences(aoi_label: AoiLabel, engine: Engine | None = None) -
             # small and always contains it. Safe here too -- occurrences
             # outside the AOI's real shape are still filtered by the
             # zone-membership check below.
-            geometry_wkt = aoi.geom.convex_hull.wkt
+            geometry_wkt = geometry_to_gbif_wkt(aoi.geom)
             predicate = build_predicate(geometry_wkt, date_min, date_max)
             creds = load_gbif_credentials()
 
@@ -125,8 +127,9 @@ def update_gbif_occurrences(aoi_label: AoiLabel, engine: Engine | None = None) -
                 # a large AOI) would otherwise hold this job_run's transaction
                 # open idle-in-transaction for the whole wait. The purge and
                 # zone-fetch (below) still run inside this same transaction,
-                # just after the wait instead of before it, so a later
-                # failure still rolls them back together with the upserts.
+                # just after the wait and archive download instead of before
+                # them, so a later failure still rolls them back together
+                # with the upserts.
                 download_key = request_download(predicate, creator=creds.username, auth=creds.auth)
                 logger.info(
                     "GBIF download requested",
@@ -143,56 +146,78 @@ def update_gbif_occurrences(aoi_label: AoiLabel, engine: Engine | None = None) -
                         "context": {**log_ctx, "download_key": download_key},
                     },
                 )
-
-                # The window-replace delete and every upsert below (potentially
-                # millions of rows) share this one job_run-managed transaction --
-                # deliberate all-or-nothing: either the whole refetched window
-                # lands cleanly or none of it does (rollback), no partial state.
-                # No record_zone_error/job_run_zone_errors granularity here: the
-                # loop below is per-row within a single AOI-wide fetch, not
-                # per-zone, so there's no natural unit to attribute a partial
-                # failure to -- a failure anywhere fails the whole run, and a
-                # rerun is safe and cheap.
+                # Fetch the whole zip to disk *before* touching the DB: the
+                # window-replace delete below takes row locks, and holding them
+                # open during a multi-minute download (and risking a network
+                # failure with them held) is avoidable. Past this point the
+                # transaction only does local work (parse, filter, upsert).
+                zip_path = download_zip(download_key, auth=creds.auth)
                 logger.info(
-                    "replacing staging rows for the refetched window",
-                    extra={"event": "gbif_occurrences.replace_window", "context": log_ctx},
+                    "GBIF archive downloaded",
+                    extra={
+                        "event": "gbif_occurrences.archive_downloaded",
+                        "context": {**log_ctx, "download_key": download_key},
+                    },
                 )
-                session.execute(
-                    delete(SpeciesOccurrencesRaw).where(
-                        SpeciesOccurrencesRaw.aoi_id == aoi_label,
-                        SpeciesOccurrencesRaw.event_date >= date_min,
-                        SpeciesOccurrencesRaw.event_date <= date_max,
+                try:
+                    # The window-replace delete and every upsert below (potentially
+                    # millions of rows) share this one job_run-managed transaction --
+                    # deliberate all-or-nothing: either the whole refetched window
+                    # lands cleanly or none of it does (rollback), no partial state.
+                    # No record_zone_error/job_run_zone_errors granularity here: the
+                    # loop below is per-row within a single AOI-wide fetch, not
+                    # per-zone, so there's no natural unit to attribute a partial
+                    # failure to -- a failure anywhere fails the whole run, and a
+                    # rerun is safe and cheap.
+                    logger.info(
+                        "replacing staging rows for the refetched window",
+                        extra={"event": "gbif_occurrences.replace_window", "context": log_ctx},
                     )
-                )
-
-                valid_zone_ids = set(
-                    session.scalars(
-                        select(ZonesHex.zone_id).where(ZonesHex.aoi_id == aoi_label)
-                    ).all()
-                )
-
-                rows: list[dict[str, object]] = []
-                n_total = 0
-                n_streamed = 0
-                n_rejected_quality = 0
-                n_outside_zones = 0
-                for raw_row in stream_download(download_key, auth=creds.auth):
-                    n_streamed += 1
-                    record = _normalize_csv_row(raw_row)
-                    quality_row = quality_filter(record, date_min, date_max)
-                    if quality_row is None:
-                        n_rejected_quality += 1
-                        continue
-                    zone_id = point_to_h3_cell(
-                        quality_row["decimal_latitude"],
-                        quality_row["decimal_longitude"],
-                        aoi.default_res,
+                    session.execute(
+                        delete(SpeciesOccurrencesRaw).where(
+                            SpeciesOccurrencesRaw.aoi_id == aoi_label,
+                            SpeciesOccurrencesRaw.event_date >= date_min,
+                            SpeciesOccurrencesRaw.event_date <= date_max,
+                        )
                     )
-                    if zone_id not in valid_zone_ids:
-                        n_outside_zones += 1
-                        continue
-                    rows.append({**quality_row, "zone_id": zone_id, "aoi_id": aoi_label})
-                    if len(rows) >= UPSERT_BATCH_SIZE:
+
+                    valid_zone_ids = set(
+                        session.scalars(
+                            select(ZonesHex.zone_id).where(ZonesHex.aoi_id == aoi_label)
+                        ).all()
+                    )
+
+                    rows: list[dict[str, object]] = []
+                    n_total = 0
+                    n_streamed = 0
+                    n_rejected_quality = 0
+                    n_outside_zones = 0
+                    for raw_row in iter_zip_rows(zip_path, download_key):
+                        n_streamed += 1
+                        record = _normalize_csv_row(raw_row)
+                        quality_row = quality_filter(record, date_min, date_max)
+                        if quality_row is None:
+                            n_rejected_quality += 1
+                            continue
+                        zone_id = point_to_h3_cell(
+                            quality_row["decimal_latitude"],
+                            quality_row["decimal_longitude"],
+                            aoi.default_res,
+                        )
+                        if zone_id not in valid_zone_ids:
+                            n_outside_zones += 1
+                            continue
+                        rows.append({**quality_row, "zone_id": zone_id, "aoi_id": aoi_label})
+                        if len(rows) >= UPSERT_BATCH_SIZE:
+                            upsert(
+                                session=session,
+                                model=SpeciesOccurrencesRaw,
+                                rows=rows,
+                                update_columns=[],
+                            )
+                            n_total += len(rows)
+                            rows = []
+                    if rows:
                         upsert(
                             session=session,
                             model=SpeciesOccurrencesRaw,
@@ -200,27 +225,23 @@ def update_gbif_occurrences(aoi_label: AoiLabel, engine: Engine | None = None) -
                             update_columns=[],
                         )
                         n_total += len(rows)
-                        rows = []
-                if rows:
-                    upsert(
-                        session=session, model=SpeciesOccurrencesRaw, rows=rows, update_columns=[]
-                    )
-                    n_total += len(rows)
 
-                logger.info(
-                    "upserted GBIF occurrences",
-                    extra={
-                        "event": "gbif_occurrences.upserted",
-                        "context": {
-                            **log_ctx,
-                            "download_key": download_key,
-                            "n_streamed": n_streamed,
-                            "n_rejected_quality": n_rejected_quality,
-                            "n_outside_zones": n_outside_zones,
-                            "n_rows": n_total,
+                    logger.info(
+                        "upserted GBIF occurrences",
+                        extra={
+                            "event": "gbif_occurrences.upserted",
+                            "context": {
+                                **log_ctx,
+                                "download_key": download_key,
+                                "n_streamed": n_streamed,
+                                "n_rejected_quality": n_rejected_quality,
+                                "n_outside_zones": n_outside_zones,
+                                "n_rows": n_total,
+                            },
                         },
-                    },
-                )
+                    )
+                finally:
+                    zip_path.unlink(missing_ok=True)
             except GbifApiError:
                 logger.error(
                     "GBIF download failed",

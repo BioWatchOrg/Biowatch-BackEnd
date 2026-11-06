@@ -76,13 +76,22 @@ packages (voir CLAUDE.md, "Documentation").
   l'env (compte GBIF requis, voir `.env.example`). `GbifCredentials.auth -> httpx.BasicAuth`
   (propriété, reconstruite à chaque accès). `password` en `field(repr=False)` : ne fuite jamais
   via un `repr()`/`logger.debug()` accidentel.
+- `geometry_to_gbif_wkt(geom) -> str` — WKT de l'enveloppe convexe de `geom`, anneau extérieur
+  **anti-horaire** (GBIF rejette l'anneau horaire que renvoie `convex_hull` de Shapely, erreur
+  400). Pure.
 - `build_predicate(geometry_wkt, date_min, date_max) -> dict` — prédicat GBIF (géométrie +
   plage de dates complète en un seul prédicat, pas de boucle par année). Pure.
 - `request_download(predicate, creator, auth, client=None) -> str` — `POST
   /occurrence/download/request`, retourne la clé du download.
 - `wait_for_download(key, auth, client=None) -> None` — poll le statut jusqu'à `SUCCEEDED`,
   lève sur échec/`GBIF_POLL_TIMEOUT_SECONDS` dépassé (`GbifDownloadTimeoutError`).
-- `stream_download(key, auth, client=None) -> Iterator[dict]` — télécharge le résultat (zip
+- `download_zip(key, auth, client=None) -> Path` — télécharge le zip fini vers un fichier
+  temporaire (écrit par chunks, jamais en mémoire) et retourne son chemin. L'appelant le
+  supprime ; supprimé automatiquement si le téléchargement échoue.
+- `iter_zip_rows(zip_path, key="") -> Iterator[dict]` — parse en streaming le fichier TSV du zip,
+  un dict par ligne. Ne supprime pas le zip.
+- `stream_download(key, auth, client=None) -> Iterator[dict]` — composition des deux ci-dessus,
+  supprime le fichier à la fin (le téléchargement ne démarre qu'au premier `next()`). Télécharge le résultat (zip
   GBIF — **jamais gzip brut**, même si un format compressé est demandé, confirmé contre l'API
   réelle) et le parse en streaming (fichier temporaire sur disque, un dict par ligne CSV) — le
   fichier entier n'est jamais tenu en mémoire.

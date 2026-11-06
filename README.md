@@ -57,8 +57,10 @@ peut prendre plusieurs minutes selon le volume de l'AOI. Si la DB existante
 n'a pas encore le schéma `staging`, relancer `uv run biowatch-jobs init_db`
 avant.
 
-Volumétrie observée pour `idf` : ~4.08M lignes stockées, ~23-24 min de
-traitement (temps de traitement GBIF, hors contrôle de ce job).
+Volumétrie observée pour `idf` : ~4.34M lignes stockées, ~32 min au total
+(~18 min de préparation côté GBIF, hors contrôle de ce job, puis ~14 min
+d'insertion en base). Le flag `--debug` se place avant le nom du job :
+`uv run biowatch-jobs --debug update_gbif_occurrences --aoi idf`.
 
 ### Enregistrer un nouveau job
 Il faut enregistrer le nouveau job dans : apps/jobs/definitions.py

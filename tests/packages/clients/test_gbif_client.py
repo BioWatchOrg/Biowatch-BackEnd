@@ -8,6 +8,7 @@ from datetime import date
 
 import httpx
 import pytest
+import shapely
 
 from clients.gbif.client import (
     GBIF_DOWNLOAD_FILE_URL,
@@ -17,6 +18,9 @@ from clients.gbif.client import (
     GbifCredentials,
     GbifDownloadTimeoutError,
     build_predicate,
+    download_zip,
+    geometry_to_gbif_wkt,
+    iter_zip_rows,
     load_gbif_credentials,
     request_download,
     stream_download,
@@ -321,3 +325,125 @@ def test_stream_download_raises_on_http_error(monkeypatch, tmp_path):
 
     with pytest.raises(GbifApiError):
         list(stream_download("key123", auth=httpx.BasicAuth("a", "b")))
+
+
+def _patch_stream_with_body(monkeypatch, body):
+    class _FakeStreamResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def raise_for_status(self):
+            pass
+
+        def iter_bytes(self):
+            yield body
+
+    monkeypatch.setattr(
+        httpx.Client, "stream", lambda self, method, url, auth=None, **kw: _FakeStreamResponse()
+    )
+
+
+_ONE_ROW = {
+    "gbifID": "3001",
+    "scientificName": "Vulpes vulpes",
+    "taxonKey": "5219243",
+    "decimalLatitude": "48.8566",
+    "decimalLongitude": "2.3522",
+    "eventDate": "2020-06-15",
+}
+
+
+def test_download_zip_returns_existing_file_then_iter_zip_rows_parses_it(monkeypatch, tmp_path):
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+    _patch_stream_with_body(monkeypatch, _zipped_tsv([_ONE_ROW]))
+
+    zip_path = download_zip("key123", auth=httpx.BasicAuth("a", "b"))
+
+    assert zip_path.exists()  # the caller owns the file: still there after return
+    rows = list(iter_zip_rows(zip_path, "key123"))
+    assert [r["gbifID"] for r in rows] == ["3001"]
+    assert zip_path.exists()  # parsing never deletes it
+    zip_path.unlink()
+
+
+def test_download_zip_leaves_no_temp_file_on_http_error(monkeypatch, tmp_path):
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+
+    class _FakeErrorResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def raise_for_status(self):
+            raise httpx.HTTPStatusError(
+                "500",
+                request=httpx.Request("GET", GBIF_DOWNLOAD_FILE_URL),
+                response=httpx.Response(500),
+            )
+
+    monkeypatch.setattr(
+        httpx.Client, "stream", lambda self, method, url, auth=None, **kw: _FakeErrorResponse()
+    )
+
+    with pytest.raises(GbifApiError):
+        download_zip("key123", auth=httpx.BasicAuth("a", "b"))
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_iter_zip_rows_raises_on_empty_archive(tmp_path):
+    zip_path = tmp_path / "empty.zip"
+    with zipfile.ZipFile(zip_path, mode="w"):
+        pass
+
+    with pytest.raises(GbifApiError):
+        list(iter_zip_rows(zip_path, "key123"))
+
+
+def test_stream_download_deletes_temp_file_once_exhausted(monkeypatch, tmp_path):
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+    _patch_stream_with_body(monkeypatch, _zipped_tsv([_ONE_ROW]))
+
+    rows = list(stream_download("key123", auth=httpx.BasicAuth("a", "b")))
+
+    assert len(rows) == 1
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_geometry_to_gbif_wkt_returns_counter_clockwise_convex_hull():
+    # Shapely's convex_hull of this L-shape has a clockwise exterior ring,
+    # which GBIF rejects with HTTP 400 ("Polygon with clockwise exterior ring").
+    l_shape = shapely.Polygon([(0, 0), (4, 0), (4, 1), (1, 1), (1, 4), (0, 4)])
+    assert not l_shape.convex_hull.exterior.is_ccw  # documents why re-orientation is needed
+
+    hull = shapely.from_wkt(geometry_to_gbif_wkt(l_shape))
+
+    assert hull.exterior.is_ccw
+    assert hull.equals(l_shape.convex_hull)
+
+
+def test_geometry_to_gbif_wkt_orients_a_clockwise_input_polygon():
+    clockwise_square = shapely.Polygon([(0, 0), (0, 1), (1, 1), (1, 0)])
+    assert not clockwise_square.exterior.is_ccw
+
+    assert shapely.from_wkt(geometry_to_gbif_wkt(clockwise_square)).exterior.is_ccw
+
+
+def test_request_download_error_includes_gbif_response_body(monkeypatch):
+    def handler(request):
+        return httpx.Response(400, text="Polygon with clockwise exterior ring: POLYGON ((...))")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    with pytest.raises(GbifApiError, match="clockwise exterior ring"):
+        request_download({}, creator="alice", auth=httpx.BasicAuth("a", "b"), client=client)
+
+
+def test_geometry_to_gbif_wkt_rejects_degenerate_geometry():
+    with pytest.raises(ValueError, match="2D extent"):
+        geometry_to_gbif_wkt(shapely.Point(2.35, 48.85))
