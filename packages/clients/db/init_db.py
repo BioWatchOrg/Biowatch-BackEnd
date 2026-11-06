@@ -19,6 +19,7 @@ from .session import get_engine
 logger = logging.getLogger(__name__)
 
 EXTENSIONS = ("postgis", "pgcrypto")
+SCHEMAS = ("staging",)
 
 
 def _create_extensions(engine: Engine) -> None:
@@ -28,11 +29,19 @@ def _create_extensions(engine: Engine) -> None:
             conn.execute(text(f"CREATE EXTENSION IF NOT EXISTS {extension}"))
 
 
+def _create_schemas(engine: Engine) -> None:
+    """Create non-default Postgres schemas (e.g. `staging`) before create_all."""
+    with engine.begin() as conn:
+        for schema in SCHEMAS:
+            conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema}"))
+
+
 def init_db(engine: Engine | None = None) -> None:
-    """Create extensions and every table. Idempotent: safe to re-run."""
+    """Create extensions, schemas and every table. Idempotent: safe to re-run."""
     try:
         engine = engine or get_engine()
         _create_extensions(engine)
+        _create_schemas(engine)
         Base.metadata.create_all(engine)
         logger.info(
             "schema initialized",

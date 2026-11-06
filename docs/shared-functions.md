@@ -71,6 +71,23 @@ packages (voir CLAUDE.md, "Documentation").
   `SatelliteFeaturesByZone`, `OsmFeaturesByZone`, `ProtectedAreasByZone`,
   `SpeciesFeaturesByZone`, `StressScoreByZone`, `JobRun`, `JobRunZoneError`.
 
+### `clients.gbif` (client HTTP GBIF Occurrence Download API — aucune logique métier)
+- `load_gbif_credentials() -> GbifCredentials` — lit `GBIF_USERNAME`/`GBIF_PASSWORD` depuis
+  l'env (compte GBIF requis, voir `.env.example`). `GbifCredentials.auth -> httpx.BasicAuth`
+  (propriété, reconstruite à chaque accès). `password` en `field(repr=False)` : ne fuite jamais
+  via un `repr()`/`logger.debug()` accidentel.
+- `build_predicate(geometry_wkt, date_min, date_max) -> dict` — prédicat GBIF (géométrie +
+  plage de dates complète en un seul prédicat, pas de boucle par année). Pure.
+- `request_download(predicate, creator, auth, client=None) -> str` — `POST
+  /occurrence/download/request`, retourne la clé du download.
+- `wait_for_download(key, auth, client=None) -> None` — poll le statut jusqu'à `SUCCEEDED`,
+  lève sur échec/`GBIF_POLL_TIMEOUT_SECONDS` dépassé (`GbifDownloadTimeoutError`).
+- `stream_download(key, auth, client=None) -> Iterator[dict]` — télécharge le résultat (zip
+  GBIF — **jamais gzip brut**, même si un format compressé est demandé, confirmé contre l'API
+  réelle) et le parse en streaming (fichier temporaire sur disque, un dict par ligne CSV) — le
+  fichier entier n'est jamais tenu en mémoire.
+- Exceptions : `GbifApiError`, `GbifDownloadTimeoutError` (sous-classe de `GbifApiError`).
+
 ### `clients.logs`
 - `setup_logging(service="biowatch", level=None) -> None` — configure le logger racine en
   JSON structuré (un seul appel, à l'entrypoint du process — jamais dans un `__init__.py`).
@@ -171,6 +188,30 @@ l'instant.
   AOI du registre (pure, sans DB — testée par golden fingerprint).
 - `generate_h3_grid(aoi_label, resolution=None, engine=None) -> None` — génère et persiste la
   grille dans `zones_hex` via `job_run` + `upsert`.
+- `point_to_h3_cell(lat, lon, resolution) -> H3Cell` — inverse de `compute_h3_cells` : place un
+  point externe (ex. une occurrence GBIF) sur la même grille H3 que `zones_hex`. Pure, sans DB.
+
+---
+
+## packages/species
+
+Logique métier biodiversité — dépend de `core`, `geo`, `clients` (ingestion + écriture DB,
+pas un calcul pur comme `scoring`). Jamais importé par `apps/api`.
+
+### `species.quality`
+- `quality_filter(record, date_min, date_max) -> dict | None` — pure, sans I/O. Valide/normalise
+  un enregistrement GBIF brut (coordonnées valides, `eventDate` dans `[date_min, date_max]`) ;
+  `None` si rejeté. Agnostique de la source GBIF (Search API vs Download API) : attend déjà le
+  dict normalisé, voir `species.gbif_occurrences._normalize_csv_row`.
+
+### `species.gbif_occurrences` (job, pas une fonction pure — accède à la DB + réseau GBIF)
+- `update_gbif_occurrences(aoi_label, engine=None) -> None` — récupère les occurrences GBIF
+  d'une AOI sur une fenêtre glissante de 10 ans (un seul `clients.gbif` download par run),
+  filtre (`quality_filter`), convertit en `zone_id` (`geo.point_to_h3_cell`), stocke dans
+  `staging.species_occurrences_raw` via `job_run` + `upsert`. Remplace les lignes de la fenêtre
+  refetchée à chaque run (garde l'historique hors fenêtre).
+- `rolling_window(current_year) -> tuple[date, date]` — pure : `(date_min, date_max)` pour la
+  fenêtre de 10 ans se terminant à `current_year`.
 
 ---
 

@@ -14,6 +14,7 @@ from .models import (
     ProtectedAreasByZone,
     SatelliteFeaturesByZone,
     SpeciesFeaturesByZone,
+    SpeciesOccurrencesRaw,
     StressScoreByZone,
     ZonesHex,
 )
@@ -27,6 +28,7 @@ __all__ = [
     "OsmFeaturesByZone",
     "ProtectedAreasByZone",
     "SpeciesFeaturesByZone",
+    "SpeciesOccurrencesRaw",
     "StressScoreByZone",
     "JobRun",
     "JobRunZoneError",

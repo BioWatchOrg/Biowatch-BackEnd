@@ -6,7 +6,7 @@ services:
     env_file:
       - ../../.env
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       - postgis_data:/var/lib/postgresql/data
       # Schema is owned by the SQLAlchemy ORM (packages/clients/db), not raw SQL.
