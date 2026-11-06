@@ -18,18 +18,20 @@ import shapely
 from shapely.geometry import box
 
 from clients import (
+    DEFAULT_IO_THREADS,
     JobAlreadySucceeded,
     PlanetaryComputerError,
     SatelliteFeaturesByZone,
     deduplicate_scenes,
     group_by_tile,
     job_run,
+    open_tile,
+    read_block,
     record_zone_errors,
     search_scenes,
     tile_footprints,
     upsert,
 )
-from clients.planetary_computer_client.reader import DEFAULT_IO_THREADS, open_tile, read_block
 from core import (
     AoiLabel,
     BucketFormat,

@@ -1,5 +1,6 @@
 from .exceptions import PlanetaryComputerError
 from .models import Scene
+from .reader import DEFAULT_IO_THREADS, TileStack, open_tile, read_block
 from .scenes import deduplicate_scenes, group_by_tile, tile_footprints
 from .search import MAX_SCENE_CLOUD_COVER, search_scenes
 
@@ -11,4 +12,8 @@ __all__ = [
     "deduplicate_scenes",
     "group_by_tile",
     "tile_footprints",
+    "TileStack",
+    "open_tile",
+    "read_block",
+    "DEFAULT_IO_THREADS",
 ]

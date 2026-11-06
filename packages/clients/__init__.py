@@ -1,10 +1,14 @@
 from .logs import request_id_var, run_id_var, setup_logging
 
 from .planetary_computer_client import (
+    DEFAULT_IO_THREADS,
     PlanetaryComputerError,
     Scene,
+    TileStack,
     deduplicate_scenes,
     group_by_tile,
+    open_tile,
+    read_block,
     search_scenes,
     tile_footprints,
 )
@@ -59,4 +63,8 @@ __all__ = [
     "deduplicate_scenes",
     "group_by_tile",
     "tile_footprints",
+    "TileStack",
+    "open_tile",
+    "read_block",
+    "DEFAULT_IO_THREADS",
 ]

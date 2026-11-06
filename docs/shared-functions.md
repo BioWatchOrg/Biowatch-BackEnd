@@ -98,11 +98,11 @@ images sont des COG : on ne télécharge que les blocs de pixels lus.
 - `group_by_tile(scenes) -> dict[tuile, list[Scene]]` / `tile_footprints(groups) ->
   dict[tuile, géométrie WGS84]` — l'emprise par tuile est l'entrée de
   `geo.raster_h3.assign_owner_tiles`.
-- `reader.open_tile(scenes, region, chunk_px=1024) -> TileStack` — prépare la lecture d'une
+- `open_tile(scenes, region, chunk_px=1024) -> TileStack` — prépare la lecture d'une
   tuile (une seule tuile, scènes dédoublonnées) sans rien télécharger. `TileStack` expose la
   grille (`epsg`, `transform`, `shape`, entrée de `geo.raster_h3.cells_to_label_grid`), la
   baseline de chaque date (`baselines`, pour l'offset de réflectance) et `windows()`.
-- `reader.read_block(stack, window, io_threads=16) -> dict[rôle, ndarray (date, y, x)]` —
+- `read_block(stack, window, io_threads=16) -> dict[rôle, ndarray (date, y, x)]` —
   télécharge un bloc : DN bruts `green`/`red`/`nir`/`swir` (uint16, 0 = nodata) et `scl`
   (uint8). Les URL sont signées à la lecture, jamais à l'avance.
 - `Scene` (dataclass : `scene_id`, `tile`, `acquired_at`, `baseline`, `epsg`,
