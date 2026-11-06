@@ -135,7 +135,7 @@ uniquement les fonctions ayant un besoin d'usage identifié ailleurs dans le rep
 fonction ne passe à un niveau de visibilité plus large que lorsqu'un besoin concret apparaît,
 jamais par anticipation. Trois niveaux :
 
-1. **Privé au fichier** (`_nom`, ex. `_intersects`/`_intersection`/`_reproject`) — détail
+1. **Privé au fichier** (`_nom`, ex. `_intersects`/`_intersection`) — détail
    d'implémentation, utilisé uniquement dans son propre module.
 2. **Privé au package, public au fichier** (nom sans `_`, ex. `area_m2` dans
    `metrics.py`) — utilisé par d'autres modules de `packages/geo` (ici `intersections.py`),
@@ -205,10 +205,11 @@ Exportées depuis `geo` (niveau 3) : utilisées par le job d'extraction Sentinel
   `intersections.coverage_ratio`, importable directement via `from geo.metrics import
   area_m2` par les autres modules de `packages/geo`, mais aucun appelant hors du package
   aujourd'hui.
-- `_reproject(geom, from_srid=4326, to_srid=2154) -> BaseGeometry` reste **privée au fichier**
-  (niveau 1) : utilisée en interne par `area_m2`/`length_m`, pas encore de besoin identifié
-  pour reprojeter une géométrie sans en tirer une métrique. À remonter le jour où un job en a
-  besoin directement (ex. `buffer()` métrique, distance point-à-point).
+- `reproject(geom, from_srid=4326, to_srid=2154) -> BaseGeometry` — **privée au package**
+  (niveau 2, pas exportée depuis `geo`) : utilisée par `area_m2`/`length_m` et par
+  `raster_h3` (distances en Lambert-93, hexagones reprojetés dans le système UTM d'une image).
+  Transformations mises en cache. Importable via `from geo.metrics import reproject` à
+  l'intérieur de `packages/geo`.
 
 ### `geo.intersections`
 - `filter_intersecting(geoms, mask) -> list[BaseGeometry]` — ne garde que les géométries

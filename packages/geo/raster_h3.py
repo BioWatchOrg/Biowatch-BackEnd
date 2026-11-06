@@ -17,7 +17,7 @@ from rasterio.features import rasterize
 from shapely.geometry.base import BaseGeometry
 
 from .h3 import H3Cell, cell_to_centroid, cell_to_polygon
-from .metrics import SRID_LAMBERT93, SRID_WGS84, _reproject
+from .metrics import SRID_LAMBERT93, SRID_WGS84, reproject
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +48,7 @@ def cells_to_label_grid(
     if not cells:
         return np.full(shape, NO_CELL, dtype=np.int32)
     shapes = (
-        (_reproject(cell_to_polygon(cell), from_srid=SRID_WGS84, to_srid=epsg), index)
+        (reproject(cell_to_polygon(cell), from_srid=SRID_WGS84, to_srid=epsg), index)
         for index, cell in enumerate(cells)
     )
     labels: IntArray = rasterize(
@@ -75,10 +75,10 @@ def assign_owner_tiles(
     if not cells or not footprints:
         return {}
     names = sorted(footprints)
-    areas = [_reproject(footprints[name], SRID_WGS84, SRID_LAMBERT93) for name in names]
+    areas = [reproject(footprints[name], SRID_WGS84, SRID_LAMBERT93) for name in names]
     boundaries = shapely.boundary(areas)
     centers = np.array(
-        [_reproject(cell_to_centroid(cell), SRID_WGS84, SRID_LAMBERT93) for cell in cells]
+        [reproject(cell_to_centroid(cell), SRID_WGS84, SRID_LAMBERT93) for cell in cells]
     )
 
     # Paires (cellule, tuile) où le centre est dans la tuile, via un index spatial.
