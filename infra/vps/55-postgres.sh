@@ -84,21 +84,28 @@ fi
 
 step "Mots de passe et fichiers d'environnement"
 
-# Écrit un fichier de secrets s'il manque ; ne le régénère JAMAIS : un nouveau
-# mot de passe désynchroniserait la base existante.
+# Écrit un fichier de secrets s'il manque ; ne régénère JAMAIS un fichier
+# valide : un nouveau mot de passe désynchroniserait la base existante.
+# Un fichier présent mais sans mot de passe valide (écriture interrompue) est
+# traité comme absent.
 ensure_secret_file() {
-  local path="$1" content="$2"
-  if [[ -f "$path" ]]; then
+  local path="$1" content="$2" tmp
+  if [[ -f "$path" ]] && grep -qE '^POSTGRES_PASSWORD=[0-9a-f]{64}$' "$path"; then
     log "${path} déjà présent : conservé tel quel"
     return 0
   fi
+  [[ -f "$path" ]] && warn "${path} présent mais sans mot de passe valide : régénéré"
   if (( DRY_RUN )); then
     dry "créer ${path} (root 600), mot de passe généré :"
     sed -E 's/(PASSWORD=).*/\1<généré, 64 caractères hexadécimaux>/; s/^/            │ /' <<<"$content"
     return 0
   fi
-  install -m 600 -o root -g root /dev/null "$path"
-  printf '%s\n' "$content" > "$path"
+  # Écriture atomique : fichier temporaire (déjà en 600) dans le même dossier,
+  # puis renommage. Une interruption ne laisse jamais de fichier vide en place.
+  tmp="$(mktemp "${path}.XXXXXX")"
+  chmod 600 "$tmp"
+  printf '%s\n' "$content" > "$tmp"
+  mv -f "$tmp" "$path"
   ok "créé ${path} (root 600)"
 }
 
@@ -178,12 +185,26 @@ else
   tcp_probe 127.0.0.1 "$POSTGRES_PORT" || die "aucune connexion sur 127.0.0.1:${POSTGRES_PORT}"
   ok "${POSTGRES_PORT} joignable sur 127.0.0.1, et seulement là"
 
-  # Connexion réelle du rôle des jobs, en TCP comme le fera l'application.
-  result="$(PGPASSWORD="$(env_value "$POSTGRES_JOBS_ENV" POSTGRES_PASSWORD)" \
-    docker exec -i -e PGPASSWORD "$POSTGRES_CONTAINER" \
-    psql -h 127.0.0.1 -U "$POSTGRES_JOBS_USER" -d "$POSTGRES_DB_NAME" -tA \
-    -c "SELECT current_user || ' / ' || current_database() || ' / PostGIS ' || postgis_lib_version()")"
-  ok "connexion : ${result}"
+  # Connexion réelle du rôle des jobs, par le même chemin que l'application :
+  # depuis l'hôte, sur le port publié. Pas de « docker exec … psql » : DANS le
+  # conteneur, l'image fait confiance à 127.0.0.1 (trust) et accepterait
+  # n'importe quel mot de passe — le test ne prouverait rien. Le client psql
+  # vient de l'image déjà présente, lancée sur le réseau de l'hôte.
+  image="$(docker inspect -f '{{.Config.Image}}' "$POSTGRES_CONTAINER")"
+  # Mot de passe transmis par l'environnement (-e sans valeur), jamais en
+  # argument : il apparaîtrait dans la liste des processus.
+  host_psql() {
+    PGPASSWORD="$1" docker run --rm --network host -e PGPASSWORD "$image" \
+      psql -h 127.0.0.1 -p "$POSTGRES_PORT" -U "$POSTGRES_JOBS_USER" -d "$POSTGRES_DB_NAME" \
+      -tA -c "$2"
+  }
+  if host_psql "mauvais-mot-de-passe" "SELECT 1" >/dev/null 2>&1; then
+    die "connexion acceptée avec un MAUVAIS mot de passe : authentification inopérante"
+  fi
+  ok "mauvais mot de passe refusé (authentification scram-sha-256 active)"
+  result="$(host_psql "$(env_value "$POSTGRES_JOBS_ENV" POSTGRES_PASSWORD)" \
+    "SELECT current_user || ' / ' || current_database() || ' / PostGIS ' || postgis_lib_version()")"
+  ok "connexion par 127.0.0.1:${POSTGRES_PORT} : ${result}"
 fi
 
 # ── Bilan ────────────────────────────────────────────────────────────────
@@ -202,9 +223,9 @@ Pour les jobs (#27), dans leur unité systemd :
     After=${POSTGRES_UNIT}.service
     Wants=${POSTGRES_UNIT}.service
 
-Créer les tables métier (une fois le code déployé) :
+Créer les tables métier, une fois le code déployé par #27 :
 
-    biowatch-jobs --env prod init_db
+    sudo systemctl start biowatch-job@init_db
 
 Administration (psql en superutilisateur) :
 

@@ -383,12 +383,20 @@ Une seule base sur le VPS : **`biowatch_prod`**. La base de dev reste sur le pos
 `127.0.0.1` dans `postgres/compose.yaml` qui garde le 5432 fermé. Ne jamais la retirer.
 Le script le prouve, et depuis un poste : `nc -zv -w5 <IP_DU_VPS> 5432` doit échouer.
 
+Le groupe `docker` équivaut à root : le script **vérifie** qu'il est vide et prévient sinon,
+mais ne retire personne lui-même (action destructive, à décider au cas par cas).
+
+La preuve de connexion passe par le port publié, depuis l'hôte, comme l'application : un
+mauvais mot de passe doit y être refusé. Un test `docker exec … psql` ne prouverait rien,
+l'image faisant confiance à `127.0.0.1` à l'intérieur du conteneur.
+
 Les mots de passe sont générés une seule fois, sur le VPS, et jamais régénérés quand on
 rejoue le script (la base ne les reconnaîtrait plus). Rejouer le script ne coupe pas la
 base : le conteneur n'est recréé que si sa définition a changé.
 
 Pour les jobs (#27) : `EnvironmentFile=/etc/biowatch/db-jobs.env` et
-`After=`/`Wants=biowatch-postgres.service`. Tables : `biowatch-jobs --env prod init_db`.
+`After=`/`Wants=biowatch-postgres.service`. Tables, une fois le code déployé par #27 :
+`sudo systemctl start biowatch-job@init_db`.
 Administration : `sudo docker exec -it biowatch-postgis psql -U biowatch_admin -d biowatch_prod`.
 Rôles plus fins (API en lecture seule) : #29. Sauvegardes : #30.
 
