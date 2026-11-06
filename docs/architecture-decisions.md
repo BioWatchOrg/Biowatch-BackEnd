@@ -441,7 +441,8 @@ Un spike (2026-10-23, script jetable non versionné) a mesuré la faisabilité s
 
 - Code : `packages/clients/planetary_computer_client/` (recherche, dédoublonnage, lecture
   par blocs), `packages/geo/raster_h3.py` (pixel -> cellule, tuile propriétaire,
-  agrégation par blocs), `packages/sentinel/` (calcul pixel, job, backfill). Le client
+  agrégation par blocs), `packages/sentinel/` (calcul pur : pixels, indices, moyennes par
+  cellule), `apps/jobs/sentinel/` (orchestration : job mensuel et backfill). Le client
   Sentinel Hub est supprimé (historique git : `e5115b3`).
 - `source_version` = `2.0.0` : les lignes 1.0.0 (Sentinel Hub) ne sont pas écrasées.
 - **Toutes les cellules de l'AOI ont une ligne chaque mois.** Une cellule sans aucune image

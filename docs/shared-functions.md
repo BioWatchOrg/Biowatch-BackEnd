@@ -32,7 +32,7 @@ packages (voir CLAUDE.md, "Documentation").
     `23:59:59` est **faux** — l'intervalle a besoin d'un mois calendaire complet pour rentrer
     dans `[from, to]`, et s'arrêter à `23:59:59` le laisse une seconde trop court, ce qui fait
     silencieusement renvoyer zéro intervalle sur **chaque** requête (bug réel rencontré en prod
-    sur `packages/sentinel/sentinel_extract.py`). Utiliser la borne **exclusive** à la place :
+    sur l'ancien job Sentinel Hub, aujourd'hui supprimé). Utiliser la borne **exclusive** à la place :
     début du jour suivant `end`.
 - `related_bucket_ids(bucket) -> list[BucketId]` — tous les buckets (année, bimestre, mois)
   qui couvrent la même période que `bucket`. Utile pour retrouver des features à une

@@ -93,7 +93,7 @@ def extract_sentinel_data_by_aoi(
     dédoublonnées) -> une tuile propriétaire par cellule -> lecture et
     composite tuile par tuile -> une ligne par cellule, en un seul upsert.
 
-    - Une tuile illisible -> `record_zone_error` pour chacune de ses cellules
+    - Une tuile illisible -> `record_zone_errors` pour toutes ses cellules (en lot)
       (run `partial`), les autres tuiles continuent. Relancer le mois refait
       tout le mois (pas seulement la tuile en échec).
     - Une cellule sans aucune image exploitable -> ligne écrite avec indices
