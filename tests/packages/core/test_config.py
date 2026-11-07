@@ -78,11 +78,11 @@ def test_normalize_env_is_the_single_normalization_rule(raw, expected):
     assert normalize_env(raw) == expected
 
 
-def test_load_env_file_pins_the_process_env_before_reading_the_file(monkeypatch, project_root):
+def test_load_env_file_pins_the_process_env_over_the_file(monkeypatch, project_root):
     """`BIOWATCH_ENV=prod` collé dans `.env.dev` ne fait pas basculer le process en prod.
 
     Hors CLI (API, librairie), rien d'autre ne pose BIOWATCH_ENV : c'est
-    `load_env_file` qui fige l'env du process, avant de lire le fichier.
+    `load_env_file` qui fige l'env du process, en écrasant ce que le fichier a posé.
     """
     monkeypatch.delenv(ENV_VAR, raising=False)
     (project_root / ".env.dev").write_text("BIOWATCH_ENV=prod\n")
@@ -98,8 +98,9 @@ def test_load_env_file_pins_the_process_env_before_reading_the_file(monkeypatch,
     reason="root lit tout, et chmod ne retire pas la lecture sous Windows",
 )
 @pytest.mark.parametrize("env", ["dev", "prod"])
-def test_load_env_file_unreadable_file_is_a_config_error(project_root, env):
+def test_load_env_file_unreadable_file_is_a_config_error(monkeypatch, project_root, env):
     """Fichier présent mais illisible (ex. `.env.prod` en 600 root sur le VPS)."""
+    monkeypatch.delenv(ENV_VAR, raising=False)
     path = project_root / env_file(env)
     path.write_text("")
     path.chmod(0)
@@ -108,6 +109,7 @@ def test_load_env_file_unreadable_file_is_a_config_error(project_root, env):
             load_env_file(env)
     finally:
         path.chmod(0o600)
+    assert ENV_VAR not in os.environ  # rien n'a été chargé : l'env du process n'est pas figé
 
 
 def test_env_file_follows_the_dot_env_env_convention():
@@ -131,6 +133,26 @@ def test_load_env_file_prod_without_file_raises(monkeypatch, project_root):
     monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://u:p@prod.internal:5432/biowatch_prod")
     with pytest.raises(EnvFileNotFoundError, match=r"\.env\.prod.*'prod'"):
         load_env_file("prod")
+
+
+@pytest.mark.parametrize("previous", [None, "dev"])
+def test_load_env_file_failure_leaves_the_process_env_untouched(
+    monkeypatch, project_root, previous
+):
+    """Un échec ne laisse pas `BIOWATCH_ENV=prod` dans le process.
+
+    Un appelant en librairie qui attraperait `EnvFileNotFoundError` et
+    continuerait ne doit pas se retrouver en prod sans aucune config chargée.
+    """
+    if previous is None:
+        monkeypatch.delenv(ENV_VAR, raising=False)
+    else:
+        monkeypatch.setenv(ENV_VAR, previous)
+
+    with pytest.raises(EnvFileNotFoundError):
+        load_env_file("prod")
+
+    assert os.environ.get(ENV_VAR) == previous
 
 
 def test_load_env_file_ignores_the_cwd_and_parent_directories(

@@ -97,16 +97,17 @@ def load_env_file(env: Env) -> str | None:
     (`EnvironmentFile=`). En dev, l'absence du fichier retourne `None`
     (variables injectées par le shell ou la CI).
 
-    Fige aussi `BIOWATCH_ENV` à `env` dans le process, AVANT de lire le
-    fichier : l'env qui a chargé la config est l'env du process, un
-    `BIOWATCH_ENV=prod` collé par erreur dans `.env.dev` ne peut pas faire
-    diverger les `resolve_env()` suivants (clé d'idempotence, `data_root`)
-    de l'env qui a validé la base.
+    Fige aussi `BIOWATCH_ENV` à `env` dans le process, APRÈS avoir lu le
+    fichier : l'affectation écrase un `BIOWATCH_ENV=prod` collé par erreur
+    dans `.env.dev`, donc les `resolve_env()` suivants (clé d'idempotence,
+    `data_root`) ne peuvent pas diverger de l'env qui a validé la base. Et
+    seulement en cas de succès : si le fichier manque ou est illisible, le
+    process ne garde pas un `BIOWATCH_ENV` qui n'a rien chargé (un appelant
+    qui attraperait l'erreur ne se retrouve pas en prod sans config).
 
     Idempotent : `override=False` laisse gagner les variables déjà présentes
     dans l'environnement, un second appel ne change donc rien.
     """
-    os.environ[ENV_VAR] = env
     path = PROJECT_ROOT / env_file(env)
     if not path.is_file():
         if env in ENV_FILE_REQUIRED:
@@ -114,6 +115,7 @@ def load_env_file(env: Env) -> str | None:
                 f"Fichier {path} introuvable : l'environnement '{env}' exige ce fichier "
                 f"et refuse de démarrer sans lui (il n'existe que sur le VPS)."
             )
+        os.environ[ENV_VAR] = env
         return None
     try:
         load_dotenv(path, override=False)
@@ -124,6 +126,7 @@ def load_env_file(env: Env) -> str | None:
             f"Fichier {path} illisible ({e.strerror}) : vérifier ses permissions "
             f"(attendu : lisible par le compte qui lance les jobs)."
         ) from None
+    os.environ[ENV_VAR] = env
     return str(path)
 
 
