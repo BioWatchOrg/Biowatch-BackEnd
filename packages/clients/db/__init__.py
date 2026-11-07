@@ -18,7 +18,7 @@ from .models import (
     StressScoreByZone,
     ZonesHex,
 )
-from .session import session_scope
+from .session import DatabaseConfigError, DatabaseEnvMismatchError, session_scope
 from .upsert import upsert
 
 __all__ = [
@@ -32,6 +32,8 @@ __all__ = [
     "JobRun",
     "JobRunZoneError",
     "session_scope",
+    "DatabaseConfigError",
+    "DatabaseEnvMismatchError",
     "upsert",
     "job_run",
     "record_zone_error",
