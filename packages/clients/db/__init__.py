@@ -6,6 +6,7 @@ from .job_runs import (
     get_failed_zones,
     job_run,
     record_zone_error,
+    record_zone_errors,
 )
 from .models import (
     JobRun,
@@ -36,6 +37,7 @@ __all__ = [
     "upsert",
     "job_run",
     "record_zone_error",
+    "record_zone_errors",
     "get_failed_zones",
     "JobAlreadySucceeded",
     "RunContext",
