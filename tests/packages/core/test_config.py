@@ -6,7 +6,6 @@ normalisation, le rejet des valeurs inconnues, et le garde-fou prod de
 """
 
 import os
-from pathlib import Path
 
 import pytest
 
@@ -94,7 +93,10 @@ def test_load_env_file_pins_the_process_env_before_reading_the_file(monkeypatch,
     assert resolve_env() == "dev"
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root lit tout, le test n'a pas de sens")
+@pytest.mark.skipif(
+    not hasattr(os, "geteuid") or os.geteuid() == 0,
+    reason="root lit tout, et chmod ne retire pas la lecture sous Windows",
+)
 @pytest.mark.parametrize("env", ["dev", "prod"])
 def test_load_env_file_unreadable_file_is_a_config_error(project_root, env):
     """Fichier présent mais illisible (ex. `.env.prod` en 600 root sur le VPS)."""
@@ -215,11 +217,16 @@ def test_project_root_is_the_repository_root():
     assert (PROJECT_ROOT / "packages" / "core" / "config.py").is_file()
 
 
-def test_data_root_is_overridable_and_keeps_env_separation(monkeypatch):
-    """Sur le VPS, la racine pointe hors du code déployé (lecture seule)."""
-    monkeypatch.setenv(DATA_ROOT_VAR, "/var/lib/biowatch/jobs")
-    assert data_root("prod") == Path("/var/lib/biowatch/jobs/prod")
-    assert data_root("dev") == Path("/var/lib/biowatch/jobs/dev")
+def test_data_root_is_overridable_and_keeps_env_separation(monkeypatch, tmp_path):
+    """Sur le VPS, la racine pointe hors du code déployé (lecture seule).
+
+    `tmp_path` sert de racine absolue portable : sous Windows, `/var/lib/...` n'a
+    pas de lecteur et n'est donc pas absolu.
+    """
+    root = tmp_path / "var" / "lib" / "biowatch" / "jobs"
+    monkeypatch.setenv(DATA_ROOT_VAR, str(root))
+    assert data_root("prod") == root / "prod"
+    assert data_root("dev") == root / "dev"
 
 
 def test_empty_data_root_falls_back_to_default(monkeypatch, project_root):
