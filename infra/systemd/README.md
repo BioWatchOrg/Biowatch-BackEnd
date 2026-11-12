@@ -8,16 +8,17 @@
 | `biowatch-osm-import.service` | Lance `biowatch-jobs osm_import_scheduled --env prod` sous `biowatch-jobs`. |
 | `jobs.env.example` | Modèle de `/etc/biowatch/jobs.env` (secrets, hors dépôt). |
 
-Chaque déclenchement importe **une** région : la première AOI du registre
-(`packages/core/aoi/aoi_registry.json`) qui n'a pas encore d'import réussi pour l'année en
-cours. Une région en échec est retentée au déclenchement suivant avant de passer à la
-suivante. Quand toutes les régions sont importées, le job ne fait rien jusqu'à l'année
-suivante.
+Chaque déclenchement importe **une** région, dans l'ordre du registre
+(`packages/core/aoi/aoi_registry.json`) : d'abord les régions jamais tentées pour l'année en
+cours, puis seulement celles dont le dernier essai a échoué. Une région qui échoue en boucle
+ne bloque donc pas les autres ; chaque échec émet l'event `osm_import.region_failed`. Quand
+toutes les régions sont importées, le job ne fait rien jusqu'à l'année suivante.
 
 Résultat : schéma `osm_tmp_{aoi}_{année}_{clé}` (8 premiers caractères de
-l'`idempotency_key`) + ligne `job_runs` en `success` avec `output_ref` = nom du schéma. C'est le signal de fin d'import consommé par #38. Un
-message SQS est publié en plus si `OSM_IMPORT_DONE_QUEUE_URL` est renseigné (désactivé tant
-que BioWatch n'a pas de compte AWS).
+l'`idempotency_key`) + ligne `job_runs` en `success`. C'est le signal de fin d'import consommé
+par #38. Son `output_ref` est un JSON court,
+`{"schema": "osm_tmp_idf_2026_ab12cd34", "source_version": "geofabrik_2026-01-01_style-v1"}` :
+#38 y lit le schéma (sans reconstruire son nom) et la version de l'import.
 
 ### Prérequis sur le VPS
 

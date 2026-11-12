@@ -1,9 +1,11 @@
-"""Tests for jobs.pipelines.osm_import — orchestration, idempotence, signal, scheduler.
+"""Tests for jobs.pipelines.osm_import — orchestration, idempotence, output_ref, scheduler.
 
-Real `job_runs` (SQLite, no geometry involved); Geofabrik, osm2pgsql, PostgreSQL
-schemas and SQS are faked at the module boundary.
+Real `job_runs` (SQLite, no geometry involved); Geofabrik, osm2pgsql and
+PostgreSQL schemas are faked at the module boundary.
 """
 
+import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -20,7 +22,6 @@ from jobs.pipelines.osm_import import (
     tmp_schema_name,
 )
 
-QUEUE_URL = "https://sqs.eu-west-3.amazonaws.com/123456789012/osm_import_done"
 IDF_2016_PBF = "https://download.geofabrik.de/europe/france/ile-de-france-160101.osm.pbf"
 
 
@@ -46,11 +47,10 @@ def fakes(monkeypatch, tmp_path):
         events: list[tuple] = []
         existing_schemas: set[str] = set()
         fail_on: str | None = None
-        messages: list[tuple[str, dict]] = []
         downloaded: list[Path] = []
 
     f = Fakes()
-    f.events, f.existing_schemas, f.messages, f.downloaded = [], set(), [], []
+    f.events, f.existing_schemas, f.downloaded = [], set(), []
 
     def maybe_fail(step):
         if f.fail_on == step:
@@ -78,18 +78,12 @@ def fakes(monkeypatch, tmp_path):
         maybe_fail("osm2pgsql")
         f.events.append(("osm2pgsql", schema, [p.name for p in paths]))
 
-    def send_message(queue_url, body):
-        maybe_fail("sqs")
-        f.messages.append((queue_url, body))
-
     monkeypatch.setattr(osm_import, "download", download)
     monkeypatch.setattr(osm_import, "create_schema", create_schema)
     monkeypatch.setattr(osm_import, "drop_schema", drop_schema)
     monkeypatch.setattr(osm_import, "schema_exists", lambda n, e=None: n in f.existing_schemas)
     monkeypatch.setattr(osm_import, "run_osm2pgsql", run_osm2pgsql)
-    monkeypatch.setattr(osm_import, "send_message", send_message)
     monkeypatch.setenv("OSM_DATA_DIR", str(tmp_path / "osm"))
-    monkeypatch.delenv("OSM_IMPORT_DONE_QUEUE_URL", raising=False)
     return f
 
 
@@ -124,7 +118,16 @@ def test_import_downloads_imports_and_records_success(engine, fakes):
     assert run.job_name == "osm_import_snapshot"
     assert run.scope == "region:idf"
     assert run.bucket_id == "2016"
-    assert run.output_ref == _schema()
+
+
+def test_output_ref_holds_the_schema_and_source_version(engine, fakes):
+    osm_import_snapshot("idf", "2016", env="prod", engine=engine)
+
+    (run,) = _runs(engine)
+    assert json.loads(run.output_ref) == {
+        "schema": _schema("prod"),
+        "source_version": "geofabrik_2016-01-01_style-v1",
+    }
 
 
 def test_downloaded_files_are_deleted(engine, fakes):
@@ -165,7 +168,7 @@ def test_another_key_never_drops_a_successful_runs_schema(engine, fakes, monkeyp
 
     assert not any(event[0] == "drop_schema" for event in fakes.events)
     assert _schema("prod") in fakes.existing_schemas
-    schemas = {run.output_ref for run in _runs(engine)}
+    schemas = {json.loads(run.output_ref)["schema"] for run in _runs(engine)}
     assert len(schemas) == 4 and schemas <= fakes.existing_schemas
 
 
@@ -209,39 +212,6 @@ def test_links_override_the_geofabrik_mapping(engine, fakes):
     assert fakes.events[0] == ("download", links[0])
 
 
-def test_sqs_signal_is_disabled_without_queue_url(engine, fakes):
-    osm_import_snapshot("idf", "2016", engine=engine)
-    assert fakes.messages == []
-
-
-def test_sqs_signal_is_published_when_queue_configured(engine, fakes, monkeypatch):
-    monkeypatch.setenv("OSM_IMPORT_DONE_QUEUE_URL", QUEUE_URL)
-    osm_import_snapshot("idf", "2016", env="prod", engine=engine)
-
-    ((queue_url, body),) = fakes.messages
-    (run,) = _runs(engine)
-    assert queue_url == QUEUE_URL
-    assert body == {
-        "region_id": "idf",
-        "bucket_id": "2016",
-        "schema_name": _schema("prod"),
-        "source_version": "geofabrik_2016-01-01_style-v1",
-        "h3_res": 8,
-        "env": "prod",
-        "pbf_links": [IDF_2016_PBF],
-        "run_id": str(run.run_id),
-    }
-
-
-def test_sqs_failure_fails_the_run_so_it_is_retried(engine, fakes, monkeypatch):
-    monkeypatch.setenv("OSM_IMPORT_DONE_QUEUE_URL", QUEUE_URL)
-    fakes.fail_on = "sqs"
-    with pytest.raises(RuntimeError, match="sqs failed"):
-        osm_import_snapshot("idf", "2016", engine=engine)
-    (run,) = _runs(engine)
-    assert run.status == "failed"
-
-
 def test_scheduler_imports_next_region_then_has_nothing_to_do(engine, fakes):
     assert osm_import_scheduled(bucket="2016", engine=engine) == "idf"
     assert osm_import_scheduled(bucket="2016", engine=engine) is None
@@ -260,6 +230,37 @@ def test_scheduler_retries_a_failed_region(engine, fakes):
         osm_import_scheduled(bucket="2016", engine=engine)
     fakes.fail_on = None
     assert osm_import_scheduled(bucket="2016", engine=engine) == "idf"
+
+
+def test_scheduler_failing_region_does_not_block_the_others(engine, fakes, monkeypatch, caplog):
+    monkeypatch.setattr(osm_import, "aoi_registry", lambda label: label in ("idf", "bre"))
+    monkeypatch.setattr(osm_import, "load_aoi", lambda label: None)
+    fake_download = osm_import.download
+
+    def download(url, dest_dir):
+        if "ile-de-france" in url:
+            raise RuntimeError("idf extract unavailable")
+        return fake_download(url, dest_dir)
+
+    monkeypatch.setattr(osm_import, "download", download)
+
+    def region_failures():
+        return [
+            r.context
+            for r in caplog.records
+            if getattr(r, "event", None) == "osm_import.region_failed"
+        ]
+
+    with caplog.at_level(logging.ERROR, logger=osm_import.__name__):
+        with pytest.raises(RuntimeError, match="idf extract unavailable"):
+            osm_import_scheduled(bucket="2016", engine=engine)
+        # idf failed, bre was never attempted: bre goes first.
+        assert osm_import_scheduled(bucket="2016", engine=engine) == "bre"
+        # Only idf is left: it is retried.
+        with pytest.raises(RuntimeError):
+            osm_import_scheduled(bucket="2016", engine=engine)
+
+    assert [(c["aoi"], c["retry"]) for c in region_failures()] == [("idf", False), ("idf", True)]
 
 
 def test_scheduler_defaults_to_current_year(engine, fakes, monkeypatch):

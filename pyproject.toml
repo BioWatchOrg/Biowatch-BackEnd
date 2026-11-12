@@ -5,7 +5,6 @@ description = "BioWatch backend"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "boto3>=1.43.111",
     "geoalchemy2>=0.20.0",
     "h3>=4.5.0",
     "httpx>=0.28.1",
@@ -55,5 +54,5 @@ target-version = "py312"
 testpaths = ["apps", "packages", "tests"]
 
 [[tool.mypy.overrides]]
-module = ["h3.*", "boto3.*", "botocore.*"]
+module = ["h3.*"]
 ignore_missing_imports = true

@@ -12,16 +12,17 @@ idempotency key, so each key has its own schema: on retry, a schema found
 under that name is the leftover of a failed attempt of the same key, never the
 output of a successful run, and is dropped and re-imported.
 
-End-of-import signal: `job_runs.status = success` with `output_ref` = schema
-name is always written. An SQS "import done" message is also published when
-`OSM_IMPORT_DONE_QUEUE_URL` is set — BioWatch has no AWS account yet, so it is
-disabled by default and turns on through configuration only.
+End-of-import signal: the `job_runs` row in `success`. Its `output_ref` is a
+short JSON object, `{"schema": ..., "source_version": ...}`: the compute job
+(#38) reads the successful imports it has not processed yet and finds the
+schema there (it never rebuilds the name), with the version to trace its
+figures back to.
 """
 
+import json
 import logging
 import os
 from pathlib import Path
-from typing import Any
 
 from clients import (
     JobAlreadySucceeded,
@@ -40,16 +41,12 @@ from clients.osm import (
     snapshot_for,
     snapshot_from_urls,
 )
-from clients.sqs import send_message
 from core import BucketFormat, aoi_registry, bucket_id, compute_idempotency_key, load_aoi
 from sqlalchemy import Engine
 
 logger = logging.getLogger(__name__)
 
 JOB_NAME = "osm_import_snapshot"
-
-# SQS queue for the "import done" signal. Unset ⇒ signal disabled (job_runs only).
-QUEUE_URL_ENV = "OSM_IMPORT_DONE_QUEUE_URL"
 
 # Where `.pbf` files are downloaded. Files are deleted after each attempt.
 DATA_DIR_ENV = "OSM_DATA_DIR"
@@ -89,21 +86,9 @@ def import_idempotency_key(snapshot: Snapshot, bucket: str, env: str) -> str:
     )
 
 
-def publish_import_done(payload: dict[str, Any]) -> None:
-    """
-    Publish the "import done" signal on SQS, if a queue is configured.
-
-    Single swap point for the signal transport: when BioWatch moves to AWS,
-    setting `OSM_IMPORT_DONE_QUEUE_URL` (+ AWS credentials) is enough.
-    """
-    queue_url = os.environ.get(QUEUE_URL_ENV)
-    if not queue_url:
-        logger.info(
-            "SQS signal disabled, job_runs is the import-done signal",
-            extra={"event": "osm_import.signal_disabled", "context": payload},
-        )
-        return
-    send_message(queue_url, payload)
+def import_output_ref(schema: str, source_version: str) -> str:
+    """`job_runs.output_ref` of a successful import: what #38 needs, as short JSON."""
+    return json.dumps({"schema": schema, "source_version": source_version})
 
 
 def osm_import_snapshot(
@@ -119,7 +104,7 @@ def osm_import_snapshot(
     `links` overrides the Geofabrik URLs resolved from the AOI (manual runs).
     Returns True if an import ran, False if a previous run already succeeded.
     """
-    aoi = load_aoi(aoi_label)  # fail fast on an unknown AOI, before any run is recorded
+    load_aoi(aoi_label)  # fail fast on an unknown AOI, before any run is recorded
     snapshot = (
         snapshot_from_urls(aoi_label, bucket, links) if links else snapshot_for(aoi_label, bucket)
     )
@@ -161,21 +146,7 @@ def osm_import_snapshot(
                 for path in paths:
                     path.unlink(missing_ok=True)
 
-            run.output_ref = schema
-            # Last step: if publishing fails the run is marked failed and the
-            # retry re-imports, so a "success" never exists without its signal.
-            publish_import_done(
-                {
-                    "region_id": aoi_label,
-                    "bucket_id": bucket,
-                    "schema_name": schema,
-                    "source_version": source_version,
-                    "h3_res": aoi.default_res,
-                    "env": env,
-                    "pbf_links": list(snapshot.urls),
-                    "run_id": str(run.run_id),
-                }
-            )
+            run.output_ref = import_output_ref(schema, source_version)
             logger.info(
                 "OSM snapshot imported", extra={"event": "osm_import.done", "context": log_ctx}
             )
@@ -195,28 +166,44 @@ def osm_import_scheduled(
     Scheduled entrypoint: import the next region not yet imported for the bucket.
 
     Run monthly (systemd timer) ⇒ one region per month. Regions are walked in
-    `GEOFABRIK_REGIONS` order, limited to AOIs present in the registry. A region
-    whose last attempt failed is retried before moving on. Returns the imported
-    AOI label, or None when every region is already imported for the bucket.
+    `GEOFABRIK_REGIONS` order, limited to AOIs present in the registry. Regions
+    never attempted come first; regions whose last attempt did not succeed are
+    retried only after them, so a region that keeps failing does not block the
+    others. Returns the imported AOI label, or None when every region is
+    already imported for the bucket.
     """
     bucket = bucket or bucket_id(format=BucketFormat.YEARLY)
+    never_attempted: list[str] = []
+    to_retry: list[str] = []
     for aoi_label in GEOFABRIK_REGIONS:
         if not aoi_registry(aoi_label):
             continue
         key = import_idempotency_key(snapshot_for(aoi_label, bucket), bucket, env)
-        if get_run_status(key, engine) == "success":
-            continue
+        status = get_run_status(key, engine)
+        if status is None:
+            never_attempted.append(aoi_label)
+        elif status != "success":
+            to_retry.append(aoi_label)
+
+    if not never_attempted and not to_retry:
         logger.info(
-            "scheduled OSM import",
-            extra={
-                "event": "osm_import.scheduled",
-                "context": {"aoi": aoi_label, "bucket": bucket},
-            },
+            "every registered region already imported for this bucket",
+            extra={"event": "osm_import.nothing_to_do", "context": {"bucket": bucket}},
         )
-        osm_import_snapshot(aoi_label, bucket, env=env, engine=engine)
-        return aoi_label
+        return None
+
+    aoi_label = (never_attempted or to_retry)[0]
+    context = {"aoi": aoi_label, "bucket": bucket, "retry": not never_attempted}
     logger.info(
-        "every registered region already imported for this bucket",
-        extra={"event": "osm_import.nothing_to_do", "context": {"bucket": bucket}},
+        "scheduled OSM import",
+        extra={"event": "osm_import.scheduled", "context": context},
     )
-    return None
+    try:
+        osm_import_snapshot(aoi_label, bucket, env=env, engine=engine)
+    except Exception as e:
+        logger.error(
+            "scheduled OSM import failed, region will be retried after the others",
+            extra={"event": "osm_import.region_failed", "context": {**context, "error": str(e)}},
+        )
+        raise
+    return aoi_label

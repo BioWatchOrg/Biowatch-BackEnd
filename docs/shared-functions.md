@@ -88,14 +88,11 @@ packages (voir CLAUDE.md, "Documentation").
 - `snapshot_from_urls(aoi_label, bucket, urls) -> Snapshot` — idem à partir d'URLs explicites.
 - `download(url, dest_dir) -> Path` — téléchargement vérifié (md5 Geofabrik si publié, sinon
   taille), écrit en `.part` puis renommé.
-- `run_osm2pgsql(pbf_paths, schema, engine=None)` — import slim/drop dans `schema` (qui doit
-  exister) avec le style `clients/osm/style.lua` (bâti, routes, landuse urbain, EPSG:4326).
-  Mot de passe passé par `PGPASSWORD`, jamais en argument.
+- `run_osm2pgsql(pbf_paths, schema, engine=None, timeout_s=DEFAULT_TIMEOUT_S)` — import
+  slim/drop dans `schema` (qui doit exister) avec le style `clients/osm/style.lua` (bâti,
+  routes, landuse urbain, EPSG:4326). Mot de passe passé par `PGPASSWORD`, jamais en argument.
+  Processus tué et `Osm2pgsqlError` au-delà de `timeout_s` (3 h par défaut).
 - Exceptions : `GeofabrikError`, `Osm2pgsqlError`.
-
-### `clients.sqs`
-- `send_message(queue_url, body) -> str` — publie `body` en JSON sur une queue SQS
-  (identifiants AWS via l'environnement standard). Lève `SqsPublishError`.
 
 ### `clients.logs`
 - `setup_logging(service="biowatch", level=None) -> None` — configure le logger racine en

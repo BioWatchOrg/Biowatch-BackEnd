@@ -37,6 +37,11 @@ OSM2PGSQL_BIN_ENV = "OSM2PGSQL_BIN"
 # Keep the tail of osm2pgsql's output in error messages, not megabytes of it.
 _STDERR_TAIL = 2000
 
+# A regional import takes a few minutes to ~1 h: beyond this, it is stuck. Kept
+# below the service's `TimeoutStartSec=4h` so the job fails with a clear error
+# (and a `failed` run) instead of being killed by systemd mid-run.
+DEFAULT_TIMEOUT_S = 3 * 3600
+
 
 class Osm2pgsqlError(Exception):
     """Raised when osm2pgsql is missing or exits with an error."""
@@ -71,11 +76,23 @@ def build_command(binary: str, pbf_paths: list[Path], schema: str) -> list[str]:
     ]
 
 
-def run_osm2pgsql(pbf_paths: list[Path], schema: str, engine: Engine | None = None) -> None:
+def _tail(output: str | bytes | None) -> str:
+    if isinstance(output, bytes):
+        output = output.decode(errors="replace")
+    return (output or "")[-_STDERR_TAIL:]
+
+
+def run_osm2pgsql(
+    pbf_paths: list[Path],
+    schema: str,
+    engine: Engine | None = None,
+    timeout_s: float = DEFAULT_TIMEOUT_S,
+) -> None:
     """
     Import `pbf_paths` into `schema` (which must already exist).
 
-    Raises `Osm2pgsqlError` if the binary is missing or the import fails.
+    Raises `Osm2pgsqlError` if the binary is missing, the import fails, or it
+    runs longer than `timeout_s` (the process is then killed).
     """
     binary = os.environ.get(OSM2PGSQL_BIN_ENV, "osm2pgsql")
     if shutil.which(binary) is None:
@@ -88,7 +105,22 @@ def run_osm2pgsql(pbf_paths: list[Path], schema: str, engine: Engine | None = No
     log_ctx = {"schema": schema, "files": [p.name for p in pbf_paths]}
     logger.info("osm2pgsql import started", extra={"event": "osm2pgsql.start", "context": log_ctx})
     started = time.monotonic()
-    result = subprocess.run(command, env=env, capture_output=True, text=True, check=False)
+    try:
+        result = subprocess.run(
+            command, env=env, capture_output=True, text=True, check=False, timeout=timeout_s
+        )
+    except subprocess.TimeoutExpired as e:
+        logger.error(
+            "osm2pgsql import timed out",
+            extra={
+                "event": "osm2pgsql.timeout",
+                "duration_ms": int((time.monotonic() - started) * 1000),
+                "context": {**log_ctx, "timeout_s": timeout_s},
+            },
+        )
+        raise Osm2pgsqlError(
+            f"osm2pgsql did not finish within {timeout_s:.0f} s and was killed: {_tail(e.stderr)}"
+        ) from e
     duration_ms = int((time.monotonic() - started) * 1000)
     if result.returncode != 0:
         logger.error(
@@ -100,7 +132,7 @@ def run_osm2pgsql(pbf_paths: list[Path], schema: str, engine: Engine | None = No
             },
         )
         raise Osm2pgsqlError(
-            f"osm2pgsql exited with code {result.returncode}: {result.stderr[-_STDERR_TAIL:]}"
+            f"osm2pgsql exited with code {result.returncode}: {_tail(result.stderr)}"
         )
     logger.info(
         "osm2pgsql import done",

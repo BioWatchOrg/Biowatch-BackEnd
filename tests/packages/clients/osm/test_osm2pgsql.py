@@ -8,7 +8,13 @@ from sqlalchemy import create_engine
 
 from clients.db.schemas import InvalidSchemaName
 from clients.osm import osm2pgsql
-from clients.osm.osm2pgsql import STYLE_PATH, Osm2pgsqlError, build_command, run_osm2pgsql
+from clients.osm.osm2pgsql import (
+    DEFAULT_TIMEOUT_S,
+    STYLE_PATH,
+    Osm2pgsqlError,
+    build_command,
+    run_osm2pgsql,
+)
 
 ENGINE = create_engine("postgresql+psycopg://bw:s3cret@db.local:6543/biowatch_dev")
 PBFS = [Path("/data/alsace-240101.osm.pbf"), Path("/data/lorraine-240101.osm.pbf")]
@@ -71,6 +77,23 @@ def test_run_raises_with_stderr_on_failure(fake_run):
     fake_run.returncode = 1
     with pytest.raises(Osm2pgsqlError, match="code 1: FATAL: boom"):
         run_osm2pgsql(PBFS, "osm_tmp_ges_2024", engine=ENGINE)
+
+
+def test_run_passes_a_timeout(fake_run):
+    run_osm2pgsql(PBFS, "osm_tmp_ges_2024", engine=ENGINE)
+    run_osm2pgsql(PBFS, "osm_tmp_ges_2024", engine=ENGINE, timeout_s=60)
+    assert [call["timeout"] for call in fake_run.calls] == [DEFAULT_TIMEOUT_S, 60]
+
+
+def test_run_raises_a_clear_error_on_timeout(monkeypatch):
+    def run(cmd, **kwargs):
+        # On timeout, subprocess gives the captured output as bytes, even with text=True.
+        raise subprocess.TimeoutExpired(cmd, kwargs["timeout"], stderr=b"Processing ways")
+
+    monkeypatch.setattr(osm2pgsql.shutil, "which", lambda b: f"/usr/bin/{b}")
+    monkeypatch.setattr(osm2pgsql.subprocess, "run", run)
+    with pytest.raises(Osm2pgsqlError, match="did not finish within 60 s.*Processing ways"):
+        run_osm2pgsql(PBFS, "osm_tmp_ges_2024", engine=ENGINE, timeout_s=60)
 
 
 def test_run_uses_binary_override(fake_run, monkeypatch):

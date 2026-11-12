@@ -16,6 +16,8 @@ WorkingDirectory=/opt/biowatch/app
 # d'écrire dans /opt/biowatch.
 ExecStart=/opt/biowatch/app/.venv/bin/biowatch-jobs osm_import_scheduled --env prod
 # Un import régional dure de quelques minutes à ~1 h : au-delà, il est bloqué.
+# osm2pgsql est coupé avant, à 3 h (DEFAULT_TIMEOUT_S), pour que le run passe
+# en `failed` avec une erreur claire au lieu d'être tué par systemd.
 TimeoutStartSec=4h
 # Le VPS 1 sert aussi l'API : l'import passe après.
 Nice=10
