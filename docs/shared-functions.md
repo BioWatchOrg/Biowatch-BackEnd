@@ -18,9 +18,22 @@ packages (voir CLAUDE.md, "Documentation").
 
 ### `core.time_bucket`
 - `biowatch_now() -> date` — date du jour en Europe/Paris.
-- `bucket_id(value=None, format=BucketFormat.MONTHLY) -> BucketId` — normalise une date en
-  identifiant de période (`"2024"`, `"2024-03"`, `"2024-b02"`). `value` accepte `date`,
-  `datetime`, une string ISO 8601, ou `None` (= aujourd'hui).
+- `format_bucket_id(value=None, format=BucketFormat.MONTHLY) -> BucketId` — normalise une date
+  en identifiant de période (`"2024"`, `"2024-03"`, `"2024-b02"`). `value` accepte `date`,
+  `datetime`, une string ISO 8601, ou `None` (= aujourd'hui). (Anciennement nommée `bucket_id` —
+  renommée car le nom laissait penser à l'inverse : elle produit un bucket_id à partir d'une
+  date, elle n'en extrait pas les composants.)
+- `get_bucket_range(bucket) -> tuple[date, date]` — bornes `(start, end)` d'un bucket, **toutes
+  les deux incluses** (le bucket couvre `[start, end]`, pas `[start, end)`). Conversion ISO 8601
+  pour une API externe : dépend du type de filtre côté API.
+  - Filtre par simple inclusion de date (`WHERE created_at <= end`) : mettre l'heure de fin à
+    `23:59:59`, pas `00:00:00`, sinon la dernière journée du bucket est exclue.
+  - Agrégation par intervalle calendaire (ex. Sentinel Hub `aggregationInterval="P1M"`) :
+    `23:59:59` est **faux** — l'intervalle a besoin d'un mois calendaire complet pour rentrer
+    dans `[from, to]`, et s'arrêter à `23:59:59` le laisse une seconde trop court, ce qui fait
+    silencieusement renvoyer zéro intervalle sur **chaque** requête (bug réel rencontré en prod
+    sur l'ancien job Sentinel Hub, aujourd'hui supprimé). Utiliser la borne **exclusive** à la place :
+    début du jour suivant `end`.
 - `related_bucket_ids(bucket) -> list[BucketId]` — tous les buckets (année, bimestre, mois)
   qui couvrent la même période que `bucket`. Utile pour retrouver des features à une
   granularité différente.
@@ -55,6 +68,9 @@ packages (voir CLAUDE.md, "Documentation").
   tracer ce que le run a produit (ex. nom de schéma) : persisté avec le statut final.
 - `record_zone_error(run_id, zone_id, error_message, engine=None) -> None` — enregistre un
   échec pour une zone précise (reprise ciblée), idempotent sur `(run_id, zone_id)`.
+- `record_zone_errors(run_id, zone_ids, error_message, engine=None) -> None` — même contrat
+  que `record_zone_error` pour **beaucoup de zones à la fois** (ex. toutes les cellules d'une
+  tuile illisible) : une transaction et quelques requêtes au lieu d'une par zone, un seul log.
 - `get_failed_zones(idempotency_key, engine=None) -> list[str]` — zones en échec du dernier
   run pour une clé d'idempotence donnée ; à appeler **avant** de rentrer dans `job_run` pour
   un retry ciblé.
@@ -94,6 +110,30 @@ packages (voir CLAUDE.md, "Documentation").
   Processus tué et `Osm2pgsqlError` au-delà de `timeout_s` (3 h par défaut).
 - Exceptions : `GeofabrikError`, `Osm2pgsqlError`.
 
+### `clients.planetary_computer_client` (images Sentinel-2 L2A, ADR-004)
+Accès aux images Sentinel-2 L2A du catalogue Planetary Computer (gratuit, sans compte). Les
+images sont des COG : on ne télécharge que les blocs de pixels lus.
+- `search_scenes(bbox, start, end, max_cloud_cover=70, client=None) -> list[Scene]` — scènes
+  qui touchent `bbox` (WGS84) entre `start` et `end` inclus. Écarte dès la recherche les
+  scènes à plus de `MAX_SCENE_CLOUD_COVER` (70 %) de nuages. Retry réseau (429/5xx) intégré.
+- `deduplicate_scenes(scenes) -> list[Scene]` — une scène par acquisition (tuile + date), la
+  plus récemment traitée : Planetary Computer publie certaines acquisitions en double.
+- `group_by_tile(scenes) -> dict[tuile, list[Scene]]` / `tile_footprints(groups) ->
+  dict[tuile, géométrie WGS84]` — l'emprise par tuile est l'entrée de
+  `geo.raster_h3.assign_owner_tiles`.
+- `open_tile(scenes, region, chunk_px=1024) -> TileStack` — prépare la lecture d'une
+  tuile (une seule tuile, scènes dédoublonnées) sans rien télécharger. `TileStack` expose la
+  grille (`epsg`, `transform`, `shape`, entrée de `geo.raster_h3.cells_to_label_grid`), la
+  baseline de chaque date (`baselines`, pour l'offset de réflectance) et `windows()`.
+- `read_block(stack, window, io_threads=16) -> dict[rôle, ndarray (date, y, x)]` —
+  télécharge un bloc : DN bruts `green`/`red`/`nir`/`swir` (uint16, 0 = nodata) et `scl`
+  (uint8). Les URL sont signées à la lecture, jamais à l'avance.
+- `Scene` (dataclass : `scene_id`, `tile`, `acquired_at`, `baseline`, `epsg`,
+  `cloud_cover`, `footprint`), `PlanetaryComputerError` (recherche ou lecture en échec,
+  métadonnées inattendues).
+- Test réseau réel, ignoré par défaut : `BIOWATCH_NETWORK_TESTS=1 uv run pytest
+  tests/packages/clients/planetary_computer_client/test_network.py`.
+
 ### `clients.logs`
 - `setup_logging(service="biowatch", level=None) -> None` — configure le logger racine en
   JSON structuré (un seul appel, à l'entrypoint du process — jamais dans un `__init__.py`).
@@ -118,7 +158,7 @@ uniquement les fonctions ayant un besoin d'usage identifié ailleurs dans le rep
 fonction ne passe à un niveau de visibilité plus large que lorsqu'un besoin concret apparaît,
 jamais par anticipation. Trois niveaux :
 
-1. **Privé au fichier** (`_nom`, ex. `_intersects`/`_intersection`/`_reproject`) — détail
+1. **Privé au fichier** (`_nom`, ex. `_intersects`/`_intersection`) — détail
    d'implémentation, utilisé uniquement dans son propre module.
 2. **Privé au package, public au fichier** (nom sans `_`, ex. `area_m2` dans
    `metrics.py`) — utilisé par d'autres modules de `packages/geo` (ici `intersections.py`),
@@ -161,6 +201,21 @@ l'instant.
   aujourd'hui. À remonter en public le jour où un besoin réel apparaît (ex. l'API doit
   parser du GeoJSON/WKT entrant).
 
+### `geo.raster_h3` (raster -> cellules H3, toute source raster)
+Exportées depuis `geo` (niveau 3) : utilisées par le job d'extraction Sentinel-2 (ADR-004).
+- `cells_to_label_grid(cells, epsg, transform, shape) -> ndarray[int32]` — pour chaque pixel
+  d'une grille (CRS `epsg`, géotransformation affine, `(hauteur, largeur)`), l'index de sa
+  cellule dans `cells`, ou `NO_CELL` (-1). Règle : le **centre** du pixel est dans l'hexagone
+  (rasterisation des hexagones, bien plus rapide qu'un appel h3 par pixel).
+- `assign_owner_tiles(cells, footprints) -> dict[H3Cell, str]` — une seule image
+  propriétaire par cellule quand des images se chevauchent (celle dont le bord est le plus
+  loin du centre de la cellule ; distances en Lambert-93). Évite de compter deux fois une
+  cellule située dans une zone de recouvrement.
+- `CellAccumulator(cells, value_names)` — moyennes par cellule calculées bloc de pixels par
+  bloc : `add(labels, values, n_obs)` cumule des sommes et des comptes, `result()` renvoie
+  un `DataFrame` indexé par `zone_id` (moyennes, `n_valid_px`, `n_total_px`, `mean_n_obs`).
+  Identique à un calcul sur l'image entière, sans jamais la tenir en mémoire.
+
 ### `geo.metrics`
 - `length_m(geom, srid=4326) -> float` — longueur réelle en mètres (reprojette
   automatiquement si `srid != 2154`). Exportée depuis `geo` malgré l'absence d'appelant
@@ -173,10 +228,11 @@ l'instant.
   `intersections.coverage_ratio`, importable directement via `from geo.metrics import
   area_m2` par les autres modules de `packages/geo`, mais aucun appelant hors du package
   aujourd'hui.
-- `_reproject(geom, from_srid=4326, to_srid=2154) -> BaseGeometry` reste **privée au fichier**
-  (niveau 1) : utilisée en interne par `area_m2`/`length_m`, pas encore de besoin identifié
-  pour reprojeter une géométrie sans en tirer une métrique. À remonter le jour où un job en a
-  besoin directement (ex. `buffer()` métrique, distance point-à-point).
+- `reproject(geom, from_srid=4326, to_srid=2154) -> BaseGeometry` — **privée au package**
+  (niveau 2, pas exportée depuis `geo`) : utilisée par `area_m2`/`length_m` et par
+  `raster_h3` (distances en Lambert-93, hexagones reprojetés dans le système UTM d'une image).
+  Transformations mises en cache. Importable via `from geo.metrics import reproject` à
+  l'intérieur de `packages/geo`.
 
 ### `geo.intersections`
 - `filter_intersecting(geoms, mask) -> list[BaseGeometry]` — ne garde que les géométries

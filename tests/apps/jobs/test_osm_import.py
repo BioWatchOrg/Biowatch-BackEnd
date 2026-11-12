@@ -264,7 +264,7 @@ def test_scheduler_failing_region_does_not_block_the_others(engine, fakes, monke
 
 
 def test_scheduler_defaults_to_current_year(engine, fakes, monkeypatch):
-    monkeypatch.setattr(osm_import, "bucket_id", lambda format: "2026")
+    monkeypatch.setattr(osm_import, "format_bucket_id", lambda format: "2026")
     osm_import_scheduled(engine=engine)
     (run,) = _runs(engine)
     assert run.bucket_id == "2026"

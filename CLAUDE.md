@@ -88,6 +88,7 @@ Layout (chaque dossier est un package Python installé en éditable) :
 - `packages/scoring/` — calcul des sous-indices et du score écologique
 - `packages/ml/` — entraînement, datasets, inférence
 - `packages/geo/` — H3, intersections, conversions GeoJSON / WKT / PostGIS
+- `packages/sentinel/` — calcul des indices Sentinel-2 par cellule (pixels → indices → moyennes H3), calcul pur ; le job qui l'orchestre vit dans `apps/jobs/sentinel/`
 
 Quand tu proposes du code, **respecter cette séparation**. Pas de logique scoring dans `apps/api`, pas d'accès DB direct dans `packages/scoring`, etc.
 
@@ -100,13 +101,17 @@ core (fondation, zéro dépendance interne)
   ↑
 geo, clients   (dépendent seulement de core)
   ↑
-scoring        (dépend de core + geo — PAS de clients, calcul pur)
+scoring, sentinel   (dépendent de core + geo — PAS de clients, calcul pur)
   ↑
 ml             (dépend de core, geo, clients, scoring)
 
 apps/api   → core, geo, clients   (jamais scoring, jamais ml)
-apps/jobs  → tout (core, geo, clients, scoring, ml)
+apps/jobs  → tout (core, geo, clients, scoring, sentinel, ml)
 ```
+
+Un package de calcul propre à une source (ex. `packages/sentinel`) suit la règle de
+`scoring` : fonctions pures, sans DB ni réseau. La lecture de la source (`clients`),
+l'écriture (`clients.db`) et le `job_run` vivent dans `apps/jobs/<source>/`.
 
 **Règle forte** : aucun `packages/*` ne dépend d'un `apps/*`. Un package ne dépend jamais d'un package situé au-dessus de lui dans ce graphe (ex. `clients` n'importe jamais `scoring`). `scoring` reste un calcul pur, sans accès DB — c'est `apps/jobs` qui orchestre lecture (`clients`) → calcul (`scoring`) → écriture (`clients`).
 

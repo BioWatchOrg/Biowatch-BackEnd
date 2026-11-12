@@ -41,7 +41,13 @@ from clients.osm import (
     snapshot_for,
     snapshot_from_urls,
 )
-from core import BucketFormat, aoi_registry, bucket_id, compute_idempotency_key, load_aoi
+from core import (
+    BucketFormat,
+    aoi_registry,
+    compute_idempotency_key,
+    format_bucket_id,
+    load_aoi,
+)
 from sqlalchemy import Engine
 
 logger = logging.getLogger(__name__)
@@ -172,7 +178,7 @@ def osm_import_scheduled(
     others. Returns the imported AOI label, or None when every region is
     already imported for the bucket.
     """
-    bucket = bucket or bucket_id(format=BucketFormat.YEARLY)
+    bucket = bucket or format_bucket_id(format=BucketFormat.YEARLY)
     never_attempted: list[str] = []
     to_retry: list[str] = []
     for aoi_label in GEOFABRIK_REGIONS:

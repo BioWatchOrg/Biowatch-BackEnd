@@ -14,7 +14,7 @@ Implements the idempotence contract from CLAUDE.md:
 import datetime
 import logging
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 
@@ -28,6 +28,9 @@ from .session import get_sessionmaker, session_scope
 logger = logging.getLogger(__name__)
 
 RETRYABLE_STATUSES = ("failed", "partial", "running")
+# Zones par requête dans `record_zone_errors` : reste loin de la limite de
+# paramètres liés de PostgreSQL (65535) et de SQLite.
+_ZONE_BATCH = 1000
 
 
 class JobAlreadySucceeded(Exception):
@@ -65,12 +68,13 @@ def _start_run(
     engine: Engine | None,
 ) -> RunContext:
     """Create a new run, or reuse a retryable one. Raise if already succeeded."""
+    succeeded_run_id: uuid.UUID | None = None
     with session_scope(engine) as session:
         existing = session.scalar(select(JobRun).where(JobRun.idempotency_key == idempotency_key))
 
-        if existing is not None:
-            if existing.status == "success":
-                raise JobAlreadySucceeded(idempotency_key, existing.run_id)
+        if existing is not None and existing.status == "success":
+            succeeded_run_id = existing.run_id
+        elif existing is not None:
             # Retry: reset the existing run in place (failed / partial / running).
             existing.status = "running"
             existing.started_at = _now()
@@ -94,6 +98,12 @@ def _start_run(
                     idempotency_key=idempotency_key,
                 )
             )
+
+    # Raised outside `session_scope`: a skip is the normal outcome of a re-run
+    # (e.g. the monthly timer's retry nights), not a DB error to roll back and
+    # log at ERROR level.
+    if succeeded_run_id is not None:
+        raise JobAlreadySucceeded(idempotency_key, succeeded_run_id)
 
     return RunContext(
         run_id=run_id,
@@ -234,6 +244,49 @@ def record_zone_error(
     logger.warning(
         "CLIENTS-DB-record_zone_error : zone failed",
         extra={"run_id": str(run_id), "zone_id": zone_id, "event": "job.zone_error"},
+    )
+
+
+def record_zone_errors(
+    run_id: uuid.UUID,
+    zone_ids: Sequence[str],
+    error_message: str,
+    engine: Engine | None = None,
+) -> None:
+    """
+    Record the same failure for many zones at once (e.g. every zone of a tile
+    that could not be read), in a single transaction.
+
+    Same contract as `record_zone_error` — idempotent on (run_id, zone_id), the
+    message is updated in place — but a handful of round-trips instead of one
+    transaction per zone: thousands of zones over an SSH tunnel otherwise take
+    minutes. One summary log line instead of one per zone.
+    """
+    unique_zones = list(dict.fromkeys(zone_ids))
+    if not unique_zones:
+        return
+    failed_at = _now()
+    with session_scope(engine) as session:
+        for start in range(0, len(unique_zones), _ZONE_BATCH):
+            batch = unique_zones[start : start + _ZONE_BATCH]
+            session.execute(
+                delete(JobRunZoneError).where(
+                    JobRunZoneError.run_id == run_id, JobRunZoneError.zone_id.in_(batch)
+                )
+            )
+            session.add_all(
+                JobRunZoneError(
+                    run_id=run_id, zone_id=zone, error_message=error_message, failed_at=failed_at
+                )
+                for zone in batch
+            )
+    logger.warning(
+        "CLIENTS-DB-record_zone_errors : zones failed",
+        extra={
+            "run_id": str(run_id),
+            "event": "job.zone_errors",
+            "context": {"n_zones": len(unique_zones), "error": error_message},
+        },
     )
 
 

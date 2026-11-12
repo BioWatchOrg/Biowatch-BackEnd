@@ -32,6 +32,12 @@ from .io import (
     GeoJSON,  # alias de type : un dict GeoJSON
     GeometryIOError,  # erreur de sérialisation/parsing géométrique (WKT/GeoJSON)
 )
+from .raster_h3 import (
+    NO_CELL,  # étiquette des pixels hors de toute cellule
+    CellAccumulator,  # moyennes par cellule, cumulées bloc de pixels par bloc
+    assign_owner_tiles,  # une seule image propriétaire par cellule (recouvrements)
+    cells_to_label_grid,  # pixel -> index de sa cellule H3 (rasterisation)
+)
 from .metrics import (
     SRID_LAMBERT93,  # EPSG 2154 (Lambert-93, mètres, France métropolitaine)
     SRID_WGS84,  # EPSG 4326 (WGS84, degrés, SRID de stockage/échange)
@@ -59,4 +65,8 @@ __all__ = [
     "SRID_WGS84",
     "MetricsError",
     "length_m",
+    "NO_CELL",
+    "CellAccumulator",
+    "assign_owner_tiles",
+    "cells_to_label_grid",
 ]
