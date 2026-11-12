@@ -1,0 +1,15 @@
+# Chaque nuit du 5 au 10 du mois, 01:30. Le 5 laisse au catalogue le temps
+# d'ingérer les dernières images du mois précédent. Les nuits suivantes servent
+# de retry : un mois déjà en succès est sauté immédiatement (idempotence de
+# job_run), un mois failed/partial est retenté.
+[Unit]
+Description=BioWatch — extraction Sentinel-2 mensuelle (du 5 au 10, 01:30)
+
+[Timer]
+OnCalendar=*-*-05..10 01:30:00
+# Rattrape un déclenchement manqué (VPS éteint à 01:30).
+Persistent=true
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target

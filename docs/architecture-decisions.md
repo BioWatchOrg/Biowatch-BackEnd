@@ -107,7 +107,382 @@ commerciale avec des exigences de conformité RGPD strictes — pas avant.
 
 ---
 
-## ADR-003 — Package `species` : ingestion GBIF écrite en DB via `clients`
+## ADR-003 — Extraction Sentinel-2 : Statistical API synchrone (par zone) plutôt que Batch
+
+**Statut** : remplacé par ADR-004 (2026-10-23) — conservé comme historique du raisonnement
+
+**Contexte**
+
+Le job `extract_sentinel_2` (#36) a besoin, pour chaque cellule H3 d'une AOI et chaque bucket
+mensuel, des indices agrégés (NDVI, NDWI, NDBI, SWIR) et de métriques qualité (nuages, pixels
+valides). Copernicus Data Space Ecosystem propose deux façons d'obtenir ces statistiques sans
+télécharger d'imagerie brute :
+
+- la **Statistical API** synchrone : une requête HTTP = une géométrie = une réponse JSON
+  immédiate avec les stats agrégées ;
+- la **Batch Statistical API** : on soumet plusieurs géométries en un seul envoi, le calcul est
+  fait de façon asynchrone côté Copernicus, le résultat est déposé dans du stockage objet
+  (S3-compatible) à récupérer ensuite.
+
+Pour une AOI comme `idf` en résolution H3 8 (`packages/core/aoi/aoi_registry.json`), interroger
+cellule par cellule représente environ 16 000 requêtes synchrones par run mensuel (Île-de-France
+≈ 12 000 km², une cellule H3 res-8 ≈ 0,74 km²).
+
+**Décision**
+
+On utilise la Statistical API synchrone, une requête HTTP par cellule H3 par bucket
+(`packages/clients/sentinel_hub/statistics.py`), malgré le volume de requêtes que ça représente.
+On écarte explicitement deux alternatives : récupérer l'imagerie brute de toute l'AOI en une
+fois et calculer les statistiques zonales nous-mêmes (Process API), et la Batch Statistical API.
+
+**Pourquoi**
+
+- La Batch Statistical API est réservée aux comptes **"Copernicus Service account"** — un type de
+  compte à part, avec des critères d'éligibilité, pas accessible par défaut sur un compte
+  gratuit/étudiant (confirmé sur la doc officielle, au-delà du simple statut beta évoqué
+  initialement).
+- Elle livre son résultat de façon **asynchrone vers du stockage objet (S3)**, ce qui
+  réintroduit une dépendance S3 que le projet a explicitement choisi de ne pas ajouter sans
+  besoin documenté (`CLAUDE.md` : stockage raster local VPS par défaut, migration S3 uniquement
+  sur besoin documenté — aucun n'existe ici).
+- Elle ajoute de la complexité opérationnelle (soumettre un batch, attendre/poller la fin du
+  calcul, télécharger et parser un fichier de résultats) là où une requête synchrone par zone
+  s'intègre naturellement dans le mécanisme d'idempotence et de reprise par zone déjà prévu
+  (`job_run` + `job_run_zone_errors`).
+- L'alternative "tout télécharger et trier nous-mêmes" (Process API + calcul raster maison)
+  réintroduirait une stack de traitement raster lourde (`rasterio`/GDAL/`rasterstats`) que le
+  choix initial de la Statistical API visait précisément à éviter (pipeline direct API →
+  PostGIS, sans parquet ni raster intermédiaire), et transférerait beaucoup plus d'octets sur le
+  réseau (pixels bruts vs. petit JSON de stats agrégées par requête).
+- Le volume de requêtes (~16 000/run pour `idf` en résolution 8) est réel mais acceptable parce
+  que c'est un **job batch mensuel** exécuté via systemd timer, sans contrainte de latence
+  utilisateur — l'idempotence par zone rend une interruption ou une relance sans risque.
+
+**Limites assumées**
+
+- Durée d'exécution initialement estimée à 1-2h par run mensuel pour une AOI comme `idf` avec
+  `max_workers=5` — **revue à la baisse après test réel** (voir update 2026-10-06 ci-dessous) :
+  le vrai débit autorisé par le compte CDSE gratuit est beaucoup plus restrictif que prévu.
+- Cette approche ne scale pas indéfiniment : ajouter beaucoup d'AOI supplémentaires, monter en
+  résolution H3 (9, 10...), ou passer à une cadence plus fréquente que mensuelle
+  multiplierait le nombre de requêtes et pourrait devenir un vrai goulot d'étranglement.
+- Le job reste dépendant du rate-limit synchrone de Sentinel Hub, géré par retry + backoff sur
+  429 (`packages/clients/sentinel_hub/statistics.py`), pas par une stratégie de récupération des
+  données fondamentalement différente.
+
+**Update 2026-10-06 — le goulot d'étranglement s'est matérialisé en test réel**
+
+Premier run complet sur `idf` en résolution 8 (18 307 cellules, `--max_workers 1`) : environ
+24 requêtes passent en ~6s, puis un `429` avec un `Retry-After` de 133s. Extrapolé sur 18 307
+cellules, ça donne de l'ordre de **24 à 28h** pour un run complet — bien au-delà de l'estimation
+initiale de 1-2h. Ce n'est pas un bug côté client (le retry + backoff sur 429 fonctionne
+correctement, voir `packages/clients/sentinel_hub/statistics.py`), c'est le vrai débit autorisé
+par le compte CDSE gratuit.
+
+Recherche faite sur les options disponibles :
+- Les limites de débit sont **ajustables par compte sur demande au support Copernicus**, pas par
+  changement de plan automatique (`documentation.dataspace.copernicus.eu/APIs/SentinelHub/Overview/RateLimiting.html`)
+  — une demande a été envoyée au support en expliquant l'usage (projet étudiant, calcul mensuel
+  sur l'Île-de-France).
+- La Batch Statistical API résoudrait structurellement le problème (pas de rate-limit par
+  minute, facturé en processing units, jusqu'à 700 000 géométries par envoi) mais reste
+  verrouillée aux comptes "Copernicus Service account" — éligibilité à vérifier, pas acquise par
+  défaut sur un compte gratuit/étudiant.
+- Aucune autre API Sentinel Hub n'évite le problème (Process API a une famille de rate-limiting
+  similaire, en pire puisqu'il faudrait en plus télécharger et traiter du raster).
+
+En attendant une réponse du support, le job n'est pas bloqué — juste lent. C'est compatible avec
+l'exécution en job de fond/nocturne déjà prévue par l'architecture (`CLAUDE.md`), et l'idempotence
+par zone permet d'interrompre et reprendre un run sans perte ni doublon.
+
+**Update 2026-10-09 — réponse du support Copernicus : refus, pistes restantes évaluées**
+
+Le support Copernicus a répondu : **refus explicite** de la demande de quota. Citation : *"every
+registered CDSE account is subject to the same quota limitations [...] we can't simply increase
+it per nature of the project."* Les paliers de rate-limit sont fixes par compte, pas négociables
+au cas par cas — ce n'est pas un refus ponctuel, c'est une politique. Cette piste est **fermée**.
+
+Deux options alternatives ont été évaluées et écartées avant de se résoudre à accepter le run
+long :
+
+- **Changer d'API Sentinel Hub (Process API, Catalog API...) sur le même compte** : écarté.
+  Confirmé par le support *et* par la doc technique (`docs.sentinel-hub.com/api/latest/api/overview/rate-limiting/`)
+  que le rate-limit est attaché au **compte**, pas à l'API appelée — toutes les API d'un même
+  compte partagent le même palier. Pire : la Statistical API déclenche en interne une
+  sous-requête par date d'observation dans la période demandée, ce qui la rend **structurellement
+  plus coûteuse en quota** que Process/Catalog pour un volume de travail équivalent. Changer d'API
+  reviendrait à retomber sur le même mur, probablement plus vite, en plus de perdre le travail
+  déjà stabilisé sur `packages/clients/sentinel_hub/`.
+- **Une seule requête globale sur toute l'AOI au lieu d'une requête par cellule H3** : écarté, et
+  pas qu'une question de performance — c'est une rupture fonctionnelle. Le coût en PU dépend de
+  la surface totale et de la résolution, pas du nombre de requêtes : regrouper ne réduit pas le
+  volume total de PU, ça le concentre en un seul appel (risque de dépassement de PU/minute d'un
+  coup, ou de timeout). Plus fondamentalement, la Statistical API synchrone ne renvoie qu'**un
+  seul résultat agrégé par requête, quelle que soit la taille de la géométrie envoyée** — une
+  requête sur toute l'AOI donnerait un NDVI unique pour toute l'Île-de-France, pas une valeur par
+  zone. Ventiler les stats par sous-géométrie en un seul envoi est exactement ce que fait la Batch
+  Statistical API (verrouillée, voir plus haut) ; l'API synchrone ne le permet pas.
+
+**Décision retenue** : accepter la durée de run actuelle (~24-28h pour `idf` en résolution 8) en
+attendant l'issue des deux candidatures en cours (Credits for Value Creators, Copernicus Services
+user — voir ci-dessous). Pas de changement d'architecture ni de dégradation de la résolution H3
+pour contourner le problème dans l'immédiat.
+
+**Update 2026-10-09 (suite) — "Copernicus Services user" confirmé fermé, CREODIAS retenu**
+
+Vérification plus poussée de l'éligibilité "Copernicus Services user" (FAQ officielle
+`documentation.dataspace.copernicus.eu/FAQ.html` + guide quotas) : réservé aux *"institutions and
+organisations developing or operating Copernicus Services"* et aux *"European institutions and
+Bodies set up under the EU Treaties"* — le dossier demande même une référence de contrat
+Copernicus Services et un contact côté Commission Européenne. **Pas un statut ouvert à la
+recherche académique en général** (correction par rapport à la première lecture du 2026-10-06,
+qui s'appuyait sur une liste de secteurs marketing trop large) — un projet étudiant comme BioWatch
+n'y est pas éligible. Cette piste est **fermée**, confirmé par deux sources officielles distinctes.
+
+La doc officielle sur les quotas (`documentation.dataspace.copernicus.eu` — guide "Quotas and
+Limitations") confirme par ailleurs que pour un dépassement de quota **Sentinel Hub** spécifiquement,
+les seules options listées sont : attendre le renouvellement mensuel (ne s'applique pas à notre
+cas : rate-limit par minute, pas quota mensuel épuisé), réduire l'usage via les apps Sentinel Hub
+en navigation déconnectée (ne s'applique pas à un usage API direct), **Credits for Value
+Creators**, ou accès commercial direct via CREODIAS. Aucun autre levier gratuit n'existe dans
+l'écosystème Copernicus pour ce type de blocage — confirmé par la documentation officielle elle-même,
+pas seulement par la suggestion du support.
+
+**Décision** : candidature déposée sur `creodias.eu/pricing/credits-for-value-creators/`
+(Sentinel Hub sélectionné), malgré la dépendance à une plateforme commerciale que cela introduit.
+Accepté comme compromis pragmatique : c'est la seule option gratuite reconnue par Copernicus
+lui-même pour ce problème précis — l'alternative stricte (aucun levier, `CLAUDE.md` à la lettre)
+laisserait le job à 24-28h indéfiniment sans aucune perspective d'amélioration.
+**Hypothèse à vérifier** dans la réponse du comité (sous 30 jours) : rien ne garantit que ces
+crédits lèvent spécifiquement le rate-limit par minute plutôt que juste le quota mensuel de PU.
+
+**Alternative identifiée mais non retenue pour l'instant : Google Earth Engine**
+
+Seule alternative extérieure à l'écosystème Copernicus qui aurait un sens technique :
+`reduceRegions()` de GEE calcule des stats pour des milliers de polygones en un seul appel
+serveur — équivalent fonctionnel à ce que la Batch Statistical API offrirait. Accès gratuit
+généreux pour la recherche non-commerciale. Non retenue dans l'immédiat : nouvelle auth (compte
+de service Google), nouveau modèle de requête à apprendre, clause non-commerciale des conditions
+d'utilisation à vérifier sérieusement avant tout usage au-delà d'un POC (BioWatch vise
+potentiellement des collectivités publiques), et perte du travail déjà stabilisé sur le client
+Sentinel Hub. À reconsidérer seulement si les deux pistes ci-dessus échouent également.
+
+**Update 2026-10-09 (suite) — passage à une cadence annuelle**
+
+Décision complémentaire, indépendante de l'issue CREODIAS : la cadence d'extraction passe de
+**mensuelle à annuelle**, sur une fenêtre temporelle courte et fixe répétée chaque année (pas une
+moyenne lissée sur 12 mois). Deux justifications :
+
+- **Cohérence avec le reste du pipeline** : toutes les autres sources de données sont déjà
+  annuelles (`update_gbif_occurrences` : 1x/an, `update_iucn_taxonomy` : annuel max,
+  `compute_species_features_by_zone` : `period_year` annuel, import OSM : `bucket_id` annuel).
+  Le satellite était la seule source pensée en mensuel — ce changement aligne enfin tout le
+  pipeline sur une cadence commune, plutôt que de maintenir une incohérence.
+- **Compatible avec le rate-limit actuel sans attendre de quota supplémentaire** : à ~635
+  requêtes/heure, un run national (~840 000 cellules pour la France métropolitaine) prend ~55
+  jours — ça ne rentre pas dans un mois, mais rentre très confortablement dans une année. Le
+  choix d'une fenêtre **courte** plutôt qu'une agrégation `aggregationInterval=P1Y` sur l'année
+  entière est délibéré : la Statistical API déclenche une sous-requête interne par date
+  d'observation dans la période demandée (voir update 2026-10-09 ci-dessus) — une fenêtre
+  courte reste donc moins coûteuse en quota qu'une agrégation annuelle complète, en plus de
+  garder une vraie comparabilité saisonnière (même période chaque année) plutôt qu'une moyenne
+  qui lisserait les écarts entre saisons.
+
+Tickets Notion mis à jour en conséquence : `Job extract_sentinel_2` (bucket_id annuel, CLI
+example, workflow) et `6. Industrialisation du calcul des scores` (DoD "tous les deux mois" →
+"annuel", le texte supposant le satellite comme "source la plus fréquente" n'étant plus
+applicable puisque toutes les sources sont désormais alignées).
+
+**Fenêtre de référence tranchée (2026-10-09)** : **1er au 31 mai, chaque année** (mois complet,
+pas une sous-période). Raisonnement : couvert nuageux moyen de 45% en Île-de-France en mai —
+point médian correct, nettement mieux que novembre-janvier (58-60%) — et végétation déjà active
+sans stress hydrique d'été. Le mois complet est préféré à une fenêtre plus courte pour maximiser
+le nombre de scènes agrégées par cellule (signal plus robuste), au prix d'un coût en quota
+légèrement supérieur à une sous-période.
+
+Implémentation : `bucket_id` reste au format annuel (`"YYYY"`, cohérent avec les autres sources),
+mais le `time_range` envoyé à la Statistical API est construit directement sur mai de cette
+année-là (`{year}-05-01T00:00:00Z` → `{year}-06-01T00:00:00Z`, borne de fin exclusive — même
+piège que le bug du 2026-10-04 sur `aggregationInterval=P1M`) plutôt que via `get_bucket_range`
+sur le bucket annuel complet (qui donnerait tout le calendrier, pas seulement mai).
+
+**Impact sur le backfill historique** : ce changement de cadence ne réduit pas le volume total
+du backfill (N années × ~840 000 cellules reste le même calcul, qu'on interroge une fenêtre
+courte ou longue par année) — seul le run **récurrent** devient praticable sans quota
+supplémentaire. Le backfill reste l'usage principal justifiant la demande CREODIAS en cours.
+
+**Update 2026-10-09 (suite) — backfill fixé à 10 ans, objectif de la demande CREODIAS élargi**
+
+Profondeur du backfill tranchée : **10 ans**, alignée sur la fenêtre glissante déjà actée pour
+les espèces (`update_gbif_occurrences` : *"pour l'année N, on recharge N-9 → N"*) — cohérence de
+profondeur historique entre sources plutôt qu'un chiffre arbitraire. Volume total du backfill :
+10 × ~840 000 ≈ **8,4 millions de requêtes**, en une fois.
+
+Décision complémentaire : la demande CREODIAS ne vise plus seulement "rendre le backfill
+faisable", mais aussi **rendre chaque run — backfill et récurrent annuel — rapide** (quelques
+jours, pas des semaines ni des mois), plutôt que de dimensionner au strict minimum qui fait
+tenir les chiffres dans le calendrier. Un run annuel de ~55 jours reste opérationnellement risqué
+(VPS à maintenir en continu, fenêtre d'exposition aux pannes/interruptions longue) même s'il
+rentre mathématiquement dans l'année. Pas de chiffre précis de PU/minute demandé au comité — on
+fournit les volumes réels (8,4M one-shot, 840k/an récurrent) et l'objectif (quelques jours), et
+on laisse le comité dimensionner les crédits en conséquence.
+
+**Update 2026-10-09 (suite) — ratio PU/requête mesuré, risque critique quantifié**
+
+Export réel des statistiques d'usage Sentinel Hub (dashboard CDSE, 2 jours de tests) :
+802 requêtes pour 30 PU consommées, ratio **~0,0374 PU/requête** (stable à ±1% entre les deux
+jours) — plus élevé que le minimum générique ~0,01 PU évoqué plus haut, cohérent avec notre
+evalscript à 4 sorties (NDVI/NDWI/NDBI/SWIR) par requête plutôt qu'une seule bande.
+
+Avec ce ratio : backfill 10 ans ≈ 8,4M requêtes × 0,0374 ≈ **314 000 PU** (one-shot), run
+récurrent annuel ≈ 840k × 0,0374 ≈ **31 400 PU/an**. Demande dimensionnée à **~400 000 PU**
+(backfill + 1 an de récurrent + marge ~15-20% pour les retries de zones en échec).
+
+**Risque critique identifié en creusant ce calcul** : le mur de rate-limit déjà observé (429
+après ~24 requêtes, `Retry-After` ≈130s) n'a consommé que ~0,9 PU au moment où il s'est déclenché
+— on était loin d'épuiser un quota mensuel de PU. Ça confirme que le vrai plafond tapé est un
+**débit par minute** (requêtes ou PU/minute), un mécanisme **indépendant** du solde total de PU.
+Or les crédits CREODIAS sont un solde à consommer (comme un forfait prépayé), pas un abonnement
+récurrent qui relève nécessairement ce plafond de débit.
+
+**Conséquence** : si l'octroi de crédits n'augmente *pas* explicitement le débit par minute
+autorisé, un plus gros solde de PU ne change rien à la vitesse — au débit actuel (~635
+requêtes/heure estimé), consommer 8,4M requêtes prendrait **~551 jours**, qu'on ait 400 000 ou
+4 000 000 PU de solde. Le solde plus gros évite seulement de tomber à zéro avant la fin, il
+n'accélère rien. C'est la concrétisation chiffrée du risque déjà noté le 2026-10-09 (*"rien ne
+garantit que ces crédits lèvent spécifiquement le rate-limit par minute"*) — **à clarifier
+explicitement avec CREODIAS avant de considérer cette demande comme une solution**, pas juste à
+noter comme hypothèse en suspens.
+
+**Remise en cause**
+
+Ce seuil est désormais **atteint en pratique**, pas seulement hypothétique (voir update
+2026-10-06). La demande de quota direct est définitivement fermée (update 2026-10-09) — à
+réévaluer uniquement si l'une des deux candidatures en cours aboutit. Si l'éligibilité à la
+Batch Statistical API est obtenue, réévaluer complètement cette décision — le stockage S3
+deviendrait alors un besoin documenté et justifié, contrairement à aujourd'hui. **Si CREODIAS
+confirme que les crédits n'augmentent pas le débit par minute, cette piste doit être réévaluée
+immédiatement** — elle ne résoudrait alors ni le run récurrent ni le backfill dans un délai
+raisonnable, malgré le volume de PU accordé.
+
+---
+
+## ADR-004 — Extraction Sentinel-2 : calcul local depuis les COG Planetary Computer
+
+**Statut** : actif — remplace ADR-003
+
+**Contexte**
+
+ADR-003 reposait sur la Statistical API Sentinel Hub. Le rate-limit par compte (~24 requêtes
+puis `429` de ~130 s) rend un run `idf` mensuel long de 24 à 28 h, le quota gratuit
+(10 000 requêtes/mois) est structurellement trop bas pour la France (~840 000 cellules par
+période), le support a refusé toute hausse et la réponse CREODIAS est incertaine. ADR-003 avait
+écarté le "calcul raster maison" pour éviter une stack raster ; le contexte a changé : la
+limite vient de l'**API**, pas des données, et les mêmes images Sentinel-2 L2A sont publiques
+en COG (lecture partielle par HTTP range) sur des catalogues STAC sans quota par requête.
+
+Un spike (2026-10-23, script jetable non versionné) a mesuré la faisabilité sur `idf`, H3 res 8.
+
+**Décision**
+
+- **Calcul local** des indices depuis les COG Sentinel-2 L2A, tuile MGRS par tuile, en blocs de
+  pixels, sans écrire de raster sur disque. Stack ajoutée : `pystac-client`, `odc-stac`,
+  `rasterio`, `xarray`, `dask`.
+- **Source unique : Planetary Computer, collection `sentinel-2-l2a`**. Jamais de mélange de
+  sources dans une même série.
+- **Cadence mensuelle** (`bucket_id` `"YYYY-MM"`), qui remplace la cadence annuelle de mai
+  d'ADR-003 : elle n'était justifiée que par le quota.
+- **Historique depuis janvier 2016** (première donnée disponible en IDF).
+- Méthode par pixel : réflectance = DN × 0,0001 + offset (−0,1 si baseline ≥ 04.00, 0 sinon),
+  masque SCL ne gardant que {4 végétation, 5 sol nu, 6 eau}, réflectances hors ]0 ; 1,5]
+  exclues, indices calculés par date puis **médiane mensuelle** par pixel. Agrégation par
+  cellule H3 (pixel affecté par son centre), une **tuile propriétaire** par cellule pour ne
+  pas compter deux fois les recouvrements, moyenne cumulée bloc par bloc.
+- Tables et outils existants conservés : `zones_hex`, `satellite_features_by_zone`
+  (`source_version` incrémentée), `job_run` / `job_run_zone_errors`, CLI `biowatch-jobs`.
+- Backfill exécuté hors VPS (Mac ou machine temporaire) via le même job, écriture en base par
+  tunnel SSH. Mensuel sur le VPS.
+
+**Pourquoi (mesures du spike)**
+
+- **Débit** depuis la France sur la même tuile et le même mois : Planetary Computer (Azure,
+  Europe de l'Ouest) 20 s, Earth Search (AWS us-west-2) 679 s. Earth Search est ~35× plus lent
+  (~0,8 Mo/s par flux, contre ~20 Mo/s).
+- **Historique** en IDF : Earth Search `sentinel-2-c1-l2a` (retraitement ESA homogène) n'est
+  complet qu'à partir d'avril 2019. Planetary Computer est complet depuis janvier 2016.
+- **Performance** IDF complète, mai 2025, Mac : 12 min avec 4 blocs en parallèle (RAM pic
+  2,1 Go) ; 18 min avec 1 bloc à la fois + 16 lectures parallèles (RAM pic 1,8 Go). Les
+  18 307 cellules sont produites, aucune vide. Objectif "< 1 h par mois" atteignable.
+- **Plausibilité** : NDVI médian ~0,73 en zone rurale en mai, ~0,24 dans Paris ; NDBI ≈ 0 à
+  Paris ; ~4,3 dates claires par pixel sur le mois.
+- **Masque SCL** : la classe 7 (non classifié), exclue en plus par rapport à l'evalscript
+  Sentinel Hub, ne représente que 0,3 % des pixels à Paris. L'exclure ne vide pas la ville.
+
+**Limites assumées**
+
+- **Série non homogène** : Planetary Computer sert les acquisitions jusqu'en 2021 en baseline
+  02.12 / 03.00, puis 04.00 / 05.xx. Sur une même tuile et un même mois (mai 2021), l'écart avec
+  la version homogène ESA (Earth Search C1) est d'environ −0,01 en NDVI (écart absolu médian
+  0,013, corrélation 0,97 ; une date de plus côté Planetary Computer contribue aussi à
+  l'écart). Ça peut créer une **petite marche artificielle début 2022**, faible face aux
+  signaux recherchés (> 0,1 de NDVI pour une urbanisation), mais à garder en tête dans toute
+  analyse de tendance.
+- Certaines acquisitions 2022-2023 existent en double (deux baselines) : il faut dédoublonner en
+  gardant la baseline la plus récente.
+- Dépendance à un service gratuit sans SLA (Planetary Computer), avec jeton SAS anonyme.
+- Backfill ~125 mois × 12 à 18 min ≈ 25 à 35 h : hors VPS.
+- La stack raster (GDAL via `rasterio`) alourdit l'environnement, et la RAM pic (~1,8 Go)
+  laisse peu de marge sur le VPS (4 Go partagés avec PostgreSQL et l'API).
+- Méthode différente de Sentinel Hub (masque plus strict, médiane au lieu de moyenne) : les
+  valeurs ne sont pas directement comparables à l'ancienne série, d'où une nouvelle
+  `source_version`.
+
+**Implémentation (2026-10-23)**
+
+- Code : `packages/clients/planetary_computer_client/` (recherche, dédoublonnage, lecture
+  par blocs), `packages/geo/raster_h3.py` (pixel -> cellule, tuile propriétaire,
+  agrégation par blocs), `packages/sentinel/` (calcul pur : pixels, indices, moyennes par
+  cellule), `apps/jobs/sentinel/` (orchestration : job mensuel et backfill). Le client
+  Sentinel Hub est supprimé (historique git : `e5115b3`).
+- **Placement du code (ajouté au `CLAUDE.md`, retour de review #99)** : `packages/sentinel`
+  est un package de **calcul pur**, au même niveau que `scoring` (dépend de `core` et `geo`
+  seulement, ni DB ni réseau : la lecture des blocs lui est passée en paramètre). Le job qui
+  orchestre lecture -> calcul -> écriture vit dans `apps/jobs/sentinel/`, comme le prévoit la
+  règle « c'est `apps/jobs` qui orchestre ». Pourquoi un package dédié plutôt que `scoring` :
+  ce calcul produit des **features** d'une source (comme `osm_features_by_zone` en aura),
+  pas un score ; le mélanger à `scoring` brouillerait les deux rôles. Le sens des
+  dépendances du `CLAUDE.md` est inchangé : le graphe gagne un nœud, sans nouvelle flèche.
+  Modèle pour les prochaines sources raster : un package de calcul pur par source, son job
+  dans `apps/jobs/<source>/`. **À valider en équipe** (modifie une règle forte du `CLAUDE.md`).
+- `source_version` = `2.0.0` : les lignes 1.0.0 (Sentinel Hub) ne sont pas écrasées.
+- **Toutes les cellules de l'AOI ont une ligne chaque mois.** Une cellule sans aucune image
+  exploitable (aucune scène, ou toujours masquée) est écrite avec indices NULL,
+  `valid_pixel_ratio = 0`, `is_valid_data = false` : trou explicite, pas une erreur.
+- `is_valid_data` = `valid_pixel_ratio >= 0,1` : la valeur est gardée même sous le seuil,
+  marquée peu fiable (le scoring choisit de l'ignorer ou non).
+- `obs_count` = nombre moyen de dates exploitables par pixel sur le mois (arrondi) ;
+  `cloud_score` = part moyenne des dates masquées (nuages, ombres, neige) parmi les dates où
+  le pixel a été photographié.
+- Scènes à plus de 70 % de nuages écartées dès la recherche ; offset de réflectance
+  appliqué **date par date** (un même mois peut mélanger deux baselines).
+- Une tuile illisible -> `job_run_zone_errors` pour ses cellules (run `partial`). La
+  recherche STAC en échec fait échouer le run (`failed`).
+- Backfill (`backfill_sentinel`) : boucle sur les mois, reprise par l'idempotence de
+  `job_run`, exécuté hors VPS avec écriture dans la base du VPS par tunnel SSH (la base
+  n'écoute que sur `127.0.0.1`).
+
+**Remise en cause**
+
+- Si Planetary Computer devient payant, limité ou indisponible : Earth Search C1 depuis une
+  machine AWS us-west-2 (historique réduit à 2019), ou le S3 CDSE.
+- Si l'ESA publie le retraitement homogène complet sur un catalogue rapide depuis l'Europe :
+  rebasculer toute la série (jamais un mélange).
+- Si CREODIAS accorde un débit suffisant, le client Sentinel Hub (`packages/clients/sentinel_hub/`)
+  peut redevenir une option, mais sur une série entière, pas mélangée à celle-ci.
+
+---
+
+## ADR-005 — Package `species` : ingestion GBIF écrite en DB via `clients`
 
 **Statut** : actif
 
@@ -152,6 +527,16 @@ jamais. Le graphe est mis à jour dans `CLAUDE.md`.
   dizaines de minutes pour un gros AOI).
 - Écriture de plusieurs millions de lignes (≈ 4 M pour l'IDF) dans une seule transaction :
   risque de volume de WAL et de durée de transaction.
+
+**Écart avec le modèle de l'ADR-004**
+
+L'ADR-004 pose comme modèle « un package de calcul pur par source, son job dans
+`apps/jobs/<source>/` ». `species` s'en écarte : l'orchestration (`job_run`, téléchargement,
+écriture en DB) vit dans le package, pas dans `apps/jobs`. Les deux placements sont viables.
+L'alternative alignée sur l'ADR-004 : ne garder dans `packages/species` que le calcul pur
+(`quality_filter`, `rolling_window`, normalisation CSV) et déplacer l'orchestration dans
+`apps/jobs/species/`. **À trancher en équipe avant merge** (modifie une règle forte du
+`CLAUDE.md`).
 
 **Remise en cause**
 
