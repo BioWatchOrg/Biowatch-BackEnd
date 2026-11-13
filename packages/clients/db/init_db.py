@@ -20,8 +20,6 @@ from .session import DatabaseConfigError, get_engine
 logger = logging.getLogger(__name__)
 
 EXTENSIONS = ("postgis", "pgcrypto")
-# Intermediate data (reference tables, raw-ish imports) kept apart from the
-# business tables of `public`.
 SCHEMAS = ("staging",)
 
 
@@ -33,7 +31,7 @@ def _create_extensions(engine: Engine) -> None:
 
 
 def _create_schemas(engine: Engine) -> None:
-    """Create the non-default schemas some tables live in (e.g. `staging`)."""
+    """Create non-default Postgres schemas (e.g. `staging`) before create_all."""
     with engine.begin() as conn:
         for schema in SCHEMAS:
             conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema}"))

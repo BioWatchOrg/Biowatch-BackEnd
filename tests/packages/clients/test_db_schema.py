@@ -16,6 +16,7 @@ EXPECTED_TABLES = {
     "job_runs",
     "job_run_zone_errors",
     "staging.iucn_taxa",
+    "staging.species_occurrences_raw",
 }
 
 EXPECTED_PRIMARY_KEYS = {
@@ -28,6 +29,7 @@ EXPECTED_PRIMARY_KEYS = {
     "job_runs": {"run_id"},
     "job_run_zone_errors": {"run_id", "zone_id"},
     "staging.iucn_taxa": {"iucn_taxon_id", "source_version"},
+    "staging.species_occurrences_raw": {"gbif_occurrence_id", "aoi_id"},
 }
 
 
@@ -43,8 +45,15 @@ def test_primary_keys_match_expected():
 
 
 def test_every_feature_table_references_zones_hex():
-    # staging.iucn_taxa est un référentiel par espèce, pas par zone.
-    referencing = EXPECTED_TABLES - {"zones_hex", "job_runs", "staging.iucn_taxa"}
+    # Pas de FK vers zones_hex : staging.iucn_taxa est un référentiel par espèce
+    # (pas par zone) ; staging.species_occurrences_raw n'en a pas par conception
+    # (spec DDL), l'appartenance de zone_id est vérifiée côté application.
+    referencing = EXPECTED_TABLES - {
+        "zones_hex",
+        "job_runs",
+        "staging.iucn_taxa",
+        "staging.species_occurrences_raw",
+    }
     for table_name in referencing:
         table = Base.metadata.tables[table_name]
         targets = {fk.column.table.name for fk in table.foreign_keys}
@@ -53,11 +62,10 @@ def test_every_feature_table_references_zones_hex():
 
 def test_schema_compiles_to_postgresql_ddl():
     engine = create_mock_engine("postgresql+psycopg://", executor=lambda *a, **k: None)
-    # Compiling every table against the PostgreSQL dialect exercises the
-    # geometry, UUID and timestamp column types without needing a live DB.
     for table in Base.metadata.sorted_tables:
         ddl = str(CreateTable(table).compile(dialect=engine.dialect))
-        assert f"CREATE TABLE {table.fullname}" in ddl
+        qualified_name = f"{table.schema}.{table.name}" if table.schema else table.name
+        assert f"CREATE TABLE {qualified_name}" in ddl
 
 
 def test_extensions_declared_for_init():

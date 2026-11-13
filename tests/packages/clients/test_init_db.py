@@ -49,8 +49,7 @@ def test_init_db_creates_extensions_before_tables(monkeypatch):
 
     init_db(engine=engine)
 
-    # Extensions and schemas must exist before create_all: PostGIS geometry
-    # columns depend on the extensions, staging.* tables on their schema.
+    # Extensions and schemas must exist before create_all.
     assert order == [f"ext:{engine}", f"schema:{engine}", f"tables:{engine}"]
 
 
@@ -65,3 +64,7 @@ def test_init_db_falls_back_to_shared_engine(monkeypatch):
     init_db()
 
     assert used == [sentinel, sentinel, sentinel]
+
+
+def test_staging_schema_declared_for_init():
+    assert "staging" in SCHEMAS
