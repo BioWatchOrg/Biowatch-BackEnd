@@ -1,4 +1,4 @@
-from .logs import request_id_var, run_id_var, setup_logging
+from .logs import InvalidLogLevelError, request_id_var, run_id_var, setup_logging
 
 from .planetary_computer_client import (
     DEFAULT_IO_THREADS,
@@ -16,6 +16,8 @@ from .planetary_computer_client import (
 
 from .db import (
     Base,
+    DatabaseConfigError,
+    DatabaseEnvMismatchError,
     JobAlreadySucceeded,
     JobRun,
     JobRunZoneError,
@@ -51,6 +53,8 @@ __all__ = [
     "JobRun",
     "JobRunZoneError",
     "session_scope",
+    "DatabaseConfigError",
+    "DatabaseEnvMismatchError",
     "upsert",
     "job_run",
     "record_zone_error",
@@ -65,6 +69,7 @@ __all__ = [
     "create_schema",
     "drop_schema",
     "setup_logging",
+    "InvalidLogLevelError",
     "run_id_var",
     "request_id_var",
     "Scene",
