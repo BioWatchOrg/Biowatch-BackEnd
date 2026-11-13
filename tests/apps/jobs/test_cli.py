@@ -22,6 +22,7 @@ from jobs.registry import Job, get_jobs
 # Args factices valides pour les jobs qui ont des arguments obligatoires.
 REQUIRED_ARGS = {
     "generate_h3_grid": ["--aoi", "paris", "--resolution", "8"],
+    "update_gbif_occurrences": ["--aoi", "paris"],
     "extract_sentinel": ["--aoi", "paris", "--bucket_id", "2025-05"],
     "backfill_sentinel": ["--aoi", "paris", "--months", "2016-01"],
     "osm_import_snapshot": ["--aoi", "idf", "--bucket", "2016"],

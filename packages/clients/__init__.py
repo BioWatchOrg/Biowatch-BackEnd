@@ -1,5 +1,19 @@
 from .logs import InvalidLogLevelError, request_id_var, run_id_var, setup_logging
 
+from .gbif import (
+    GbifApiError,
+    GbifCredentials,
+    GbifDownloadTimeoutError,
+    build_predicate,
+    download_zip,
+    geometry_to_gbif_wkt,
+    iter_zip_rows,
+    load_gbif_credentials,
+    request_download,
+    stream_download,
+    wait_for_download,
+)
+
 from .planetary_computer_client import (
     DEFAULT_IO_THREADS,
     PlanetaryComputerError,
@@ -26,6 +40,7 @@ from .db import (
     RunContext,
     SatelliteFeaturesByZone,
     SpeciesFeaturesByZone,
+    SpeciesOccurrencesRaw,
     StressScoreByZone,
     ZonesHex,
     InvalidSchemaName,
@@ -49,6 +64,7 @@ __all__ = [
     "OsmFeaturesByZone",
     "ProtectedAreasByZone",
     "SpeciesFeaturesByZone",
+    "SpeciesOccurrencesRaw",
     "StressScoreByZone",
     "JobRun",
     "JobRunZoneError",
@@ -72,6 +88,17 @@ __all__ = [
     "InvalidLogLevelError",
     "run_id_var",
     "request_id_var",
+    "build_predicate",
+    "download_zip",
+    "geometry_to_gbif_wkt",
+    "iter_zip_rows",
+    "load_gbif_credentials",
+    "request_download",
+    "stream_download",
+    "wait_for_download",
+    "GbifApiError",
+    "GbifCredentials",
+    "GbifDownloadTimeoutError",
     "Scene",
     "PlanetaryComputerError",
     "search_scenes",
