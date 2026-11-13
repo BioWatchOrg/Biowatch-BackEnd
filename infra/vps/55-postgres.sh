@@ -253,9 +253,14 @@ else
   jobs_pw="$(env_value "$POSTGRES_JOBS_ENV" POSTGRES_PASSWORD)"
   api_pw="$(env_value "$POSTGRES_API_ENV" POSTGRES_PASSWORD)"
   host_psql() { as_role "$POSTGRES_JOBS_USER" "$@"; }
-  if host_psql "mauvais-mot-de-passe" "SELECT 1" >/dev/null 2>&1; then
+  # Seul un refus D'AUTHENTIFICATION prouve quelque chose : un échec pour une
+  # autre cause (image absente, port injoignable) ne doit pas passer pour un
+  # succès du test.
+  if wrong_pw_output="$(host_psql "mauvais-mot-de-passe" "SELECT 1" 2>&1)"; then
     die "connexion acceptée avec un MAUVAIS mot de passe : authentification inopérante"
   fi
+  [[ "$wrong_pw_output" == *"password authentication failed"* ]] \
+    || die "le test du mauvais mot de passe a échoué pour une autre raison : ${wrong_pw_output}"
   ok "mauvais mot de passe refusé (authentification scram-sha-256 active)"
   result="$(host_psql "$(env_value "$POSTGRES_JOBS_ENV" POSTGRES_PASSWORD)" \
     "SELECT current_user || ' / ' || current_database() || ' / PostGIS ' || postgis_lib_version()")"

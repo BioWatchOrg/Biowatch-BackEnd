@@ -1,5 +1,4 @@
 import logging
-import os
 
 import h3
 import pandas as pd
@@ -10,7 +9,9 @@ from core import (
     UndefinedAOIError,
     aoi_registry,
     compute_idempotency_key,
+    data_root,
     load_aoi,
+    resolve_env,
     write_parquet,
 )
 from geoalchemy2.shape import from_shape
@@ -20,8 +21,6 @@ from sqlalchemy import Engine
 from .h3 import H3Cell, H3ConversionError, cell_to_centroid, cell_to_polygon
 
 logger = logging.getLogger(__name__)
-
-GRID_STORE_ROOT = "docs/grids"
 
 
 class H3GridGenerationError(Exception):
@@ -99,8 +98,8 @@ def generate_h3_grid(
     """
     Generate the H3 grid for an AOI + resolution and persist it into `zones_hex`.
 
-    Idempotent: guarded by `job_run` (same aoi + resolution + aoi version ⇒
-    skip if already succeeded) and written via `upsert` (no duplicates on re-run).
+    Idempotent: guarded by `job_run` (same aoi + resolution + aoi version + env
+    ⇒ skip if already succeeded) and written via `upsert` (no duplicates on re-run).
 
     The AOI is resolved up front so the run is keyed on its declared `version`
     (registry source of truth) rather than a hardcoded constant: bump the AOI
@@ -114,11 +113,18 @@ def generate_h3_grid(
     if resolution is None:
         resolution = aoi.default_res
 
+    # L'env fait partie de l'identité du run : la clé (et la ligne `job_runs`)
+    # dit explicitement dans quel environnement le travail a été fait. Un run
+    # de dev ne vaut jamais pour prod, même si une base venait à être partagée
+    # (copie de prod en dev, restauration). Défense en profondeur, en plus du
+    # suffixe `_<env>` imposé au nom de la base.
+    env = resolve_env()
     idempotency_key = compute_idempotency_key(
         job_name="generate_h3_grid",
         scope=aoi_label,
         resolution=resolution,
         source_version=aoi.version,
+        env=env,
     )
     try:
         with job_run(
@@ -168,14 +174,15 @@ def generate_h3_grid(
             )
             # Artefact grille (liste des cellules) pour reproductibilité / debug.
             # Partitionné par version d'AOI : deux versions ne s'écrasent pas.
-            out_dir = os.path.join(
-                GRID_STORE_ROOT,
-                f"aoi={aoi_label}",
-                f"version={aoi.version}",
-                f"res={resolution}",
+            out_dir = (
+                data_root(env)
+                / "grids"
+                / f"aoi={aoi_label}"
+                / f"version={aoi.version}"
+                / f"res={resolution}"
             )
-            os.makedirs(out_dir, exist_ok=True)
-            write_parquet(pd.DataFrame({"h3_index": cells}), os.path.join(out_dir, "grid.parquet"))
+            out_dir.mkdir(parents=True, exist_ok=True)
+            write_parquet(pd.DataFrame({"h3_index": cells}), str(out_dir / "grid.parquet"))
 
     except JobAlreadySucceeded:
         logger.info(
