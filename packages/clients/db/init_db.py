@@ -5,8 +5,9 @@ and every table declared by the ORM models:
     uv run python -m clients.db.init_db
 
 The ORM models (`clients.db.models`) are the single source of truth for the
-schema. Extensions cannot be expressed as ORM models, so they are created here
-in raw SQL before `create_all`, since PostGIS geometry columns depend on them.
+schema. Extensions and schemas cannot be expressed as ORM models, so they are
+created here in raw SQL before `create_all`: PostGIS geometry columns depend on
+the extensions, and `staging.*` tables on the `staging` schema.
 """
 
 import logging

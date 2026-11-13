@@ -14,6 +14,7 @@ from clients import DEFAULT_IO_THREADS, init_db
 from geo import generate_h3_grid
 from species import update_gbif_occurrences
 
+from jobs.pipelines import update_iucn_taxonomy
 from jobs.pipelines.osm_import import osm_import_scheduled, osm_import_snapshot
 from jobs.registry import Job, register
 from jobs.sentinel import (
@@ -271,5 +272,18 @@ register(
         help="Job planifié (mensuel) : importe la prochaine région OSM pas encore importée.",
         run=_run_osm_import_scheduled,
         configure=_configure_osm_import_scheduled,
+    )
+)
+
+
+def _run_update_iucn_taxonomy(args: Namespace) -> None:
+    update_iucn_taxonomy()
+
+
+register(
+    Job(
+        name="update_iucn_taxonomy",
+        help="Importe la Red List IUCN (espèces de France) dans staging.iucn_taxa.",
+        run=_run_update_iucn_taxonomy,
     )
 )
