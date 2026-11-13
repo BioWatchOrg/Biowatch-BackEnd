@@ -89,6 +89,7 @@ Layout (chaque dossier est un package Python installé en éditable) :
 - `packages/ml/` — entraînement, datasets, inférence
 - `packages/geo/` — H3, intersections, conversions GeoJSON / WKT / PostGIS
 - `packages/sentinel/` — calcul des indices Sentinel-2 par cellule (pixels → indices → moyennes H3), calcul pur ; le job qui l'orchestre vit dans `apps/jobs/sentinel/`
+- `packages/species/` — logique métier biodiversité (ingestion GBIF, agrégation par zone)
 
 Quand tu proposes du code, **respecter cette séparation**. Pas de logique scoring dans `apps/api`, pas d'accès DB direct dans `packages/scoring`, etc.
 
@@ -102,18 +103,19 @@ core (fondation, zéro dépendance interne)
 geo, clients   (dépendent seulement de core)
   ↑
 scoring, sentinel   (dépendent de core + geo — PAS de clients, calcul pur)
+species            (dépend de core + geo + clients : ingestion GBIF, écrit en DB — voir ADR-006)
   ↑
-ml             (dépend de core, geo, clients, scoring)
+ml             (dépend de core, geo, clients, scoring — n'importe pas species)
 
-apps/api   → core, geo, clients   (jamais scoring, jamais ml)
-apps/jobs  → tout (core, geo, clients, scoring, sentinel, ml)
+apps/api   → core, geo, clients   (jamais scoring, jamais ml, jamais species)
+apps/jobs  → tout (core, geo, clients, scoring, sentinel, ml, species)
 ```
 
 Un package de calcul propre à une source (ex. `packages/sentinel`) suit la règle de
 `scoring` : fonctions pures, sans DB ni réseau. La lecture de la source (`clients`),
 l'écriture (`clients.db`) et le `job_run` vivent dans `apps/jobs/<source>/`.
 
-**Règle forte** : aucun `packages/*` ne dépend d'un `apps/*`. Un package ne dépend jamais d'un package situé au-dessus de lui dans ce graphe (ex. `clients` n'importe jamais `scoring`). `scoring` reste un calcul pur, sans accès DB — c'est `apps/jobs` qui orchestre lecture (`clients`) → calcul (`scoring`) → écriture (`clients`).
+**Règle forte** : aucun `packages/*` ne dépend d'un `apps/*`. Un package ne dépend jamais d'un package situé au-dessus de lui dans ce graphe (ex. `clients` n'importe jamais `scoring`). `scoring` reste un calcul pur, sans accès DB — c'est `apps/jobs` qui orchestre lecture (`clients`) → calcul (`scoring`) → écriture (`clients`). `species` fait exception : il est au même niveau que `scoring` mais écrit directement en DB via `clients` (ingestion, pas calcul pur) — comme `scoring`, `apps/api` ne l'importe jamais : il expose des résultats déjà calculés, jamais de logique d'ingestion (voir ADR-006).
 
 ### Fonctions communes déjà disponibles
 
@@ -171,6 +173,7 @@ Base géospatiale structurée autour d'un index spatial central : **H3**. Chaque
 | Table | Rôle | Champs clés |
 | --- | --- | --- |
 | `zones_hex` | Référence géo (source de vérité spatiale) | id H3, résolution, géométrie, centroïde, bbox |
+| `staging.species_occurrences_raw` | Occurrences GBIF brutes par AOI (fenêtre glissante 10 ans) | PK `gbif_occurrence_id`, `zone_id`, `aoi_id`, `event_date` |
 | `satellite_features_by_zone` | Features satellites par zone × période | NDVI, NDWI, NDBI, SWIR, métriques qualité |
 | `osm_features_by_zone` | Pression humaine | ratio surface bâtie, densité routière, occupation urbaine |
 | `protected_areas_by_zone` | Aires protégées applicables à une zone | type de protection, validité temporelle, taux de couverture |

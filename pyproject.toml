@@ -50,6 +50,7 @@ packages = [
     "packages/ml",
     "packages/scoring",
     "packages/sentinel",
+    "packages/species",
 ]
 
 [tool.ruff]
