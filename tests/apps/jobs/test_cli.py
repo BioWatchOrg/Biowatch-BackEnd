@@ -475,6 +475,24 @@ def test_extract_sentinel_monthly_runs_previous_month_on_idf(monkeypatch):
     }
 
 
+def test_extract_sentinel_monthly_follows_the_aoi_default_resolution(monkeypatch):
+    """La résolution vient du registre des AOI : la changer là suffit, sans recopie."""
+    from types import SimpleNamespace
+
+    import jobs.definitions as definitions
+
+    seen = {}
+    monkeypatch.setattr(definitions, "load_aoi", lambda label: SimpleNamespace(default_res=9))
+    monkeypatch.setattr(
+        definitions,
+        "extract_sentinel_data_by_aoi",
+        lambda **kwargs: seen.update(kwargs) or "success",
+    )
+    args = build_parser().parse_args(["extract_sentinel_monthly"])
+    args._run(args)
+    assert seen["resolution"] == 9
+
+
 def test_extract_sentinel_monthly_partial_month_exits_non_zero(monkeypatch):
     """Comme le run manuel : un mois incomplet marque l'unité systemd en échec."""
     import jobs.definitions as definitions

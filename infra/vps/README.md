@@ -530,7 +530,8 @@ Les 5 dernières releases restent sur le VPS (`/opt/biowatch/releases/<sha>`).
 Revenir en arrière ne reconstruit rien : on rebascule le lien et on resynchronise
 les timers de la release visée.
 
-- **Depuis GitHub** : Actions → `Deploy jobs` → Run workflow, `rollback_to` =
+- **Depuis GitHub** : Actions → `Deploy jobs` → Run workflow **sur `main`** (ignoré
+  depuis une autre branche), `rollback_to` =
   `previous` ou un SHA complet.
 - **Depuis le VPS** :
   `sudo -u biowatch-ci /usr/local/sbin/biowatch-ci-deploy rollback [<sha>]`

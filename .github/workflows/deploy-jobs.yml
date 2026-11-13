@@ -109,7 +109,9 @@ jobs:
                 "biowatch-ci@${VPS_HOST}" "deploy ${GITHUB_SHA}"
 
   rollback:
-    if: github.event_name == 'workflow_dispatch' && inputs.rollback_to != ''
+    # Limité à main comme `deploy` : lancé depuis une autre branche, ce serait la
+    # version du workflow de cette branche qui tiendrait la clé de prod.
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.rollback_to != ''
     runs-on: ubuntu-latest
     environment: production
     steps:

@@ -14,6 +14,7 @@ planifier un job que si sa documentation fixe la fréquence.
 from argparse import ArgumentParser, Namespace
 
 from clients import DEFAULT_IO_THREADS, init_db
+from core import load_aoi
 from geo import generate_h3_grid
 
 from jobs.registry import Job, register
@@ -132,14 +133,19 @@ register(
 )
 
 
+# AOI du run mensuel planifié : choix produit, pas un défaut technique.
+SENTINEL_MONTHLY_AOI = "idf"
+
+
 def _run_extract_sentinel_monthly(args: Namespace) -> None:
-    # Un job planifié est lancé sans argument : ses paramètres sont fixés ici,
-    # mêmes défauts que `extract_sentinel` sans option (mois précédent).
+    # Un job planifié est lancé sans argument : ses paramètres sont fixés ici.
+    # Mois précédent (bucket_id=None), et la résolution de référence de l'AOI
+    # (`default_res` du registre des AOI) plutôt qu'une copie qui divergerait.
     _run_extract_sentinel(
         Namespace(
-            aoi="idf",
+            aoi=SENTINEL_MONTHLY_AOI,
             bucket_id=None,
-            h3_res=8,
+            h3_res=load_aoi(SENTINEL_MONTHLY_AOI).default_res,
             source_version=EXTRACTION_PIPELINE_VERSION,
             io_threads=DEFAULT_IO_THREADS,
         )
