@@ -1,7 +1,8 @@
 """Définitions des jobs exposés en CLI.
 
 Ce module ne contient PAS de logique métier : il se contente de mapper une
-sous-commande CLI vers une fonction de `packages/*`. L'idempotence et le
+sous-commande CLI vers une fonction de `packages/*` ou d'un pipeline de
+`jobs.pipelines`. L'idempotence et le
 `job_run(...)` restent gérés dans la fonction métier appelée.
 
 Importer ce module a pour effet de peupler le registre (`register(...)`).
@@ -17,6 +18,7 @@ from clients import DEFAULT_IO_THREADS, init_db
 from core import load_aoi
 from geo import generate_h3_grid
 
+from jobs.pipelines.osm_import import osm_import_scheduled, osm_import_snapshot
 from jobs.registry import Job, register
 from jobs.sentinel import (
     EXTRACTION_PIPELINE_VERSION,
@@ -237,5 +239,64 @@ register(
         configure=_configure_backfill_sentinel,
         # Historique 2016 → aujourd'hui (25 à 35 h) : lancé à la main, hors VPS.
         schedule=None,
+    )
+)
+
+
+def _configure_osm_import_snapshot(parser: ArgumentParser) -> None:
+    parser.add_argument(
+        "--aoi",
+        required=True,
+        help="Label de l'AOI (voir packages/core/aoi/aoi_registry.json).",
+    )
+    parser.add_argument(
+        "--bucket",
+        required=True,
+        help="Bucket annuel (YYYY) : importe le snapshot Geofabrik du 1er janvier.",
+    )
+    parser.add_argument(
+        "--link",
+        action="append",
+        default=None,
+        help="URL .pbf à importer à la place du mapping Geofabrik (répétable).",
+    )
+
+
+def _run_osm_import_snapshot(args: Namespace) -> None:
+    osm_import_snapshot(aoi_label=args.aoi, bucket=args.bucket, links=args.link)
+
+
+register(
+    Job(
+        name="osm_import_snapshot",
+        help="Importe un snapshot OSM (Geofabrik) d'une AOI dans osm_tmp_{aoi}_{bucket}_{clé}.",
+        run=_run_osm_import_snapshot,
+        configure=_configure_osm_import_snapshot,
+        schedule=None,
+    )
+)
+
+
+def _configure_osm_import_scheduled(parser: ArgumentParser) -> None:
+    parser.add_argument(
+        "--bucket",
+        default=None,
+        help="Bucket annuel (YYYY). Par défaut : l'année en cours.",
+    )
+
+
+def _run_osm_import_scheduled(args: Namespace) -> None:
+    osm_import_scheduled(bucket=args.bucket)
+
+
+register(
+    Job(
+        name="osm_import_scheduled",
+        help="Job planifié (mensuel) : importe la prochaine région OSM pas encore importée.",
+        run=_run_osm_import_scheduled,
+        configure=_configure_osm_import_scheduled,
+        # 1 région par mois. Le 5 plutôt que le 1er : en janvier, le snapshot
+        # Geofabrik du 1er janvier doit être publié avant qu'on le demande.
+        schedule="*-*-05 03:00:00 Europe/Paris",
     )
 )

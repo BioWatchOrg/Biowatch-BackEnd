@@ -290,6 +290,8 @@ ensure_jobs_env() {
       || warn "BIOWATCH_DATA_ROOT=${JOBS_STATE_DIR} absent de ${JOBS_ENV_FILE} (le code est en lecture seule)"
     grep -q '^POSTGRES_' "$JOBS_ENV_FILE" \
       && warn "${JOBS_ENV_FILE} contient des POSTGRES_* : ignorés (écrasés par ${JOBS_DB_ENV_FILE}), à retirer"
+    grep -q '^DATABASE_URL=' "$JOBS_ENV_FILE" \
+      && warn "${JOBS_ENV_FILE} contient DATABASE_URL : elle prime sur ${JOBS_DB_ENV_FILE}, à retirer"
     ok "${JOBS_ENV_FILE} présent (root 600)"
   fi
 
@@ -378,6 +380,10 @@ verify() {
     warn "sshd : ${SSH_CI_GROUP} absent de AllowGroups — la CI sera refusée."
     warn "  Rejouer 20-harden-ssh.sh (il arme son filet) pour l'ajouter."
   fi
+
+  # Dépendance système d'un job (#35), pas du déploiement : on prévient seulement.
+  command -v osm2pgsql >/dev/null \
+    || warn "osm2pgsql absent : osm_import_scheduled échouera (sudo apt install osm2pgsql)"
 
   enable_error_trap
   (( FAILURES == 0 )) || die "${FAILURES} vérification(s) en échec — droits NON conformes"

@@ -578,6 +578,56 @@ journalctl -u biowatch-job@extract_sentinel_monthly -f      # logs JSON du run
 L'historique (2016 → aujourd'hui, 25 à 35 h) ne se lance **pas** sur le VPS : voir la
 section « Backfill Sentinel-2 » du README racine (exécution hors VPS, tunnel SSH).
 
+## Import OSM mensuel (#35)
+
+Planifié par le registre : `osm_import_scheduled`, **le 5 de chaque mois à 03:00, heure de
+Paris** (le 5 plutôt que le 1er : en janvier, le snapshot Geofabrik du 1er janvier doit être
+publié avant qu'on le demande).
+
+Chaque déclenchement importe **une** région, dans l'ordre du registre
+(`packages/core/aoi/aoi_registry.json`) : d'abord les régions jamais tentées pour l'année en
+cours, puis seulement celles dont le dernier essai a échoué. Une région qui échoue en boucle
+ne bloque donc pas les autres ; chaque échec émet l'event `osm_import.region_failed`. Quand
+toutes les régions sont importées, le job ne fait rien jusqu'à l'année suivante.
+
+Résultat : schéma `osm_tmp_{aoi}_{année}_{clé}` (8 premiers caractères de
+l'`idempotency_key`) + ligne `job_runs` en `success`. C'est le signal de fin d'import consommé
+par #38. Son `output_ref` est un JSON court,
+`{"schema": "osm_tmp_idf_2026_ab12cd34", "source_version": "geofabrik_2026-01-01_style-v1"}` :
+#38 y lit le schéma (sans reconstruire son nom) et la version de l'import.
+
+osm2pgsql est coupé à 3 h (`DEFAULT_TIMEOUT_S`), avant le `TimeoutStartSec=6h` commun : un
+import bloqué finit en `failed` avec une erreur claire au lieu d'être tué par systemd.
+
+Prérequis :
+
+- `osm2pgsql` >= 1.9 : `sudo apt install osm2pgsql` (2.2 sur Ubuntu 26.04) ;
+  `60-jobs-deploy.sh` prévient s'il manque.
+- `OSM_DATA_DIR=/var/lib/biowatch/jobs/osm` dans `/etc/biowatch/jobs.env` (déjà dans le
+  modèle) : le code déployé est en lecture seule, le dossier est créé au premier import.
+
+```bash
+systemctl list-timers biowatch-job@osm_import_scheduled.timer
+sudo systemctl start biowatch-job@osm_import_scheduled   # lancer tout de suite
+journalctl -u biowatch-job@osm_import_scheduled -e       # logs JSON du dernier run
+```
+
+Import manuel d'une année passée (bootstrap historique, snapshots Geofabrik depuis 2014),
+avec le même compte, les mêmes fichiers d'environnement et le même bac à sable que les jobs
+planifiés :
+
+```bash
+sudo systemd-run --wait --collect --unit=biowatch-osm-import-manual \
+  -p User=biowatch-jobs -p Group=biowatch-jobs \
+  -p EnvironmentFile=/etc/biowatch/jobs.env -p EnvironmentFile=/etc/biowatch/db-jobs.env \
+  -p WorkingDirectory=/opt/biowatch/app \
+  -p ProtectSystem=strict -p ReadWritePaths=/var/lib/biowatch/jobs \
+  /opt/biowatch/app/.venv/bin/biowatch-jobs --env prod osm_import_snapshot --aoi idf --bucket 2016
+```
+
+Le job est idempotent : relancer un import déjà réussi ne fait rien. Un schéma laissé par un
+import qui a planté est supprimé puis réimporté au retry.
+
 ## Portée
 
 Ces scripts traitent #22, #28, #25, #26 (hors exposition) et #27. `AllowGroups` (posé

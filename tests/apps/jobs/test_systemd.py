@@ -125,6 +125,13 @@ def test_sentinel_monthly_run_is_scheduled_with_its_measured_memory_cap():
     assert line == "extract_sentinel_monthly\t*-*-05..10 01:30:00 Europe/Paris\t2200M"
 
 
+def test_osm_monthly_import_is_scheduled_by_the_registry():
+    """L'import mensuel de #35 passe par le registre, plus par une unité écrite à la main."""
+    assert "osm_import_scheduled\t*-*-05 03:00:00 Europe/Paris\t-" in (
+        timer_manifest(get_jobs()).splitlines()
+    )
+
+
 @pytest.mark.skipif(shutil.which("systemd-analyze") is None, reason="requires systemd")
 def test_every_registered_schedule_is_a_valid_systemd_calendar():
     """Même validation que `biowatch-install-timers` sur le VPS, mais avant le merge."""
