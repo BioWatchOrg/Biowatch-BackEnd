@@ -22,6 +22,7 @@ from jobs.registry import Job, get_jobs
 # Args factices valides pour les jobs qui ont des arguments obligatoires.
 REQUIRED_ARGS = {
     "generate_h3_grid": ["--aoi", "paris", "--resolution", "8"],
+    "update_gbif_occurrences": ["--aoi", "paris"],
     "extract_sentinel": ["--aoi", "paris", "--bucket_id", "2025-05"],
     "backfill_sentinel": ["--aoi", "paris", "--months", "2016-01"],
     "osm_import_snapshot": ["--aoi", "idf", "--bucket", "2016"],
@@ -47,15 +48,6 @@ def test_each_job_dispatches_to_its_run():
     parser = build_parser()
     for name, job in get_jobs().items():
         # On donne des args factices valides selon le job connu.
-        argv = [name]
-        if name == "generate_h3_grid":
-            argv += ["--aoi", "paris", "--resolution", "8"]
-        elif name == "update_gbif_occurrences":
-            argv += ["--aoi", "paris"]
-        elif name == "extract_sentinel":
-            argv += ["--aoi", "paris", "--bucket_id", "2025-05"]
-        elif name == "backfill_sentinel":
-            argv += ["--aoi", "paris", "--months", "2016-01"]
         argv = [name, *REQUIRED_ARGS.get(name, [])]
         args = parser.parse_args(argv)
         assert args._run is job.run
