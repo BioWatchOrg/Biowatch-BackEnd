@@ -164,10 +164,13 @@ POSTGRES_ADMIN_USER="biowatch_admin"
 # Rôle des jobs : crée et écrit les tables métier (init_db, upsert) et ses
 # schémas de staging (CREATE sur la base : import OSM, IUCN).
 POSTGRES_JOBS_USER="biowatch_jobs"
+# Rôle de l'API (#29) : lecture seule des tables métier de public, rien d'autre.
+POSTGRES_API_USER="biowatch_api"
 POSTGRES_PORT=5432
 POSTGRES_UNIT="biowatch-postgres"
 POSTGRES_CONF_DIR="${SERVICE_CONFIG_DIR}/postgres"     # compose.yaml   root 700
 POSTGRES_ADMIN_ENV="${SERVICE_CONFIG_DIR}/postgres.env" # superuser      root 600
 POSTGRES_JOBS_ENV="${SERVICE_CONFIG_DIR}/db-jobs.env"   # rôle des jobs  root 600, EnvironmentFile=
+POSTGRES_API_ENV="${SERVICE_CONFIG_DIR}/db-api.env"     # rôle de l'API  root 600, EnvironmentFile=
 POSTGRES_CONTAINER="biowatch-postgis"
 

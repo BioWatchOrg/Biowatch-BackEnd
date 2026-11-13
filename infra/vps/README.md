@@ -378,6 +378,7 @@ Une seule base sur le VPS : **`biowatch_prod`**. La base de dev reste sur le pos
 | Données | volume Docker `biowatch-postgres_pgdata` |
 | Superutilisateur | `biowatch_admin`, `/etc/biowatch/postgres.env` (root 600), administration seulement |
 | Rôle des jobs | `biowatch_jobs`, `/etc/biowatch/db-jobs.env` (root 600), crée et écrit les tables, crée ses schémas de staging (`CREATE` sur la base : import OSM, IUCN) |
+| Rôle de l'API (#29) | `biowatch_api`, `/etc/biowatch/db-api.env` (root 600), **lecture seule** des tables de `public`, y compris celles créées plus tard par les jobs (privilèges par défaut). Aucun accès aux schémas de staging |
 
 **Docker contourne UFW** pour les ports qu'il publie : c'est la liaison sur
 `127.0.0.1` dans `postgres/compose.yaml` qui garde le 5432 fermé. Ne jamais la retirer.
@@ -399,7 +400,11 @@ Pour les jobs (#27) : `EnvironmentFile=/etc/biowatch/db-jobs.env` et
 `After=`/`Wants=biowatch-postgres.service`. Tables, une fois le code déployé par #27 :
 `sudo systemctl start biowatch-job@init_db`.
 Administration : `sudo docker exec -it biowatch-postgis psql -U biowatch_admin -d biowatch_prod`.
-Rôles plus fins (API en lecture seule) : #29. Sauvegardes : #30.
+Pour l'API : `EnvironmentFile=/etc/biowatch/db-api.env`, mêmes `After=`/`Wants=`.
+Les droits par défaut de PostgreSQL (tout rôle peut se connecter et créer des tables
+temporaires) sont retirés : seuls ces trois rôles accèdent à `biowatch_prod`. Le script
+prouve les droits à chaque passage : l'API lit une table créée par les jobs, et se voit
+refuser écriture, création et lecture d'un schéma de staging. Sauvegardes : #30.
 
 ## Job Sentinel-2 mensuel (#36, ADR-004)
 
