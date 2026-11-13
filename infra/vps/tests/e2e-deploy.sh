@@ -90,6 +90,8 @@ ok "sshd sur 2222"
 # SHA1 = le dépôt tel quel. SHA2 = + un job planifié avec plafond mémoire.
 # SHA3 = + un job dont la fréquence passe le filtre Python mais est refusée
 # par systemd-analyze : son déploiement ne doit RIEN activer.
+# SHA4 = SHA2 dont la génération du manifeste écrit une ligne puis plante :
+# les timers en place ne doivent pas bouger.
 
 section "Commits de test"
 REPO=/tmp/repo
@@ -114,7 +116,14 @@ append_job e2e_probe "*-*-* 04:00:00 Europe/Paris" ', memory_max="512M"'
 SHA2="$(git rev-parse HEAD)"
 append_job e2e_bad_calendar "*-*-* 25:99:00"
 SHA3="$(git rev-parse HEAD)"
-ok "SHA1=${SHA1:0:7} SHA2=${SHA2:0:7} SHA3=${SHA3:0:7}"
+git checkout -q "$SHA2"
+# Une ligne valide, puis échec : sans garde, l'installeur retirerait tous les autres timers.
+sed -i 's|^    main()$|    sys.stdout.write("e2e_probe\\t*-*-* 04:00:00 Europe/Paris\\t-\\n"); sys.stdout.flush(); sys.exit(1)|' \
+  apps/jobs/systemd.py
+grep -q 'sys.exit(1)' apps/jobs/systemd.py || die "SHA4 : main() de jobs.systemd introuvable"
+git commit -qam "e2e: manifeste en échec"
+SHA4="$(git rev-parse HEAD)"
+ok "SHA1=${SHA1:0:7} SHA2=${SHA2:0:7} SHA3=${SHA3:0:7} SHA4=${SHA4:0:7}"
 
 UNITS=/etc/systemd/system
 active() { [[ "$(readlink /opt/biowatch/app)" == "releases/$1" ]]; }
@@ -173,6 +182,17 @@ check "release SHA3 construite, refusée à l'installation des timers" bash -c \
 check "SHA2 toujours actif" active "$SHA2"
 check "aucun timer pour le job refusé" test ! -e "${UNITS}/biowatch-job@e2e_bad_calendar.timer"
 check "timers de SHA2 intacts" test -f "${UNITS}/biowatch-job@e2e_probe.timer"
+
+section "deploy SHA4 : manifeste en échec → timers intacts"
+sum_units() { find "$UNITS" -path '*biowatch-job@*' -type f -exec sha256sum {} + | sort; }
+before="$(sum_units)"
+refused "deploy SHA4" bash -c 'git archive --format=tar.gz "$1" | "${@:2}" "deploy $1" >/tmp/d4.log 2>&1' _ "$SHA4" "${SSH[@]}"
+check "refus sur la génération du manifeste" grep -q "manifeste de ${SHA4} non généré" /tmp/d4.log
+check "installeur jamais appelé" bash -c '! grep -q "\[timers\]" /tmp/d4.log'
+check "SHA2 toujours actif" active "$SHA2"
+check "timers présents avant SHA4" test -n "$before"
+after="$(sum_units)"
+check "timers et plafonds inchangés" test "$before" = "$after"
 
 section "Retours arrière"
 "${SSH[@]}" rollback </dev/null >/tmp/r1.log 2>&1 || { cat /tmp/r1.log; die "rollback"; }

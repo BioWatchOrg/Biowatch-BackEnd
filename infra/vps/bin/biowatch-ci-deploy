@@ -50,12 +50,19 @@ check_sha() {
 release() { sudo -n -u "$DEPLOY_ACCOUNT" "$RELEASE_BIN" "$@"; }
 
 # Le manifeste est produit par la release visée (deploy), puis lu et revalidé
-# par root. pipefail : un manifeste en échec n'installe rien.
+# par root. Il est lu EN ENTIER, et son code retour vérifié, avant d'appeler
+# l'installeur : dans un tube, les deux côtés tournent en même temps, et un
+# manifeste vide ou tronqué (Python qui plante) aurait déjà retiré les timers
+# absents quand pipefail signale l'échec.
 #
 # Toujours AVANT de basculer le code : si le manifeste est refusé, la release
 # n'est pas activée et la prod reste entièrement sur l'ancienne (code et
 # timers). L'inverse laisserait le nouveau code avec les anciens timers.
-sync_timers() { release manifest "$1" | sudo -n "$INSTALL_TIMERS_BIN"; }
+sync_timers() {
+  local manifest
+  manifest="$(release manifest "$1")" || die "manifeste de ${1} non généré : timers inchangés"
+  sudo -n "$INSTALL_TIMERS_BIN" <<<"$manifest"
+}
 
 # Un déploiement à la fois, qu'il vienne de la CI ou d'un membre.
 exec 9>"$LOCK_FILE"
