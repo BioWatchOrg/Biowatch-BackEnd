@@ -25,9 +25,9 @@ from jobs.pipelines.osm_import import (
 IDF_2016_PBF = "https://download.geofabrik.de/europe/france/ile-de-france-160101.osm.pbf"
 
 
-def _schema(env="dev"):
-    """Schema of the default idf/2016 import (Geofabrik mapping) for `env`."""
-    key = import_idempotency_key(snapshot_for("idf", "2016"), "2016", env)
+def _schema():
+    """Schema of the default idf/2016 import (Geofabrik mapping)."""
+    key = import_idempotency_key(snapshot_for("idf", "2016"), "2016")
     return tmp_schema_name("idf", "2016", key)
 
 
@@ -99,10 +99,10 @@ def test_tmp_schema_name_is_suffixed_with_the_key():
 def test_style_version_is_part_of_the_source_version_and_key(monkeypatch):
     snap = snapshot_for("idf", "2016")
     assert osm_import.import_source_version(snap) == "geofabrik_2016-01-01_style-v1"
-    key_v1 = import_idempotency_key(snap, "2016", "prod")
+    key_v1 = import_idempotency_key(snap, "2016")
     monkeypatch.setattr(osm_import, "STYLE_VERSION", "2")
     assert osm_import.import_source_version(snap) == "geofabrik_2016-01-01_style-v2"
-    assert import_idempotency_key(snap, "2016", "prod") != key_v1
+    assert import_idempotency_key(snap, "2016") != key_v1
 
 
 def test_import_downloads_imports_and_records_success(engine, fakes):
@@ -121,11 +121,11 @@ def test_import_downloads_imports_and_records_success(engine, fakes):
 
 
 def test_output_ref_holds_the_schema_and_source_version(engine, fakes):
-    osm_import_snapshot("idf", "2016", env="prod", engine=engine)
+    osm_import_snapshot("idf", "2016", engine=engine)
 
     (run,) = _runs(engine)
     assert json.loads(run.output_ref) == {
-        "schema": _schema("prod"),
+        "schema": _schema(),
         "source_version": "geofabrik_2016-01-01_style-v1",
     }
 
@@ -144,32 +144,24 @@ def test_second_run_is_skipped(engine, fakes):
     assert len(_runs(engine)) == 1
 
 
-def test_env_is_part_of_the_idempotency_key(engine, fakes):
-    osm_import_snapshot("idf", "2016", env="dev", engine=engine)
-    assert osm_import_snapshot("idf", "2016", env="prod", engine=engine) is True
-    assert len(_runs(engine)) == 2
-
-
 def test_another_key_never_drops_a_successful_runs_schema(engine, fakes, monkeypatch):
-    osm_import_snapshot("idf", "2016", env="prod", engine=engine)
+    osm_import_snapshot("idf", "2016", engine=engine)
     fakes.events.clear()
 
-    # Same AOI and bucket, other keys: other env, manual links, new style version.
-    osm_import_snapshot("idf", "2016", env="dev", engine=engine)
+    # Same AOI and bucket, other keys: manual links, new style version.
     osm_import_snapshot(
         "idf",
         "2016",
-        env="prod",
         links=["https://mirror.example/ile-de-france-160101.osm.pbf"],
         engine=engine,
     )
     monkeypatch.setattr(osm_import, "STYLE_VERSION", "2")
-    osm_import_snapshot("idf", "2016", env="prod", engine=engine)
+    osm_import_snapshot("idf", "2016", engine=engine)
 
     assert not any(event[0] == "drop_schema" for event in fakes.events)
-    assert _schema("prod") in fakes.existing_schemas
+    assert _schema() in fakes.existing_schemas
     schemas = {json.loads(run.output_ref)["schema"] for run in _runs(engine)}
-    assert len(schemas) == 4 and schemas <= fakes.existing_schemas
+    assert len(schemas) == 3 and schemas <= fakes.existing_schemas
 
 
 def test_failure_marks_run_failed_and_cleans_files(engine, fakes):

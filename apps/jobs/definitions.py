@@ -23,8 +23,6 @@ from jobs.sentinel import (
     previous_month_bucket,
 )
 
-ENVS = ("dev", "prod")
-
 
 def _configure_generate_h3_grid(parser: ArgumentParser) -> None:
     parser.add_argument(
@@ -213,11 +211,10 @@ def _configure_osm_import_snapshot(parser: ArgumentParser) -> None:
         default=None,
         help="URL .pbf à importer à la place du mapping Geofabrik (répétable).",
     )
-    parser.add_argument("--env", choices=ENVS, default="dev", help="Environnement (défaut : dev).")
 
 
 def _run_osm_import_snapshot(args: Namespace) -> None:
-    osm_import_snapshot(aoi_label=args.aoi, bucket=args.bucket, env=args.env, links=args.link)
+    osm_import_snapshot(aoi_label=args.aoi, bucket=args.bucket, links=args.link)
 
 
 register(
@@ -231,7 +228,6 @@ register(
 
 
 def _configure_osm_import_scheduled(parser: ArgumentParser) -> None:
-    parser.add_argument("--env", choices=ENVS, default="dev", help="Environnement (défaut : dev).")
     parser.add_argument(
         "--bucket",
         default=None,
@@ -240,7 +236,7 @@ def _configure_osm_import_scheduled(parser: ArgumentParser) -> None:
 
 
 def _run_osm_import_scheduled(args: Namespace) -> None:
-    osm_import_scheduled(env=args.env, bucket=args.bucket)
+    osm_import_scheduled(bucket=args.bucket)
 
 
 register(

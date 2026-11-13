@@ -5,8 +5,10 @@ First stage of the OSM pipeline. It only stages raw OSM objects (buildings,
 roads, urban landuse) in a temporary schema; the compute job (#38) aggregates
 them per H3 zone into `osm_features_by_zone` and drops the schema.
 
-Idempotence: one run per (AOI, annual bucket, source version, env), where the
-source version covers both the snapshot and `style.lua` (`STYLE_VERSION`). A
+Idempotence: one run per (AOI, annual bucket, source version), where the
+source version covers both the snapshot and `style.lua` (`STYLE_VERSION`). The
+environment is not part of the key: dev and prod each have their own database,
+hence their own `job_runs` (dev/prod split, #18). A
 run in `success` is skipped. The schema name ends with a prefix of the
 idempotency key, so each key has its own schema: on retry, a schema found
 under that name is the leftover of a failed attempt of the same key, never the
@@ -68,7 +70,7 @@ def tmp_schema_name(aoi_label: str, bucket: str, idempotency_key: str) -> str:
     Temporary schema holding the raw import, consumed then dropped by #38.
 
     Suffixed with the idempotency key so that runs with different keys (other
-    env, snapshot or style version) never share, and never drop, a schema.
+    snapshot or style version) never share, and never drop, a schema.
     """
     return f"osm_tmp_{aoi_label}_{bucket}_{idempotency_key[:_SCHEMA_KEY_LEN]}"
 
@@ -82,13 +84,12 @@ def import_source_version(snapshot: Snapshot) -> str:
     return f"{snapshot.source_version}_style-v{STYLE_VERSION}"
 
 
-def import_idempotency_key(snapshot: Snapshot, bucket: str, env: str) -> str:
+def import_idempotency_key(snapshot: Snapshot, bucket: str) -> str:
     return compute_idempotency_key(
         job_name=JOB_NAME,
         scope=_scope(snapshot.aoi_label),
         period=bucket,
         source_version=import_source_version(snapshot),
-        env=env,
     )
 
 
@@ -100,7 +101,6 @@ def import_output_ref(schema: str, source_version: str) -> str:
 def osm_import_snapshot(
     aoi_label: str,
     bucket: str,
-    env: str = "dev",
     links: list[str] | None = None,
     engine: Engine | None = None,
 ) -> bool:
@@ -115,14 +115,13 @@ def osm_import_snapshot(
         snapshot_from_urls(aoi_label, bucket, links) if links else snapshot_for(aoi_label, bucket)
     )
     source_version = import_source_version(snapshot)
-    key = import_idempotency_key(snapshot, bucket, env)
+    key = import_idempotency_key(snapshot, bucket)
     schema = tmp_schema_name(aoi_label, bucket, key)
     log_ctx = {
         "aoi": aoi_label,
         "bucket": bucket,
         "schema": schema,
         "source_version": source_version,
-        "env": env,
     }
     try:
         with job_run(
@@ -165,9 +164,7 @@ def osm_import_snapshot(
     return True
 
 
-def osm_import_scheduled(
-    env: str = "dev", bucket: str | None = None, engine: Engine | None = None
-) -> str | None:
+def osm_import_scheduled(bucket: str | None = None, engine: Engine | None = None) -> str | None:
     """
     Scheduled entrypoint: import the next region not yet imported for the bucket.
 
@@ -184,7 +181,7 @@ def osm_import_scheduled(
     for aoi_label in GEOFABRIK_REGIONS:
         if not aoi_registry(aoi_label):
             continue
-        key = import_idempotency_key(snapshot_for(aoi_label, bucket), bucket, env)
+        key = import_idempotency_key(snapshot_for(aoi_label, bucket), bucket)
         status = get_run_status(key, engine)
         if status is None:
             never_attempted.append(aoi_label)
@@ -205,7 +202,7 @@ def osm_import_scheduled(
         extra={"event": "osm_import.scheduled", "context": context},
     )
     try:
-        osm_import_snapshot(aoi_label, bucket, env=env, engine=engine)
+        osm_import_snapshot(aoi_label, bucket, engine=engine)
     except Exception as e:
         logger.error(
             "scheduled OSM import failed, region will be retried after the others",

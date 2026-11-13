@@ -5,8 +5,8 @@
 | Fichier | Rôle |
 |---|---|
 | `biowatch-osm-import.timer` | Déclenche le service le 5 de chaque mois à 03:00 (Europe/Paris). |
-| `biowatch-osm-import.service` | Lance `biowatch-jobs osm_import_scheduled --env prod` sous `biowatch-jobs`. |
-| `jobs.env.example` | Modèle de `/etc/biowatch/jobs.env` (secrets, hors dépôt). |
+| `biowatch-osm-import.service` | Lance `biowatch-jobs osm_import_scheduled` sous `biowatch-jobs`. |
+| `jobs.env.example` | Modèle de `/etc/biowatch/jobs.env` (secrets, hors dépôt). Pose `BIOWATCH_ENV=prod` : c'est lui qui choisit l'environnement (#18). |
 
 Chaque déclenchement importe **une** région, dans l'ordre du registre
 (`packages/core/aoi/aoi_registry.json`) : d'abord les régions jamais tentées pour l'année en
@@ -51,7 +51,7 @@ Import manuel d'une année passée (bootstrap historique, snapshots Geofabrik de
 sudo systemd-run --wait --collect --unit=biowatch-osm-import-manual \
   -p User=biowatch-jobs -p EnvironmentFile=/etc/biowatch/jobs.env \
   -p WorkingDirectory=/opt/biowatch/app \
-  /opt/biowatch/app/.venv/bin/biowatch-jobs osm_import_snapshot --aoi idf --bucket 2016 --env prod
+  /opt/biowatch/app/.venv/bin/biowatch-jobs osm_import_snapshot --aoi idf --bucket 2016
 ```
 
 Le job est idempotent : relancer un import déjà réussi ne fait rien. Un schéma laissé par un
