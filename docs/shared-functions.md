@@ -87,7 +87,8 @@ packages (voir CLAUDE.md, "Documentation").
   (context manager) — enveloppe un job avec traçabilité (`job_runs`), idempotence et session
   gérée. Lève `JobAlreadySucceeded` si déjà exécuté avec succès (à catcher pour skip). Marque
   `partial` si des erreurs par zone ont été enregistrées. **Tout job métier doit passer par
-  là** (voir CLAUDE.md, "Accès base de données").
+  là** (voir CLAUDE.md, "Accès base de données"). Affecter `run.output_ref` dans le bloc pour
+  tracer ce que le run a produit (ex. nom de schéma) : persisté avec le statut final.
 - `record_zone_error(run_id, zone_id, error_message, engine=None) -> None` — enregistre un
   échec pour une zone précise (reprise ciblée), idempotent sur `(run_id, zone_id)`.
 - `record_zone_errors(run_id, zone_ids, error_message, engine=None) -> None` — même contrat
@@ -96,6 +97,14 @@ packages (voir CLAUDE.md, "Documentation").
 - `get_failed_zones(idempotency_key, engine=None) -> list[str]` — zones en échec du dernier
   run pour une clé d'idempotence donnée ; à appeler **avant** de rentrer dans `job_run` pour
   un retry ciblé.
+- `get_run_status(idempotency_key, engine=None) -> str | None` — statut du run pour une clé
+  (`None` si aucun run), **sans** créer de ligne `job_runs`. Pour un scheduler qui choisit quoi
+  lancer.
+- `schema_exists(name)` / `create_schema(name)` / `drop_schema(name)` (`clients.db.schemas`) —
+  gestion des schémas PostgreSQL temporaires (ex. `osm_tmp_*`). Nom validé (minuscules,
+  `[a-z0-9_]`, ni `public` ni `pg_*`) avant toute DDL, sinon `InvalidSchemaName`.
+  `create_schema` échoue si le schéma existe ; `drop_schema` est `CASCADE` et no-op s'il
+  n'existe pas.
 - `get_engine(echo=False) -> Engine` / `get_sessionmaker(engine=None) -> sessionmaker` —
   construction de l'engine SQLAlchemy depuis les variables d'env (`DATABASE_URL` ou
   `POSTGRES_*`), mise en cache (`lru_cache`). Lève `DatabaseConfigError` (variable
@@ -141,6 +150,19 @@ packages (voir CLAUDE.md, "Documentation").
   réelle) et le parse en streaming (fichier temporaire sur disque, un dict par ligne CSV) — le
   fichier entier n'est jamais tenu en mémoire.
 - Exceptions : `GbifApiError`, `GbifDownloadTimeoutError` (sous-classe de `GbifApiError`).
+### `clients.osm` (Geofabrik + osm2pgsql)
+- `snapshot_for(aoi_label, bucket) -> Snapshot` — URLs Geofabrik du snapshot au 1er janvier
+  d'un bucket annuel (`"2016"` → `*-160101.osm.pbf`) et `source_version`
+  (`geofabrik_2016-01-01`). Pure. Une AOI peut couvrir plusieurs extraits (Geofabrik découpe
+  encore selon les régions d'avant 2016) : mapping dans `GEOFABRIK_REGIONS`.
+- `snapshot_from_urls(aoi_label, bucket, urls) -> Snapshot` — idem à partir d'URLs explicites.
+- `download(url, dest_dir) -> Path` — téléchargement vérifié (md5 Geofabrik si publié, sinon
+  taille), écrit en `.part` puis renommé.
+- `run_osm2pgsql(pbf_paths, schema, engine=None, timeout_s=DEFAULT_TIMEOUT_S)` — import
+  slim/drop dans `schema` (qui doit exister) avec le style `clients/osm/style.lua` (bâti,
+  routes, landuse urbain, EPSG:4326). Mot de passe passé par `PGPASSWORD`, jamais en argument.
+  Processus tué et `Osm2pgsqlError` au-delà de `timeout_s` (3 h par défaut).
+- Exceptions : `GeofabrikError`, `Osm2pgsqlError`.
 
 ### `clients.planetary_computer_client` (images Sentinel-2 L2A, ADR-004)
 Accès aux images Sentinel-2 L2A du catalogue Planetary Computer (gratuit, sans compte). Les
@@ -316,7 +338,11 @@ pas un calcul pur comme `scoring`). Jamais importé par `apps/api`.
 Pas des fonctions à appeler, mais le pattern pour brancher un nouveau job en CLI sans toucher
 au reste : `apps/jobs/registry.py` (`Job` dataclass, `register(job)`) +
 `apps/jobs/definitions.py` (un `Job(...)` par job métier, mappe une sous-commande CLI vers une
-fonction de `packages/*`). Ajouter un job = ajouter une entrée dans `definitions.py`.
+fonction de `packages/*` ou d'un pipeline de `apps/jobs/pipelines/`). Ajouter un job = ajouter
+une entrée dans `definitions.py`.
+
+Pipelines existants : `jobs.pipelines.osm_import` (`osm_import_snapshot`,
+`osm_import_scheduled`) — voir `infra/systemd/README.md` pour la planification.
 
 ---
 

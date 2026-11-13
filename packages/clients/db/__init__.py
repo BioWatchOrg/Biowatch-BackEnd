@@ -4,6 +4,7 @@ from .job_runs import (
     JobAlreadySucceeded,
     RunContext,
     get_failed_zones,
+    get_run_status,
     job_run,
     record_zone_error,
     record_zone_errors,
@@ -19,6 +20,7 @@ from .models import (
     StressScoreByZone,
     ZonesHex,
 )
+from .schemas import InvalidSchemaName, create_schema, drop_schema, schema_exists
 from .session import DatabaseConfigError, DatabaseEnvMismatchError, session_scope
 from .upsert import upsert
 
@@ -41,7 +43,12 @@ __all__ = [
     "record_zone_error",
     "record_zone_errors",
     "get_failed_zones",
+    "get_run_status",
     "JobAlreadySucceeded",
     "RunContext",
     "init_db",
+    "InvalidSchemaName",
+    "schema_exists",
+    "create_schema",
+    "drop_schema",
 ]
