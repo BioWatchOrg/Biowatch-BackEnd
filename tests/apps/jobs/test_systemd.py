@@ -6,13 +6,16 @@ format stable, et qu'aucune fréquence déclarée n'échoue au moment du déploi
 (`systemd-analyze calendar`, disponible sur les runners Ubuntu de la CI).
 """
 
+import runpy
 import shutil
 import subprocess
+import sys
 
 import pytest
 
 import jobs.systemd as jobs_systemd
-from jobs.registry import InvalidJobError, Job, get_jobs
+import jobs.registry as registry
+from jobs.registry import InvalidJobError, Job, get_jobs, register
 from jobs.systemd import timer_manifest
 
 
@@ -89,6 +92,22 @@ def test_manifest_lists_only_scheduled_jobs_sorted_by_name():
 
 def test_manifest_is_empty_without_scheduled_job():
     assert timer_manifest({"manual": Job(name="manual", help="", run=_noop)}) == ""
+
+
+def test_registering_two_jobs_with_the_same_name_fails(monkeypatch):
+    """Deux jobs homonymes produiraient deux timers pour la même unité : bug de déclaration."""
+    monkeypatch.setattr(registry, "_JOBS", {})
+    register(Job(name="twice", help="", run=_noop))
+    with pytest.raises(ValueError, match="déjà enregistré"):
+        register(Job(name="twice", help="", run=_noop, schedule="daily"))
+
+
+def test_running_the_module_prints_the_manifest(capsys, monkeypatch):
+    """Le VPS lance `python -m jobs.systemd` : c'est ce point d'entrée qui doit répondre."""
+    # Comme `python -m` : le module n'est pas encore importé (sinon runpy avertit).
+    monkeypatch.delitem(sys.modules, "jobs.systemd")
+    runpy.run_module("jobs.systemd", run_name="__main__")
+    assert capsys.readouterr().out == timer_manifest(get_jobs())
 
 
 def test_main_writes_the_registry_manifest_on_stdout(capsys):
