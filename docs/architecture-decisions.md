@@ -548,3 +548,112 @@ PostgreSQL comptent, pas du code Python.
 À revoir si un troisième environnement apparaît (préprod, staging), ou si la prod quitte le
 modèle « un VPS, secrets via systemd » (conteneurs, secret manager) : le marqueur `.env.prod`
 n'aurait alors plus de sens et devrait être remplacé par un signal propre à cette plateforme.
+
+---
+
+## ADR-006 — Package `species` : ingestion GBIF écrite en DB via `clients`
+
+**Statut** : actif
+
+**Contexte**
+
+L'ingestion des occurrences GBIF (téléchargement, filtre qualité, conversion H3, écriture dans
+`staging.species_occurrences_raw`) devait vivre quelque part. Deux options : tout orchestrer
+dans `apps/jobs` en ne laissant dans un package que du calcul pur (`quality_filter`,
+normalisation CSV), ou créer `packages/species` qui écrit lui-même en DB.
+
+**Décision**
+
+`packages/species` porte la logique métier biodiversité, y compris l'écriture via
+`packages/clients/db` (`job_run` + `upsert`). Il dépend de `core`, `geo` et `clients`, et se
+place au même niveau que `scoring` dans le graphe de dépendances. Contrairement à `scoring`
+(calcul pur), `species` est de l'ingestion : il a besoin de `clients`. `apps/api` ne l'importe
+jamais. Le graphe est mis à jour dans `CLAUDE.md`.
+
+**Pourquoi**
+
+- Éclater l'orchestration dans `apps/jobs` disperserait un seul pipeline (fetch → filtre →
+  H3 → upsert) sur deux modules, pour un gain d'isolation faible.
+- La logique pure reste testable séparément (`species.quality` n'a ni I/O ni DB).
+- Les futurs jobs biodiversité (agrégation `species_features_by_zone`) auront un point
+  d'entrée naturel.
+
+**Choix associés**
+
+- `staging.species_occurrences_raw` est une table de staging brute, hors liste des tables
+  métier : elle alimente `species_features_by_zone` et n'est pas exposée par l'API. PK composite
+  `(gbif_occurrence_id, aoi_id)` : un même enregistrement GBIF peut tomber dans deux AOI qui se
+  chevauchent.
+- Un seul download GBIF couvre toute la fenêtre glissante `[N-9, N]`. À chaque run, les lignes
+  de l'AOI dans la fenêtre sont supprimées puis réinsérées dans la même transaction
+  (all-or-nothing) : les corrections GBIF sont prises en compte. Les lignes antérieures à la
+  fenêtre ne sont **pas** purgées, l'historique est conservé.
+- `eventDate` au format intervalle ISO 8601 (`start/end`) : la date de début est retenue.
+
+**Limites assumées**
+
+- `download_key` n'est pas persistée : un retry après échec recrée un download GBIF (plusieurs
+  dizaines de minutes pour un gros AOI).
+- Écriture de plusieurs millions de lignes (≈ 4 M pour l'IDF) dans une seule transaction :
+  risque de volume de WAL et de durée de transaction.
+
+**Écart avec le modèle de l'ADR-004**
+
+L'ADR-004 pose comme modèle « un package de calcul pur par source, son job dans
+`apps/jobs/<source>/` ». `species` s'en écarte : l'orchestration (`job_run`, téléchargement,
+écriture en DB) vit dans le package, pas dans `apps/jobs`. Les deux placements sont viables.
+L'alternative alignée sur l'ADR-004 : ne garder dans `packages/species` que le calcul pur
+(`quality_filter`, `rolling_window`, normalisation CSV) et déplacer l'orchestration dans
+`apps/jobs/species/`. **À trancher en équipe avant merge** (modifie une règle forte du
+`CLAUDE.md`).
+
+**Remise en cause**
+
+À revoir si les retries deviennent fréquents (persister la clé dans `job_runs` et la réutiliser
+si le download est déjà `SUCCEEDED`), ou si la transaction unique pose problème en prod
+(découper par année).
+
+---
+
+## ADR-007 — Référentiel IUCN : API v4 par pays plutôt qu'export complet sur S3
+
+**Statut** : actif
+
+**Contexte**
+
+`update_iucn_taxonomy` (#34) alimente `staging.iucn_taxa` (statut de menace par espèce),
+utilisé ensuite par `compute_species_features_by_zone`. Le ticket initial prévoyait
+d'ingérer un fichier d'export versionné déposé sur S3
+(`s3://.../raw/iucn/{source_version}/`).
+
+**Décision**
+
+Le job lit l'API IUCN Red List v4, route `/countries/FR?latest=true&scope_code=1`
+(évaluations globales des espèces présentes en France, environ 5000 espèces, 51 pages,
+environ 30 s). La réponse est gardée telle quelle en copie brute sur le disque du VPS
+(`BIOWATCH_DATA_ROOT/<env>/raw/iucn/<version>/FR.json`). `source_version` est la version
+de la Red List renvoyée par l'API (ex. `2026-1`).
+
+**Pourquoi**
+
+- L'API v4 n'expose aucune route d'export complet. L'export complet n'existe que via le
+  site, manuellement, avec un compte utilisateur : impossible à automatiser proprement
+  dans un job.
+- Le périmètre MVP est la France : la route par pays ne ramène que les espèces utiles,
+  sans filtrer 175 000 espèces mondiales.
+- Stockage local sur le VPS par défaut (CLAUDE.md) : S3 n'est justifié par aucun besoin
+  documenté. La copie brute suffit à la reproductibilité (recalcul sans rappeler l'API).
+- La version de la Red List lue sur l'API donne une `source_version` fiable et une clé
+  d'idempotence qui relance le job à chaque nouvelle édition.
+
+**Limites assumées**
+
+- Dépendance à un jeton API (`IUCN_API_TOKEN`, compte gratuit).
+- La route par pays ne fournit pas la tendance de population (`trend`).
+- France uniquement : `staging.iucn_taxa` n'a pas de colonne pays.
+
+**Remise en cause**
+
+À réévaluer si BioWatch couvre d'autres pays (ajouter une colonne pays, ou repasser par
+un export mondial), si le score a besoin de `trend`, ou si l'IUCN publie une route
+d'export complet.

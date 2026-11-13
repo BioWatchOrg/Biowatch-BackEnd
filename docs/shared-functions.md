@@ -87,7 +87,8 @@ packages (voir CLAUDE.md, "Documentation").
   (context manager) — enveloppe un job avec traçabilité (`job_runs`), idempotence et session
   gérée. Lève `JobAlreadySucceeded` si déjà exécuté avec succès (à catcher pour skip). Marque
   `partial` si des erreurs par zone ont été enregistrées. **Tout job métier doit passer par
-  là** (voir CLAUDE.md, "Accès base de données").
+  là** (voir CLAUDE.md, "Accès base de données"). Affecter `run.output_ref` dans le bloc pour
+  tracer ce que le run a produit (ex. nom de schéma) : persisté avec le statut final.
 - `record_zone_error(run_id, zone_id, error_message, engine=None) -> None` — enregistre un
   échec pour une zone précise (reprise ciblée), idempotent sur `(run_id, zone_id)`.
 - `record_zone_errors(run_id, zone_ids, error_message, engine=None) -> None` — même contrat
@@ -96,6 +97,14 @@ packages (voir CLAUDE.md, "Documentation").
 - `get_failed_zones(idempotency_key, engine=None) -> list[str]` — zones en échec du dernier
   run pour une clé d'idempotence donnée ; à appeler **avant** de rentrer dans `job_run` pour
   un retry ciblé.
+- `get_run_status(idempotency_key, engine=None) -> str | None` — statut du run pour une clé
+  (`None` si aucun run), **sans** créer de ligne `job_runs`. Pour un scheduler qui choisit quoi
+  lancer.
+- `schema_exists(name)` / `create_schema(name)` / `drop_schema(name)` (`clients.db.schemas`) —
+  gestion des schémas PostgreSQL temporaires (ex. `osm_tmp_*`). Nom validé (minuscules,
+  `[a-z0-9_]`, ni `public` ni `pg_*`) avant toute DDL, sinon `InvalidSchemaName`.
+  `create_schema` échoue si le schéma existe ; `drop_schema` est `CASCADE` et no-op s'il
+  n'existe pas.
 - `get_engine(echo=False) -> Engine` / `get_sessionmaker(engine=None) -> sessionmaker` —
   construction de l'engine SQLAlchemy depuis les variables d'env (`DATABASE_URL` ou
   `POSTGRES_*`), mise en cache (`lru_cache`). Lève `DatabaseConfigError` (variable
@@ -103,18 +112,66 @@ packages (voir CLAUDE.md, "Documentation").
   le suffixe `_<env>` — contrôlé sur le nom réellement ouvert, `?dbname=` compris). Ces
   erreurs ne contiennent jamais d'URL ni de mot de passe ; le CLI les logge en WARNING
   (`cli.config_error`) et sort sans traceback.
-- `init_db(engine=None) -> None` — crée les extensions PostgreSQL (`postgis`, `pgcrypto`) et
-  toutes les tables ORM. Idempotent, à lancer une fois par environnement. Une
+- `init_db(engine=None) -> None` — crée les extensions PostgreSQL (`postgis`, `pgcrypto`), les
+  schémas (`staging`) et toutes les tables ORM. Idempotent, à lancer une fois par environnement. Une
   `DatabaseConfigError` remonte telle quelle (déjà rapportée par l'entrypoint), sans
   `db.init_db.error`.
 - `upsert(session, model, rows, update_columns=None) -> None` — `INSERT ... ON CONFLICT DO
   UPDATE` en masse sur la PK du modèle. **Seule façon d'écrire/mettre à jour** dans une table
   métier (jamais d'`INSERT` manuel). Chunké automatiquement sous la limite de bind params
-  PostgreSQL.
+  PostgreSQL. Les colonnes à `onupdate` ORM (ex. `updated_at`) absentes des lignes sont
+  rafraîchies au conflit.
 - `JobAlreadySucceeded`, `RunContext` (dataclass), `Base` (déclarative base ORM).
 - Modèles ORM (`clients.db.models`, source de vérité du schéma) : `ZonesHex`,
   `SatelliteFeaturesByZone`, `OsmFeaturesByZone`, `ProtectedAreasByZone`,
-  `SpeciesFeaturesByZone`, `StressScoreByZone`, `JobRun`, `JobRunZoneError`.
+  `SpeciesFeaturesByZone`, `StressScoreByZone`, `JobRun`, `JobRunZoneError`, et dans le schéma
+  `staging` (données intermédiaires, non exposées) : `IucnTaxa` (`staging.iucn_taxa`).
+
+### `clients.iucn`
+- `IucnClient(token=None)` — client de l'API IUCN Red List v4 (jeton `IUCN_API_TOKEN` lu dans
+  l'env si non fourni ; context manager). `red_list_version() -> str` (ex. `"2026-1"`),
+  `iter_country_assessments(country, scope_code=1)` — dernières évaluations d'un pays, toutes
+  pages parcourues ; lève `IucnApiError` si la liste reçue ne fait pas le total annoncé par
+  l'API (pas d'import tronqué silencieux), ou si la réponse n'est pas le JSON attendu.
+
+### `clients.gbif` (client HTTP GBIF Occurrence Download API — aucune logique métier)
+- `load_gbif_credentials() -> GbifCredentials` — lit `GBIF_USERNAME`/`GBIF_PASSWORD` depuis
+  l'env (compte GBIF requis, voir `.env.example`). `GbifCredentials.auth -> httpx.BasicAuth`
+  (propriété, reconstruite à chaque accès). `password` en `field(repr=False)` : ne fuite jamais
+  via un `repr()`/`logger.debug()` accidentel.
+- `geometry_to_gbif_wkt(geom) -> str` — WKT de l'enveloppe convexe de `geom`, anneau extérieur
+  **anti-horaire** (GBIF rejette l'anneau horaire que renvoie `convex_hull` de Shapely, erreur
+  400). Pure.
+- `build_predicate(geometry_wkt, date_min, date_max) -> dict` — prédicat GBIF (géométrie +
+  plage de dates complète en un seul prédicat, pas de boucle par année). Pure.
+- `request_download(predicate, creator, auth, client=None) -> str` — `POST
+  /occurrence/download/request`, retourne la clé du download.
+- `wait_for_download(key, auth, client=None) -> None` — poll le statut jusqu'à `SUCCEEDED`,
+  lève sur échec/`GBIF_POLL_TIMEOUT_SECONDS` dépassé (`GbifDownloadTimeoutError`).
+- `download_zip(key, auth, client=None) -> Path` — télécharge le zip fini vers un fichier
+  temporaire (écrit par chunks, jamais en mémoire) et retourne son chemin. L'appelant le
+  supprime ; supprimé automatiquement si le téléchargement échoue.
+- `iter_zip_rows(zip_path, key="") -> Iterator[dict]` — parse en streaming le fichier TSV du zip,
+  un dict par ligne. Ne supprime pas le zip.
+- `stream_download(key, auth, client=None) -> Iterator[dict]` — composition des deux ci-dessus,
+  supprime le fichier à la fin (le téléchargement ne démarre qu'au premier `next()`). Télécharge le résultat (zip
+  GBIF — **jamais gzip brut**, même si un format compressé est demandé, confirmé contre l'API
+  réelle) et le parse en streaming (fichier temporaire sur disque, un dict par ligne CSV) — le
+  fichier entier n'est jamais tenu en mémoire.
+- Exceptions : `GbifApiError`, `GbifDownloadTimeoutError` (sous-classe de `GbifApiError`).
+### `clients.osm` (Geofabrik + osm2pgsql)
+- `snapshot_for(aoi_label, bucket) -> Snapshot` — URLs Geofabrik du snapshot au 1er janvier
+  d'un bucket annuel (`"2016"` → `*-160101.osm.pbf`) et `source_version`
+  (`geofabrik_2016-01-01`). Pure. Une AOI peut couvrir plusieurs extraits (Geofabrik découpe
+  encore selon les régions d'avant 2016) : mapping dans `GEOFABRIK_REGIONS`.
+- `snapshot_from_urls(aoi_label, bucket, urls) -> Snapshot` — idem à partir d'URLs explicites.
+- `download(url, dest_dir) -> Path` — téléchargement vérifié (md5 Geofabrik si publié, sinon
+  taille), écrit en `.part` puis renommé.
+- `run_osm2pgsql(pbf_paths, schema, engine=None, timeout_s=DEFAULT_TIMEOUT_S)` — import
+  slim/drop dans `schema` (qui doit exister) avec le style `clients/osm/style.lua` (bâti,
+  routes, landuse urbain, EPSG:4326). Mot de passe passé par `PGPASSWORD`, jamais en argument.
+  Processus tué et `Osm2pgsqlError` au-delà de `timeout_s` (3 h par défaut).
+- Exceptions : `GeofabrikError`, `Osm2pgsqlError`.
 
 ### `clients.planetary_computer_client` (images Sentinel-2 L2A, ADR-004)
 Accès aux images Sentinel-2 L2A du catalogue Planetary Computer (gratuit, sans compte). Les
@@ -258,6 +315,30 @@ Exportées depuis `geo` (niveau 3) : utilisées par le job d'extraction Sentinel
   AOI du registre (pure, sans DB — testée par golden fingerprint).
 - `generate_h3_grid(aoi_label, resolution=None, engine=None) -> None` — génère et persiste la
   grille dans `zones_hex` via `job_run` + `upsert`.
+- `point_to_h3_cell(lat, lon, resolution) -> H3Cell` — inverse de `compute_h3_cells` : place un
+  point externe (ex. une occurrence GBIF) sur la même grille H3 que `zones_hex`. Pure, sans DB.
+
+---
+
+## packages/species
+
+Logique métier biodiversité — dépend de `core`, `geo`, `clients` (ingestion + écriture DB,
+pas un calcul pur comme `scoring`). Jamais importé par `apps/api`.
+
+### `species.quality`
+- `quality_filter(record, date_min, date_max) -> dict | None` — pure, sans I/O. Valide/normalise
+  un enregistrement GBIF brut (coordonnées valides, `eventDate` dans `[date_min, date_max]`) ;
+  `None` si rejeté. Agnostique de la source GBIF (Search API vs Download API) : attend déjà le
+  dict normalisé, voir `species.gbif_occurrences._normalize_csv_row`.
+
+### `species.gbif_occurrences` (job, pas une fonction pure — accède à la DB + réseau GBIF)
+- `update_gbif_occurrences(aoi_label, engine=None) -> None` — récupère les occurrences GBIF
+  d'une AOI sur une fenêtre glissante de 10 ans (un seul `clients.gbif` download par run),
+  filtre (`quality_filter`), convertit en `zone_id` (`geo.point_to_h3_cell`), stocke dans
+  `staging.species_occurrences_raw` via `job_run` + `upsert`. Remplace les lignes de la fenêtre
+  refetchée à chaque run (garde l'historique hors fenêtre).
+- `rolling_window(current_year) -> tuple[date, date]` — pure : `(date_min, date_max)` pour la
+  fenêtre de 10 ans se terminant à `current_year`.
 
 ---
 
@@ -266,7 +347,15 @@ Exportées depuis `geo` (niveau 3) : utilisées par le job d'extraction Sentinel
 Pas des fonctions à appeler, mais le pattern pour brancher un nouveau job en CLI sans toucher
 au reste : `apps/jobs/registry.py` (`Job` dataclass, `register(job)`) +
 `apps/jobs/definitions.py` (un `Job(...)` par job métier, mappe une sous-commande CLI vers une
-fonction de `packages/*`). Ajouter un job = ajouter une entrée dans `definitions.py`.
+fonction de `packages/*` ou d'un pipeline de `apps/jobs/pipelines/`). Ajouter un job = ajouter
+une entrée dans `definitions.py`.
+
+Pipelines existants : `jobs.pipelines.osm_import` (`osm_import_snapshot`,
+`osm_import_scheduled`) — voir `infra/systemd/README.md` pour la planification.
+
+Les pipelines qui orchestrent plusieurs packages (API externe → copie brute → table) vivent
+dans `apps/jobs/pipelines/` : ex. `update_iucn_taxonomy()` (France uniquement pour le MVP : la table n'a pas de colonne
+pays).
 
 ---
 

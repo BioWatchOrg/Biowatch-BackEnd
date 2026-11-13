@@ -1,3 +1,6 @@
+# Git worktrees (subagent-driven-development isolation)
+.worktrees/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -257,3 +260,6 @@ docker-data/
 
 # macOS
 .DS_Store
+
+# Contexte agent local, par poste — ne doit jamais être versionné
+CLAUDE.local.md
