@@ -7,8 +7,11 @@
 #
 #   stage <sha>       lit une archive tar.gz sur stdin, construit releases/<sha>
 #   activate <sha>    bascule app → releases/<sha> (atomique)
-#   rollback [<sha>]  réactive <sha>, par défaut la release précédente
-#   manifest          manifeste des timers de la release active (stdout)
+#   rollback-target [<sha>]
+#                     release à réactiver (stdout) : <sha>, par défaut la
+#                     précédente ; vérifie sans rien changer
+#   manifest [<sha>]  manifeste des timers de releases/<sha>, par défaut de la
+#                     release active (stdout)
 #   prune             ne garde que les @RELEASES_KEPT@ releases les plus récentes
 #   status            release active et releases disponibles
 #
@@ -149,7 +152,9 @@ cmd_activate() {
   log "release active : ${sha}"
 }
 
-cmd_rollback() {
+# Ne change rien : désigne la release qu'un retour arrière activerait, pour
+# que l'appelant en installe les timers AVANT de basculer le code.
+cmd_rollback_target() {
   local sha="${1:-}" current
   current="$(current_sha)"
   if [[ -z "$sha" ]]; then
@@ -160,16 +165,29 @@ cmd_rollback() {
              done || true)"
     [[ -n "$sha" ]] || die "aucune release précédente disponible"
   fi
+  check_sha "$sha"
+  is_built "$sha" || die "release ${sha} absente ou incomplète"
   [[ "$sha" != "$current" ]] || die "${sha} est déjà la release active"
   log "retour arrière : ${current:-aucune} → ${sha}"
-  cmd_activate "$sha"
+  printf '%s\n' "$sha"
 }
 
 # ── manifest / prune / status ────────────────────────────────────────────
 
+# Sans argument : la release active. Avec un SHA : une release construite mais
+# pas forcément active — c'est ce qui permet d'installer ses timers AVANT de
+# basculer le code, et donc de ne rien activer si son manifeste est refusé.
 cmd_manifest() {
-  [[ -L "$APP_CURRENT" ]] || die "aucune release active"
-  "${APP_CURRENT}/.venv/bin/python" -m jobs.systemd
+  local sha="${1:-}" rel
+  if [[ -n "$sha" ]]; then
+    check_sha "$sha"
+    is_built "$sha" || die "release ${sha} absente ou incomplète"
+    rel="$(release_dir "$sha")"
+  else
+    [[ -L "$APP_CURRENT" ]] || die "aucune release active"
+    rel="$APP_CURRENT"
+  fi
+  "${rel}/.venv/bin/python" -m jobs.systemd
 }
 
 cmd_prune() {
@@ -209,9 +227,10 @@ shift || true
 case "$verb" in
   stage)    (( $# == 1 )) || die "usage : stage <sha>";        cmd_stage "$1" ;;
   activate) (( $# == 1 )) || die "usage : activate <sha>";     cmd_activate "$1" ;;
-  rollback) (( $# <= 1 )) || die "usage : rollback [<sha>]";   cmd_rollback "${1:-}" ;;
-  manifest) (( $# == 0 )) || die "usage : manifest";           cmd_manifest ;;
+  rollback-target)
+            (( $# <= 1 )) || die "usage : rollback-target [<sha>]"; cmd_rollback_target "${1:-}" ;;
+  manifest) (( $# <= 1 )) || die "usage : manifest [<sha>]";   cmd_manifest "${1:-}" ;;
   prune)    (( $# == 0 )) || die "usage : prune";              cmd_prune ;;
   status)   (( $# == 0 )) || die "usage : status";             cmd_status ;;
-  *) die "commande inconnue : stage | activate | rollback | manifest | prune | status" ;;
+  *) die "commande inconnue : stage | activate | rollback-target | manifest | prune | status" ;;
 esac

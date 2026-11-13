@@ -627,6 +627,11 @@ shell, ni clé SSH, ni sudo.
 - Un job planifié se lance sans argument : un job paramétré expose une variante `*_scheduled`.
 - Modifier `biowatch-job@.service` (timeout, bac à sable) demande de rejouer `60-jobs-deploy.sh`
   à la main : c'est voulu, ce fichier fixe les privilèges des jobs.
+- Tout code mergé sur `main` s'exécute sur le VPS. Le seul verrou humain avant la prod est
+  l'approbation obligatoire de l'environnement GitHub `production` (la protection de branche
+  n'est pas active sur le plan Free).
+- Seules 5 releases sont gardées : 5 déploiements pendant un même run (6 h max) purgeraient
+  sa release. Accepté tant que `main` ne reçoit qu'après la QA hebdomadaire.
 
 **Remise en cause**
 

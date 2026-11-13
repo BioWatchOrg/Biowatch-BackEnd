@@ -402,9 +402,9 @@ GitHub Actions ── git archive | ssh biowatch-ci@vps "deploy <sha>"
                                   ▼
             biowatch-ci-deploy   (biowatch-ci)  liste fermée : deploy | rollback | status
               ├─ sudo -u deploy biowatch-release stage <sha>     extrait, uv sync, marqueur .env.prod
+              ├─ sudo -u deploy biowatch-release manifest <sha>  python -m jobs.systemd (release construite)
+              │     └─ | sudo biowatch-install-timers   (root)   valide, écrit timers + plafonds mémoire
               ├─ sudo -u deploy biowatch-release activate <sha>  app → releases/<sha>, atomique
-              ├─ sudo -u deploy biowatch-release manifest        python -m jobs.systemd
-              │     └─ | sudo biowatch-install-timers   (root)   valide, écrit biowatch-job@<job>.timer
               └─ sudo -u deploy biowatch-release prune           garde les 5 dernières releases
 ```
 
@@ -441,7 +441,14 @@ et jamais par la CI. Une instance par job : `biowatch-job@<job>.service`.
 3. Si le script signale `biowatch-ci absent de AllowGroups` : rejouer
    `./20-harden-ssh.sh` (même procédure qu'au premier passage, filet armé).
 4. Vérifier `/etc/biowatch/jobs.env` (posé depuis le modèle, sans secret).
-5. GitHub → Settings → Environments → `production`, secrets :
+5. GitHub → Settings → Environments → `production` :
+   - **Required reviewers : obligatoire** (au moins un membre). Tout code mergé sur
+     `main` s'exécute sur le VPS (`uv sync`, jobs avec accès à la base) ; la clé CI
+     limite ce que la CI peut lancer, pas ce que fait le code déployé. Sur le plan
+     GitHub Free, la protection de branche n'est pas active : cette approbation est
+     le seul verrou humain avant la prod. Disponible car le dépôt est public.
+   - **Deployment branches : `main` uniquement.**
+   - Secrets :
 
    | Secret | Valeur |
    |---|---|
@@ -500,6 +507,23 @@ sudo systemd-run --wait --collect --unit=biowatch-job-manual \
   /opt/biowatch/app/.venv/bin/biowatch-jobs --env prod generate_h3_grid --aoi idf
 ```
 
+### Tester sans VPS
+
+`infra/vps/tests/e2e-deploy.sh` rejoue toute la chaîne dans un Ubuntu 26.04
+jetable : `40-` et `60-`, vrais déploiements par SSH, retours arrière,
+manifeste refusé (rien n'est activé), manifestes hostiles, droits sudo.
+`systemctl` y est simulé (pas de systemd dans un conteneur) : le déclenchement
+réel des timers ne se vérifie que sur le VPS. Lancé en CI (`Infra e2e`) quand
+`infra/` ou `apps/jobs/` change ; en local :
+
+```bash
+docker run --rm -e BIOWATCH_E2E=1 -v "$PWD:/src:ro" ubuntu:26.04 \
+  bash /src/infra/vps/tests/e2e-deploy.sh /src
+```
+
+Le script refuse de tourner hors d'un conteneur : il crée des comptes et
+réécrit sshd.
+
 ### Retour arrière
 
 Les 5 dernières releases restent sur le VPS (`/opt/biowatch/releases/<sha>`).
@@ -515,9 +539,19 @@ Un `revert` sur `main` reste la voie normale : le retour arrière sert à rétab
 la prod **avant** que ce revert soit mergé. Tant que `main` n'est pas corrigé, le
 prochain push redéploie la version fautive.
 
-Un déploiement en échec n'active rien : la release précédente reste en place.
-Seul cas intermédiaire : code activé mais timers non synchronisés (échec de
-`biowatch-install-timers`) — le message le dit, relancer le workflow suffit.
+Les timers et plafonds mémoire de la release visée sont installés **avant** de
+basculer le code. Un déploiement en échec n'active donc rien : construction ou
+manifeste refusés, la prod reste entièrement sur la release précédente, code et
+timers. Seul cas intermédiaire, très improbable : timers installés puis échec de
+la bascule du lien (`ln`/`mv` en local) ; relancer le workflow suffit.
+
+**Risque accepté : purge d'une release encore utilisée.** Seules les 5 dernières
+releases sont gardées. Un job démarré sur une release qui serait purgée pendant
+son exécution perdrait ses fichiers. Il faudrait 5 déploiements sur `main` pendant
+un même run, or un run est borné à 6 h (`TimeoutStartSec`) et `main` ne reçoit
+qu'après la QA hebdomadaire. Les longs backfills ne tournent jamais sur le VPS
+(voir « Backfill Sentinel-2 » du README racine). À revoir si les déploiements
+deviennent fréquents.
 
 ## Job Sentinel-2 mensuel (#36, ADR-004)
 

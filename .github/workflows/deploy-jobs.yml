@@ -29,6 +29,8 @@ concurrency:
 permissions:
   contents: read
 
+# Actions épinglées par SHA (et non par tag, déplaçable) : ce workflow détient
+# la clé de déploiement prod. Mettre à jour = remplacer SHA et commentaire.
 jobs:
   # CI qualité rejouée sur le commit exact qui part en prod : lint et test ne
   # tournent que sur les PR vers dev, rien ne garantit sinon l'état de main.
@@ -50,9 +52,9 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: astral-sh/setup-uv@v3
+      - uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
         with:
           enable-cache: true
 
@@ -80,7 +82,7 @@ jobs:
     # peut exiger une approbation manuelle avant chaque déploiement.
     environment: production
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Configure SSH
         env:

@@ -6,8 +6,8 @@
 # arrive dans SSH_ORIGINAL_COMMAND et n'est jamais évaluée par un shell :
 # elle est découpée en mots puis confrontée à une liste fermée.
 #
-#   deploy <sha>       archive tar.gz sur stdin → construit, active, timers, purge
-#   rollback [<sha>]   réactive une release déjà construite, puis ses timers
+#   deploy <sha>       archive tar.gz sur stdin → construit, timers, active, purge
+#   rollback [<sha>]   timers d'une release déjà construite, puis la réactive
 #   status             release active, releases disponibles, timers
 #
 # Depuis une session membre sur le VPS (mêmes droits que la CI) :
@@ -49,9 +49,13 @@ check_sha() {
 
 release() { sudo -n -u "$DEPLOY_ACCOUNT" "$RELEASE_BIN" "$@"; }
 
-# Le manifeste est produit par la release active (deploy), puis lu et
-# revalidé par root. pipefail : un manifeste en échec n'installe rien.
-sync_timers() { release manifest | sudo -n "$INSTALL_TIMERS_BIN"; }
+# Le manifeste est produit par la release visée (deploy), puis lu et revalidé
+# par root. pipefail : un manifeste en échec n'installe rien.
+#
+# Toujours AVANT de basculer le code : si le manifeste est refusé, la release
+# n'est pas activée et la prod reste entièrement sur l'ancienne (code et
+# timers). L'inverse laisserait le nouveau code avec les anciens timers.
+sync_timers() { release manifest "$1" | sudo -n "$INSTALL_TIMERS_BIN"; }
 
 # Un déploiement à la fois, qu'il vienne de la CI ou d'un membre.
 exec 9>"$LOCK_FILE"
@@ -62,17 +66,18 @@ case "$verb" in
     check_sha "$sha"
     log "déploiement de ${sha}"
     release stage "$sha"
+    sync_timers "$sha"
     release activate "$sha"
-    sync_timers
     release prune
     log "déploiement de ${sha} terminé"
     ;;
   rollback)
     [[ -z "$sha" ]] || check_sha "$sha"
     # stdin n'est pas lu : une archive envoyée par erreur est ignorée.
-    release rollback ${sha:+"$sha"} </dev/null
-    sync_timers
-    log "retour arrière terminé"
+    target="$(release rollback-target ${sha:+"$sha"} </dev/null)"
+    sync_timers "$target" </dev/null
+    release activate "$target" </dev/null
+    log "retour arrière vers ${target} terminé"
     ;;
   status)
     [[ -z "$sha" ]] || die "status ne prend pas d'argument"
