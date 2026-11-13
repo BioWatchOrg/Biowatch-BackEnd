@@ -103,7 +103,7 @@ core (fondation, zéro dépendance interne)
 geo, clients   (dépendent seulement de core)
   ↑
 scoring, sentinel   (dépendent de core + geo — PAS de clients, calcul pur)
-species            (dépend de core + geo + clients : ingestion GBIF, écrit en DB — voir ADR-005)
+species            (dépend de core + geo + clients : ingestion GBIF, écrit en DB — voir ADR-006)
   ↑
 ml             (dépend de core, geo, clients, scoring — n'importe pas species)
 
@@ -115,7 +115,7 @@ Un package de calcul propre à une source (ex. `packages/sentinel`) suit la règ
 `scoring` : fonctions pures, sans DB ni réseau. La lecture de la source (`clients`),
 l'écriture (`clients.db`) et le `job_run` vivent dans `apps/jobs/<source>/`.
 
-**Règle forte** : aucun `packages/*` ne dépend d'un `apps/*`. Un package ne dépend jamais d'un package situé au-dessus de lui dans ce graphe (ex. `clients` n'importe jamais `scoring`). `scoring` reste un calcul pur, sans accès DB — c'est `apps/jobs` qui orchestre lecture (`clients`) → calcul (`scoring`) → écriture (`clients`). `species` fait exception : il est au même niveau que `scoring` mais écrit directement en DB via `clients` (ingestion, pas calcul pur) — comme `scoring`, `apps/api` ne l'importe jamais : il expose des résultats déjà calculés, jamais de logique d'ingestion (voir ADR-005).
+**Règle forte** : aucun `packages/*` ne dépend d'un `apps/*`. Un package ne dépend jamais d'un package situé au-dessus de lui dans ce graphe (ex. `clients` n'importe jamais `scoring`). `scoring` reste un calcul pur, sans accès DB — c'est `apps/jobs` qui orchestre lecture (`clients`) → calcul (`scoring`) → écriture (`clients`). `species` fait exception : il est au même niveau que `scoring` mais écrit directement en DB via `clients` (ingestion, pas calcul pur) — comme `scoring`, `apps/api` ne l'importe jamais : il expose des résultats déjà calculés, jamais de logique d'ingestion (voir ADR-006).
 
 ### Fonctions communes déjà disponibles
 
