@@ -548,6 +548,57 @@ def test_extract_sentinel_success_or_skip_exits_zero(monkeypatch, status):
     args._run(args)  # ne lève pas
 
 
+def test_extract_sentinel_monthly_runs_previous_month_on_idf(monkeypatch):
+    """Job planifié : aucun argument, paramètres fixés comme `extract_sentinel` par défaut."""
+    import jobs.definitions as definitions
+
+    seen = {}
+    monkeypatch.setattr(definitions, "previous_month_bucket", lambda: "2026-10")
+    monkeypatch.setattr(
+        definitions,
+        "extract_sentinel_data_by_aoi",
+        lambda **kwargs: seen.update(kwargs) or "success",
+    )
+    args = build_parser().parse_args(["extract_sentinel_monthly"])
+    args._run(args)
+    assert seen == {
+        "aoi_label": "idf",
+        "bucket": "2026-10",
+        "resolution": 8,
+        "source_version": definitions.EXTRACTION_PIPELINE_VERSION,
+        "io_threads": definitions.DEFAULT_IO_THREADS,
+    }
+
+
+def test_extract_sentinel_monthly_follows_the_aoi_default_resolution(monkeypatch):
+    """La résolution vient du registre des AOI : la changer là suffit, sans recopie."""
+    from types import SimpleNamespace
+
+    import jobs.definitions as definitions
+
+    seen = {}
+    monkeypatch.setattr(definitions, "load_aoi", lambda label: SimpleNamespace(default_res=9))
+    monkeypatch.setattr(
+        definitions,
+        "extract_sentinel_data_by_aoi",
+        lambda **kwargs: seen.update(kwargs) or "success",
+    )
+    args = build_parser().parse_args(["extract_sentinel_monthly"])
+    args._run(args)
+    assert seen["resolution"] == 9
+
+
+def test_extract_sentinel_monthly_partial_month_exits_non_zero(monkeypatch):
+    """Comme le run manuel : un mois incomplet marque l'unité systemd en échec."""
+    import jobs.definitions as definitions
+
+    monkeypatch.setattr(definitions, "previous_month_bucket", lambda: "2026-10")
+    monkeypatch.setattr(definitions, "extract_sentinel_data_by_aoi", lambda **kw: "partial")
+    args = build_parser().parse_args(["extract_sentinel_monthly"])
+    with pytest.raises(SystemExit, match="2026-10 incomplet"):
+        args._run(args)
+
+
 def _backfill_args(*extra):
     return build_parser().parse_args(["backfill_sentinel", "--aoi", "idf", *extra])
 

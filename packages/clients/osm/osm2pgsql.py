@@ -38,8 +38,9 @@ OSM2PGSQL_BIN_ENV = "OSM2PGSQL_BIN"
 _STDERR_TAIL = 2000
 
 # A regional import takes a few minutes to ~1 h: beyond this, it is stuck. Kept
-# below the service's `TimeoutStartSec=4h` so the job fails with a clear error
-# (and a `failed` run) instead of being killed by systemd mid-run.
+# below `TimeoutStartSec=6h` (infra/systemd/biowatch-job@.service) so the job
+# fails with a clear error (and a `failed` run) instead of being killed by
+# systemd mid-run.
 DEFAULT_TIMEOUT_S = 3 * 3600
 
 

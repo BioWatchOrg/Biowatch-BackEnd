@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# biowatch-ci-deploy — commande forcée de la clé SSH de la CI (#27).
+#
+# C'est la SEULE chose que la clé de la CI peut exécuter sur le VPS
+# (authorized_keys : restrict,command="…"). La commande demandée par le client
+# arrive dans SSH_ORIGINAL_COMMAND et n'est jamais évaluée par un shell :
+# elle est découpée en mots puis confrontée à une liste fermée.
+#
+#   deploy <sha>       archive tar.gz sur stdin → construit, timers, active, purge
+#   rollback [<sha>]   timers d'une release déjà construite, puis la réactive
+#   status             release active, releases disponibles, timers
+#
+# Depuis une session membre sur le VPS (mêmes droits que la CI) :
+#   sudo -u biowatch-ci /usr/local/sbin/biowatch-ci-deploy rollback [<sha>]
+#
+# Installé par infra/vps/60-jobs-deploy.sh, qui remplace les @…@.
+
+set -Eeuo pipefail
+umask 077
+
+readonly DEPLOY_ACCOUNT="@DEPLOY_ACCOUNT@"
+readonly RELEASE_BIN="@SBIN_DIR@/biowatch-release"
+readonly INSTALL_TIMERS_BIN="@SBIN_DIR@/biowatch-install-timers"
+readonly LOCK_FILE="@CI_HOME@/deploy.lock"
+
+log() {
+  printf '%s [deploy] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >&2
+  # Trace aussi dans le journal du VPS : journalctl -t biowatch-deploy
+  logger -t biowatch-deploy -- "$*" 2>/dev/null || true
+}
+die() { log "ERREUR : $*"; exit 1; }
+
+[[ "$DEPLOY_ACCOUNT" != @* ]] || die "script non installé (lancer infra/vps/60-jobs-deploy.sh)"
+
+# `read -a` découpe sur les blancs sans glob ni expansion : « deploy $(rm …) »
+# donne trois mots, refusés plus bas, jamais exécutés.
+if [[ -n "${SSH_ORIGINAL_COMMAND:-}" ]]; then
+  read -r -a argv <<<"$SSH_ORIGINAL_COMMAND"
+else
+  argv=("$@")
+fi
+verb="${argv[0]:-}"
+sha="${argv[1]:-}"
+(( ${#argv[@]} <= 2 )) || die "trop d'arguments"
+
+check_sha() {
+  [[ "$1" =~ ^[0-9a-f]{40}$ ]] || die "SHA invalide : 40 caractères hexadécimaux attendus"
+}
+
+release() { sudo -n -u "$DEPLOY_ACCOUNT" "$RELEASE_BIN" "$@"; }
+
+# Le manifeste est produit par la release visée (deploy), puis lu et revalidé
+# par root. Il est lu EN ENTIER, et son code retour vérifié, avant d'appeler
+# l'installeur : dans un tube, les deux côtés tournent en même temps, et un
+# manifeste vide ou tronqué (Python qui plante) aurait déjà retiré les timers
+# absents quand pipefail signale l'échec.
+#
+# Toujours AVANT de basculer le code : si le manifeste est refusé, la release
+# n'est pas activée et la prod reste entièrement sur l'ancienne (code et
+# timers). L'inverse laisserait le nouveau code avec les anciens timers.
+sync_timers() {
+  local manifest
+  manifest="$(release manifest "$1")" || die "manifeste de ${1} non généré : timers inchangés"
+  sudo -n "$INSTALL_TIMERS_BIN" <<<"$manifest"
+}
+
+# Un déploiement à la fois, qu'il vienne de la CI ou d'un membre.
+exec 9>"$LOCK_FILE"
+flock -w 900 9 || die "un autre déploiement est en cours depuis plus de 15 min"
+
+case "$verb" in
+  deploy)
+    check_sha "$sha"
+    log "déploiement de ${sha}"
+    release stage "$sha"
+    sync_timers "$sha"
+    release activate "$sha"
+    release prune
+    log "déploiement de ${sha} terminé"
+    ;;
+  rollback)
+    [[ -z "$sha" ]] || check_sha "$sha"
+    # stdin n'est pas lu : une archive envoyée par erreur est ignorée.
+    target="$(release rollback-target ${sha:+"$sha"} </dev/null)"
+    sync_timers "$target" </dev/null
+    release activate "$target" </dev/null
+    log "retour arrière vers ${target} terminé"
+    ;;
+  status)
+    [[ -z "$sha" ]] || die "status ne prend pas d'argument"
+    release status </dev/null
+    systemctl list-timers --all --no-pager 'biowatch-job@*'
+    ;;
+  *)
+    die "commande refusée — attendu : deploy <sha> | rollback [<sha>] | status"
+    ;;
+esac

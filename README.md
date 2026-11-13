@@ -10,7 +10,7 @@ une commande qui ne précise rien ne peut pas écrire en production.
 | | fichier de config | base | artefacts |
 | --- | --- | --- | --- |
 | dev | `.env.dev` (local) | `biowatch_dev` | `data/dev/` |
-| prod | `.env.prod` (**VPS uniquement**) | `biowatch_prod` | `data/prod/` |
+| prod | `.env.prod` (**VPS uniquement**, sauf backfill temporaire : voir « Backfill Sentinel-2 ») | `biowatch_prod` | `data/prod/` |
 
 L'environnement est résolu dans cet ordre : `--env` > `BIOWATCH_ENV` > `dev`.
 `.env.<env>` et `data/` sont cherchés **à la racine du dépôt**, quel que soit le
@@ -160,28 +160,58 @@ enregistrée dans `job_run_zone_errors` pour ses cellules.
 Enchaîne le job mois par mois. Relancer la même commande reprend là où elle s'est arrêtée
 (les mois déjà réussis sont sautés). Compter 25 à 35 h pour l'IDF depuis 2016 : à lancer
 **hors VPS** (Mac branché, `caffeinate -i`), en écrivant dans la base du VPS via un tunnel SSH.
+
+C'est la **seule exception** à « les secrets de prod n'existent que sur le VPS » (ADR-005) :
+un `.env.prod` est créé **temporairement** sur le poste, le temps du backfill.
+
 ```bash
 # terminal 1 : tunnel SSH (port local 15432 -> PostgreSQL du VPS, jamais exposé à Internet)
-ssh -p 50022 -i ~/.ssh/biowatch_ed25519 -N \
+ssh -4 -p 50022 -i ~/.ssh/biowatch_ed25519 -N \
     -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
     -L 15432:127.0.0.1:5432 <user>@<IP_DU_VPS>
 
-# terminal 2 : .env pointant sur le tunnel (POSTGRES_HOST=127.0.0.1, POSTGRES_PORT=15432,
-# identifiants de prod — jamais commités)
-caffeinate -i uv run biowatch-jobs backfill_sentinel --aoi idf --from 2016-01 --to 2026-09
+# terminal 2, à la racine du dépôt.
+# 1. .env.prod temporaire, lisible par toi seul. Identifiants du rôle biowatch_jobs :
+#    sur le VPS, `sudo cat /etc/biowatch/db-jobs.env` ; ne changer que host et port.
+install -m 600 /dev/null .env.prod
+cat > .env.prod <<'ENV'
+POSTGRES_USER=biowatch_jobs
+POSTGRES_PASSWORD=<copié de db-jobs.env>
+POSTGRES_DB=biowatch_prod
+POSTGRES_HOST=127.0.0.1
+POSTGRES_PORT=15432
+ENV
+
+# 2. --env prod est obligatoire : sans lui, le défaut dev refuse une base *_prod.
+#    Le trap supprime .env.prod à la fin, même en cas d'échec ou de Ctrl-C.
+( trap 'rm -f .env.prod' EXIT
+  caffeinate -i uv run biowatch-jobs --env prod backfill_sentinel --aoi idf --from 2016-01 --to 2026-09 )
+
+# 3. Vérifier : le fichier ne doit plus exister.
+test ! -e .env.prod && echo ".env.prod supprimé"
 ```
+`.env.prod` est gitignoré, mais ne doit **jamais** rester sur un poste : tant qu'il existe, un
+`--env prod` lancé par erreur avec le tunnel ouvert écrirait en prod.
 En fin de backfill, les mois **à relancer** sont listés : ceux en échec (exception) et ceux
 **incomplets** (une tuile illisible : ses cellules sont dans `job_run_zone_errors`, sans ligne).
 Le code de sortie est alors != 0 et le message donne la commande pour ne relancer qu'eux :
 ```bash
-uv run biowatch-jobs backfill_sentinel --aoi idf --h3_res 8 --months 2016-04,2019-07
+# même préparation (tunnel + .env.prod temporaire), puis :
+( trap 'rm -f .env.prod' EXIT
+  uv run biowatch-jobs --env prod backfill_sentinel --aoi idf --h3_res 8 --months 2016-04,2019-07 )
 ```
 Relancer un mois refait tout le mois (8 à 15 min pour l'IDF) ; les mois déjà réussis sont
 sautés. Même règle pour `extract_sentinel` : un mois incomplet sort avec un code != 0
-(visible par systemd), et le timer le retente les nuits suivantes (du 5 au 10).
+(visible par systemd). En prod, le run mensuel est `extract_sentinel_monthly`, planifié par
+le registre chaque nuit du 5 au 10 : un mois incomplet est retenté la nuit suivante.
 
 ### Enregistrer un nouveau job
 Il faut enregistrer le nouveau job dans : apps/jobs/definitions.py
+
+Pour qu'il tourne automatiquement en prod, renseigner sa fréquence (`schedule`, format
+`OnCalendar` systemd, ex. `"*-*-* 02:30:00 Europe/Paris"`), et son plafond mémoire mesuré
+si besoin (`memory_max`, ex. `"2200M"`). Le déploiement sur `main` crée son timer, sans
+autre modification. Voir `infra/vps/README.md`, « Déploiement des jobs ».
 
 ---
 
