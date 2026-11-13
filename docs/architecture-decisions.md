@@ -535,6 +535,10 @@ PostgreSQL comptent, pas du code Python.
   contourne ces garde-fous : ils protègent contre l'erreur, pas contre l'intention. La
   protection contre l'intention est réseau (DB jamais exposée, tunnel nominatif) et
   PostgreSQL (comptes, droits).
+- Le suffixe est contrôlé sur le nom de base que reçoit le driver (chemin de l'URL, ou
+  `?dbname=` qui prime). Une URL sans nom de base est refusée : les replis de libpq
+  (`PGDATABASE`, `service=` d'un `pg_service.conf`) ne s'appliquent que dans ce cas, et ne
+  peuvent donc pas choisir la base à la place du contrôle.
 - `load_env_file` mute `os.environ` : acceptable tant que chaque entrypoint est explicite sur
   son env. L'API devra appeler `load_env_file(resolve_env())` à son démarrage, et ne jamais
   pouvoir tomber sur `prod` par défaut.

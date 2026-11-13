@@ -59,7 +59,8 @@ packages (voir CLAUDE.md, "Documentation").
   **Garde-fou prod** : lève `EnvFileNotFoundError` si `.env.prod` est absent (prod est dans
   `ENV_FILE_REQUIRED`), avant toute lecture de `DATABASE_URL` / `POSTGRES_*`, et aussi si le
   fichier est présent mais illisible (tous envs). En dev, retourne `None` si le fichier manque.
-  Fige `BIOWATCH_ENV` à l'env chargé avant de lire le fichier.
+  Fige `BIOWATCH_ENV` à l'env chargé une fois le fichier lu (écrase une valeur venue du
+  fichier) ; en cas d'échec, `BIOWATCH_ENV` n'est pas modifié.
 - `PROJECT_ROOT: Path` — racine du dépôt, ancre de tout chemin relatif au projet
   (`.env.<env>`, `data/`). Ne pas recalculer une racine ailleurs.
 - `expected_db_suffix(env) -> str` — suffixe obligatoire du nom de la base (`_dev`,

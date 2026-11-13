@@ -153,6 +153,26 @@ def test_dbname_query_parameter_cannot_bypass_the_suffix_check(clean_env):
         _build_database_url()
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "postgresql+psycopg://u:p@127.0.0.1:5432",
+        "postgresql+psycopg://u:p@127.0.0.1:5432/",
+        "postgresql+psycopg://u:p@127.0.0.1:5432/?service=biowatch",
+    ],
+)
+def test_url_without_database_name_is_refused(clean_env, url):
+    """Sans nom de base, libpq prendrait `PGDATABASE` ou un `service=` : on refuse avant.
+
+    Ces replis libpq ne jouent que si l'URL ne nomme aucune base. Un nom vide ne finit
+    jamais par `_<env>`, donc le contrôle du suffixe ne peut pas être contourné par eux.
+    """
+    clean_env.setenv("PGDATABASE", "biowatch_prod")
+    clean_env.setenv("DATABASE_URL", url)
+    with pytest.raises(DatabaseEnvMismatchError):
+        _build_database_url()
+
+
 def test_get_engine_is_memoized(clean_env):
     clean_env.setenv("POSTGRES_USER", "u")
     clean_env.setenv("POSTGRES_PASSWORD", "p")
