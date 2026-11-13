@@ -152,3 +152,27 @@ SOCKET_ROLLBACK_SCRIPT="/usr/local/sbin/biowatch-socket-rollback.sh"
 SSH_ROLLBACK_UNIT="biowatch-ssh-rollback"
 UFW_ROLLBACK_UNIT="biowatch-ufw-rollback"
 SOCKET_ROLLBACK_UNIT="biowatch-socket-rollback"
+
+# --- PostgreSQL + PostGIS (#23) ----------------------------------------------
+
+# ⚠️ Valeurs reprises EN DUR dans postgres/compose.yaml (port 5432, conteneur
+# biowatch-postgis, /etc/biowatch/postgres.env) et dans
+# postgres/biowatch-postgres.service (/etc/biowatch/postgres/compose.yaml) :
+# ces fichiers ne lisent pas config.sh. Toute modification ici doit y être
+# reportée, sinon les vérifications du script ne portent plus sur la prod.
+
+# Une seule base sur le VPS : la prod. La base dev reste en local (Docker du
+# poste), cf. garde-fous dev/prod : le nom DOIT finir par _prod.
+POSTGRES_DB_NAME="biowatch_prod"
+# Superutilisateur : administration et extensions uniquement, jamais utilisé
+# par l'application.
+POSTGRES_ADMIN_USER="biowatch_admin"
+# Rôle des jobs : crée et écrit les tables métier (init_db, upsert) et ses
+# schémas de staging (CREATE sur la base : import OSM, IUCN).
+POSTGRES_JOBS_USER="biowatch_jobs"
+POSTGRES_PORT=5432
+POSTGRES_UNIT="biowatch-postgres"
+POSTGRES_CONF_DIR="${SERVICE_CONFIG_DIR}/postgres"     # compose.yaml   root 700
+POSTGRES_ADMIN_ENV="${SERVICE_CONFIG_DIR}/postgres.env" # superuser      root 600
+POSTGRES_JOBS_ENV="${SERVICE_CONFIG_DIR}/db-jobs.env"   # rôle des jobs  root 600, EnvironmentFile=
+POSTGRES_CONTAINER="biowatch-postgis"

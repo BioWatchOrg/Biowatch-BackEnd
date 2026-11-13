@@ -25,6 +25,7 @@ cette preuve, et arment une restauration automatique en cas d'oubli.
 | `30-firewall.sh` | #28 | UFW deny incoming | ⚠️ |
 | `40-service-users.sh` | #25 | Comptes `biowatch-api`, `biowatch-jobs`, `deploy` et leurs répertoires | aucun, ne touche ni SSH ni réseau |
 | `50-nginx.sh` | #26 | Nginx HTTPS, socle + un fichier par service, placeholder du frontend. Boucle locale tant que non exposé | aucun pour l'accès : ne touche ni SSH ni UFW |
+| `55-postgres.sh` | #23 | Docker + PostgreSQL/PostGIS de prod (`biowatch_prod`) sur 127.0.0.1, rôle des jobs, secrets générés sur le VPS | aucun pour l'accès : ne touche ni SSH ni UFW |
 
 Chaque script accepte `--dry-run`. **Toujours l'utiliser en première passe.**
 
@@ -386,6 +387,47 @@ d'exposer avec le certificat auto-signé, d'où l'ordre suivant.
 
 Les fichiers de `biowatch.d/` n'ont rien à changer : c'est l'intérêt du
 découpage.
+
+## PostgreSQL + PostGIS (#23)
+
+```bash
+./55-postgres.sh --dry-run
+./55-postgres.sh
+```
+
+Une seule base sur le VPS : **`biowatch_prod`**. La base de dev reste sur le poste
+(`infra/docker`), et le nom de la base de prod DOIT finir par `_prod` (garde-fous dev/prod).
+
+| Élément | Où |
+|---|---|
+| Conteneur | `biowatch-postgis`, image `postgis/postgis:16-3.4-alpine` (identique au local) |
+| Écoute | `127.0.0.1:5432` **uniquement** |
+| Démarrage | unité `biowatch-postgres.service` (attend `pg_isready`) |
+| Données | volume Docker `biowatch-postgres_pgdata` |
+| Superutilisateur | `biowatch_admin`, `/etc/biowatch/postgres.env` (root 600), administration seulement |
+| Rôle des jobs | `biowatch_jobs`, `/etc/biowatch/db-jobs.env` (root 600), crée et écrit les tables, crée ses schémas de staging (`CREATE` sur la base : import OSM, IUCN) |
+
+**Docker contourne UFW** pour les ports qu'il publie : c'est la liaison sur
+`127.0.0.1` dans `postgres/compose.yaml` qui garde le 5432 fermé. Ne jamais la retirer.
+Le script le prouve, et depuis un poste : `nc -zv -w5 <IP_DU_VPS> 5432` doit échouer.
+
+Le groupe `docker` équivaut à root : le script **vérifie** qu'il est vide et prévient sinon,
+mais ne retire personne lui-même (action destructive, à décider au cas par cas).
+
+La preuve de connexion passe par le port publié, depuis l'hôte, comme l'application : un
+mauvais mot de passe doit y être refusé. Un test `docker exec … psql` ne prouverait rien,
+l'image faisant confiance à `127.0.0.1` à l'intérieur du conteneur.
+
+Les mots de passe des deux rôles sont réappliqués à la base à chaque passage (`ALTER ROLE`) : un fichier de secrets régénéré
+reste synchronisé avec la base. Les mots de passe sont générés une seule fois, sur le VPS, et jamais régénérés quand on
+rejoue le script (la base ne les reconnaîtrait plus). Rejouer le script ne coupe pas la
+base : le conteneur n'est recréé que si sa définition a changé.
+
+Pour les jobs (#27) : `EnvironmentFile=/etc/biowatch/db-jobs.env` et
+`After=`/`Wants=biowatch-postgres.service`. Tables, une fois le code déployé par #27 :
+`sudo systemctl start biowatch-job@init_db`.
+Administration : `sudo docker exec -it biowatch-postgis psql -U biowatch_admin -d biowatch_prod`.
+Rôles plus fins (API en lecture seule) : #29. Sauvegardes : #30.
 
 ## Job Sentinel-2 mensuel (#36, ADR-004)
 

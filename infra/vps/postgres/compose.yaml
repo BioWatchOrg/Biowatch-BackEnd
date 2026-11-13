@@ -1,0 +1,33 @@
+# PostgreSQL + PostGIS de PRODUCTION (#23). Installé par 55-postgres.sh dans
+# /etc/biowatch/postgres/, démarré par l'unité biowatch-postgres.service.
+#
+# Même image que le local (infra/docker/docker-compose.yml) : dev et prod ont
+# la même version de PostgreSQL et de PostGIS.
+name: biowatch-postgres
+
+services:
+  postgis:
+    image: postgis/postgis:16-3.4-alpine
+    container_name: biowatch-postgis
+    restart: unless-stopped
+    # Superutilisateur et base (POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB),
+    # générés sur le VPS par 55-postgres.sh, jamais dans le dépôt.
+    env_file: /etc/biowatch/postgres.env
+    ports:
+      # Boucle locale UNIQUEMENT. Docker publie ses ports en contournant UFW :
+      # sans ce 127.0.0.1, le 5432 serait ouvert sur Internet malgré le pare-feu.
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # -h 127.0.0.1 (TCP), pas le socket local : au premier démarrage, l'image
+      # initialise la base avec un serveur TEMPORAIRE qui n'écoute que sur le
+      # socket, puis le redémarre. Par le socket, le conteneur serait « healthy »
+      # pendant l'init, et le script enchaînerait trop tôt.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  pgdata:
