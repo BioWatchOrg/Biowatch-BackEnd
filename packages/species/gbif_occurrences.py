@@ -86,6 +86,13 @@ def update_gbif_occurrences(aoi_label: AoiLabel, engine: Engine | None = None) -
     taxonomy, etc.) reflects the latest data instead of silently keeping
     whatever was stored years ago.
 
+    Refuses to replace the window when the fetch yields 0 usable rows
+    (ValueError, transaction rolled back, previous data untouched).
+
+    The refresh from GBIF happens once per run, and the job is meant to run
+    once a year: the idempotency key includes the year, so a successful run
+    blocks any further refresh until the next calendar year.
+
     Idempotent: guarded by `job_run` (one run per AOI + target year N + AOI
     version + resolution -- skip if already succeeded) and written via
     `upsert(..., update_columns=[])` (`ON CONFLICT DO NOTHING` -- belt and
@@ -225,6 +232,17 @@ def update_gbif_occurrences(aoi_label: AoiLabel, engine: Engine | None = None) -
                             update_columns=[],
                         )
                         n_total += len(rows)
+
+                    if n_total == 0:
+                        # The window was already deleted above: committing now
+                        # would silently empty it (bad/partial GBIF archive, or
+                        # quality filter rejecting everything). Raising rolls the
+                        # whole transaction back, the old rows stay in place.
+                        raise ValueError(
+                            f"GBIF download {download_key} yielded 0 usable rows "
+                            f"(streamed={n_streamed}, rejected_quality={n_rejected_quality}, "
+                            f"outside_zones={n_outside_zones}); refusing to replace the window"
+                        )
 
                     logger.info(
                         "upserted GBIF occurrences",

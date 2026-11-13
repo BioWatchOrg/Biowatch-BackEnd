@@ -174,9 +174,27 @@ def test_update_gbif_occurrences_skips_record_outside_valid_zone_ids(monkeypatch
     monkeypatch.setattr(gbif_occurrences, "point_to_h3_cell", lambda lat, lon, res: "outside-zone")
     _patch_download_pipeline(monkeypatch, [_GOOD_CSV_ROW])
 
-    gbif_occurrences.update_gbif_occurrences(GOLDEN_AOI)
+    # The only record is outside every zone -> 0 usable rows -> the job refuses
+    # to replace the window (see the dedicated guard test below).
+    with pytest.raises(ValueError, match="0 usable rows"):
+        gbif_occurrences.update_gbif_occurrences(GOLDEN_AOI)
 
     assert captured_rows == []
+
+
+def test_update_gbif_occurrences_refuses_to_replace_window_with_zero_rows(monkeypatch):
+    """A fetch that yields nothing usable must not wipe the existing window:
+    the job raises, so `job_run` rolls the DELETE back."""
+    aoi = gbif_occurrences.load_aoi(GOLDEN_AOI)
+    session = _FakeSession(zone_ids={"expected-zone"})
+    monkeypatch.setattr(gbif_occurrences, "job_run", _fake_job_run_yielding(session))
+    monkeypatch.setattr(gbif_occurrences, "biowatch_now", lambda: date(2025, 1, 1))
+    monkeypatch.setattr(gbif_occurrences, "load_aoi", lambda label: aoi)
+    # Every row fails the quality filter (no gbifID).
+    _patch_download_pipeline(monkeypatch, [{"gbifID": "", "scientificName": "no id"}])
+
+    with pytest.raises(ValueError, match="refusing to replace the window"):
+        gbif_occurrences.update_gbif_occurrences(GOLDEN_AOI)
 
 
 def test_update_gbif_occurrences_builds_predicate_with_convex_hull(monkeypatch):
@@ -187,10 +205,12 @@ def test_update_gbif_occurrences_builds_predicate_with_convex_hull(monkeypatch):
     captured = {}
 
     aoi = gbif_occurrences.load_aoi(GOLDEN_AOI)
-    session = _FakeSession(zone_ids=set())
+    session = _FakeSession(zone_ids={"expected-zone"})
     monkeypatch.setattr(gbif_occurrences, "job_run", _fake_job_run_yielding(session))
+    monkeypatch.setattr(gbif_occurrences, "upsert", lambda *a, **k: None)
     monkeypatch.setattr(gbif_occurrences, "biowatch_now", lambda: date(2025, 1, 1))
     monkeypatch.setattr(gbif_occurrences, "load_aoi", lambda label: aoi)
+    monkeypatch.setattr(gbif_occurrences, "point_to_h3_cell", lambda lat, lon, res: "expected-zone")
     monkeypatch.setattr(gbif_occurrences, "load_gbif_credentials", lambda: _FAKE_CREDS)
 
     def fake_request_download(predicate, creator, auth, client=None):
@@ -200,7 +220,7 @@ def test_update_gbif_occurrences_builds_predicate_with_convex_hull(monkeypatch):
     monkeypatch.setattr(gbif_occurrences, "request_download", fake_request_download)
     monkeypatch.setattr(gbif_occurrences, "wait_for_download", lambda *a, **k: None)
     monkeypatch.setattr(gbif_occurrences, "download_zip", lambda *a, **k: Path("fake.zip"))
-    monkeypatch.setattr(gbif_occurrences, "iter_zip_rows", lambda *a, **k: iter([]))
+    monkeypatch.setattr(gbif_occurrences, "iter_zip_rows", lambda *a, **k: iter([_GOOD_CSV_ROW]))
 
     gbif_occurrences.update_gbif_occurrences(GOLDEN_AOI)
 
@@ -223,11 +243,13 @@ def test_update_gbif_occurrences_downloads_zip_before_window_delete(monkeypatch)
             super().execute(stmt)
 
     aoi = gbif_occurrences.load_aoi(GOLDEN_AOI)
-    session = _OrderedSession(zone_ids=set())
+    session = _OrderedSession(zone_ids={"expected-zone"})
     monkeypatch.setattr(gbif_occurrences, "job_run", _fake_job_run_yielding(session))
+    monkeypatch.setattr(gbif_occurrences, "upsert", lambda *a, **k: None)
     monkeypatch.setattr(gbif_occurrences, "biowatch_now", lambda: date(2025, 1, 1))
     monkeypatch.setattr(gbif_occurrences, "load_aoi", lambda label: aoi)
-    _patch_download_pipeline(monkeypatch, [])
+    monkeypatch.setattr(gbif_occurrences, "point_to_h3_cell", lambda lat, lon, res: "expected-zone")
+    _patch_download_pipeline(monkeypatch, [_GOOD_CSV_ROW])
 
     def fake_download_zip(*a, **k):
         events.append("download")

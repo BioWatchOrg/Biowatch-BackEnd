@@ -29,7 +29,6 @@ logger = logging.getLogger(__name__)
 GBIF_API_BASE = "https://api.gbif.org/v1"
 GBIF_DOWNLOAD_REQUEST_URL = f"{GBIF_API_BASE}/occurrence/download/request"
 GBIF_DOWNLOAD_STATUS_URL = f"{GBIF_API_BASE}/occurrence/download"
-GBIF_DOWNLOAD_FILE_URL = f"{GBIF_API_BASE}/occurrence/download/request"
 
 GBIF_TIMEOUT_SECONDS = 30.0
 GBIF_POLL_INTERVAL_SECONDS = 30.0
@@ -199,7 +198,7 @@ def download_zip(
         with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
             tmp_path = Path(tmp.name)
             with http_client.stream(
-                "GET", f"{GBIF_DOWNLOAD_FILE_URL}/{key}", auth=auth
+                "GET", f"{GBIF_DOWNLOAD_REQUEST_URL}/{key}", auth=auth
             ) as response:
                 try:
                     response.raise_for_status()
@@ -234,7 +233,7 @@ def iter_zip_rows(zip_path: Path, key: str = "") -> Iterator[dict]:
             zf.open(names[0]) as raw,
             io.TextIOWrapper(raw, encoding="utf-8", newline="") as f,
         ):
-            reader = csv.DictReader(f, delimiter="	")
+            reader = csv.DictReader(f, delimiter="\t")
             yield from reader
 
 

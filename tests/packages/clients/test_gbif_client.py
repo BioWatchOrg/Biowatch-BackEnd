@@ -11,7 +11,6 @@ import pytest
 import shapely
 
 from clients.gbif.client import (
-    GBIF_DOWNLOAD_FILE_URL,
     GBIF_DOWNLOAD_REQUEST_URL,
     GBIF_DOWNLOAD_STATUS_URL,
     GbifApiError,
@@ -311,7 +310,7 @@ def test_stream_download_raises_on_http_error(monkeypatch, tmp_path):
         def raise_for_status(self):
             raise httpx.HTTPStatusError(
                 "404",
-                request=httpx.Request("GET", GBIF_DOWNLOAD_FILE_URL),
+                request=httpx.Request("GET", GBIF_DOWNLOAD_REQUEST_URL),
                 response=httpx.Response(404),
             )
 
@@ -382,7 +381,7 @@ def test_download_zip_leaves_no_temp_file_on_http_error(monkeypatch, tmp_path):
         def raise_for_status(self):
             raise httpx.HTTPStatusError(
                 "500",
-                request=httpx.Request("GET", GBIF_DOWNLOAD_FILE_URL),
+                request=httpx.Request("GET", GBIF_DOWNLOAD_REQUEST_URL),
                 response=httpx.Response(500),
             )
 

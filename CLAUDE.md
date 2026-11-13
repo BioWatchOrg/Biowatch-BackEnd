@@ -105,7 +105,7 @@ geo, clients   (dépendent seulement de core)
 scoring, sentinel   (dépendent de core + geo — PAS de clients, calcul pur)
 species            (dépend de core + geo + clients : ingestion GBIF, écrit en DB — voir ADR-005)
   ↑
-ml             (dépend de core, geo, clients, scoring)
+ml             (dépend de core, geo, clients, scoring — n'importe pas species)
 
 apps/api   → core, geo, clients   (jamais scoring, jamais ml, jamais species)
 apps/jobs  → tout (core, geo, clients, scoring, sentinel, ml, species)
