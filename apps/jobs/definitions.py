@@ -19,6 +19,7 @@ from core import load_aoi
 from geo import generate_h3_grid
 from species import update_gbif_occurrences
 
+from jobs.pipelines import update_iucn_taxonomy
 from jobs.pipelines.osm_import import osm_import_scheduled, osm_import_snapshot
 from jobs.registry import Job, register
 from jobs.sentinel import (
@@ -324,5 +325,18 @@ register(
         # 1 région par mois. Le 5 plutôt que le 1er : en janvier, le snapshot
         # Geofabrik du 1er janvier doit être publié avant qu'on le demande.
         schedule="*-*-05 03:00:00 Europe/Paris",
+    )
+)
+
+
+def _run_update_iucn_taxonomy(args: Namespace) -> None:
+    update_iucn_taxonomy()
+
+
+register(
+    Job(
+        name="update_iucn_taxonomy",
+        help="Importe la Red List IUCN (espèces de France) dans staging.iucn_taxa.",
+        run=_run_update_iucn_taxonomy,
     )
 )

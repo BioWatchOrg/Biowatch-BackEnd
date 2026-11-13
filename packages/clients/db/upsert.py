@@ -1,7 +1,7 @@
 from collections.abc import Sequence
 from typing import Any
 
-from sqlalchemy import inspect
+from sqlalchemy import ColumnDefault, inspect
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -33,6 +33,10 @@ def upsert(
         update_columns: columns to overwrite on conflict. Defaults to every
             non-primary-key column present, so the row is fully refreshed.
 
+    Columns declared with an ORM `onupdate` (e.g. `updated_at = func.now()`) and
+    absent from the rows are refreshed on conflict too: SQLAlchemy does not apply
+    `onupdate` to `ON CONFLICT DO UPDATE` by itself.
+
     Large row sets are automatically split into batches so a single statement
     never exceeds PostgreSQL's 65535-parameter limit.
 
@@ -54,6 +58,16 @@ def upsert(
             if col.name not in pk_columns and col.name in provided
         ]
 
+    # ORM `onupdate` defaults (SQL expressions only) for columns the rows don't set.
+    on_update = {
+        col.name: col.onupdate.arg
+        for col in mapper.columns
+        if isinstance(col.onupdate, ColumnDefault)
+        and col.onupdate.is_clause_element
+        and col.name not in pk_columns
+        and col.name not in update_columns
+    }
+
     # One bind parameter per column per row → cap rows so params stay under limit.
     params_per_row = max(len(row) for row in rows)
     batch_size = max(1, _MAX_BIND_PARAMS // params_per_row)
@@ -62,10 +76,9 @@ def upsert(
         batch = list(rows[start : start + batch_size])
         stmt = insert(model).values(batch)
         if update_columns:
-            stmt = stmt.on_conflict_do_update(
-                index_elements=pk_columns,
-                set_={col: stmt.excluded[col] for col in update_columns},
-            )
+            set_: dict[str, Any] = {col: stmt.excluded[col] for col in update_columns}
+            set_.update(on_update)
+            stmt = stmt.on_conflict_do_update(index_elements=pk_columns, set_=set_)
         else:
             # Nothing to update (rows carry only PK columns) → ignore duplicates.
             stmt = stmt.on_conflict_do_nothing(index_elements=pk_columns)

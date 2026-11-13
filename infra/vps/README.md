@@ -226,11 +226,12 @@ Les jobs écrivent leurs artefacts sous `BIOWATCH_DATA_ROOT/<env>` : dans
 
 | Fichier | Posé par | Contenu |
 |---|---|---|
-| `/etc/biowatch/jobs.env` | `60-jobs-deploy.sh` (#27) | `BIOWATCH_ENV=prod`, `BIOWATCH_DATA_ROOT=/var/lib/biowatch/jobs`, `LOG_LEVEL` |
+| `/etc/biowatch/jobs.env` | `60-jobs-deploy.sh` (#27) | `BIOWATCH_ENV=prod`, `BIOWATCH_DATA_ROOT=/var/lib/biowatch/jobs`, `LOG_LEVEL`, jetons des sources (`IUCN_API_TOKEN`, à renseigner à la main) |
 | `/etc/biowatch/db-jobs.env` | `55-postgres.sh` (#23) | `POSTGRES_*` du rôle `biowatch_jobs`, base `biowatch_prod` (le nom DOIT finir par `_prod`, sinon refus de connexion) |
 
 Les deux sont `root 600` : ne jamais mettre de `POSTGRES_*` dans `jobs.env`, ils
-seraient écrasés par ceux de #23.
+seraient écrasés par ceux de #23. Le modèle posé laisse les jetons vides : un job
+qui en a besoin s'arrête sur « jeton absent » tant qu'ils ne sont pas renseignés.
 
 Le code exige en plus la présence de **`/opt/biowatch/app/.env.prod`** pour
 démarrer en prod (`core.config.ENV_FILE_REQUIRED`). C'est un **marqueur**, posé
@@ -467,7 +468,7 @@ d'activer une release dont un fichier sortirait du groupe.
 
 Pourquoi un compte `biowatch-ci` en plus de `deploy` : donner une clé SSH, un
 shell et du sudo à `deploy` aurait cassé les invariants que
-`40-service-users.sh` prouve à chaque passage. Voir ADR-007.
+`40-service-users.sh` prouve à chaque passage. Voir ADR-008.
 
 L'identité et le bac à sable des jobs vivent dans **une seule unité**,
 `biowatch-job@.service` (`infra/systemd/`), installée par `60-jobs-deploy.sh`
