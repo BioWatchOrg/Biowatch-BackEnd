@@ -551,7 +551,7 @@ n'aurait alors plus de sens et devrait être remplacé par un signal propre à c
 
 ---
 
-## ADR-004 — Référentiel IUCN : API v4 par pays plutôt qu'export complet sur S3
+## ADR-006 — Référentiel IUCN : API v4 par pays plutôt qu'export complet sur S3
 
 **Statut** : actif
 
