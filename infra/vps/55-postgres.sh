@@ -9,7 +9,8 @@
 #   unité       biowatch-postgres.service (les jobs l'attendent par ce nom)
 #   base        biowatch_prod, extensions postgis + pgcrypto
 #   rôles       biowatch_admin (superuser, administration seulement)
-#               biowatch_jobs  (crée et écrit les tables métier)
+#               biowatch_jobs  (crée et écrit les tables métier, crée ses
+#                               schémas de staging : CREATE sur la base)
 #   secrets     générés ICI, sur le VPS, jamais dans le dépôt :
 #               /etc/biowatch/postgres.env  (superuser, root 600)
 #               /etc/biowatch/db-jobs.env   (rôle des jobs, root 600,
@@ -148,17 +149,30 @@ env_value() { sed -n "s/^$2=//p" "$1" | head -n1; }
 
 if (( DRY_RUN )); then
   dry "CREATE EXTENSION postgis, pgcrypto dans ${POSTGRES_DB_NAME}"
+  dry "resynchroniser le mot de passe de ${POSTGRES_ADMIN_USER} sur ${POSTGRES_ADMIN_ENV}"
   dry "créer ou mettre à jour le rôle ${POSTGRES_JOBS_USER} (LOGIN, mot de passe de ${POSTGRES_JOBS_ENV})"
-  dry "GRANT CONNECT sur ${POSTGRES_DB_NAME}, USAGE + CREATE sur le schéma public"
+  dry "GRANT CONNECT + CREATE sur ${POSTGRES_DB_NAME} (schémas de staging), USAGE + CREATE sur le schéma public"
 else
+  admin_password="$(env_value "$POSTGRES_ADMIN_ENV" POSTGRES_PASSWORD)"
   jobs_password="$(env_value "$POSTGRES_JOBS_ENV" POSTGRES_PASSWORD)"
-  [[ "$jobs_password" =~ ^[0-9a-f]{64}$ ]] \
-    || die "mot de passe inattendu dans ${POSTGRES_JOBS_ENV} (64 hexadécimaux attendus)"
-  # Le mot de passe passe par stdin (\set), jamais en argument : il
-  # apparaîtrait dans la liste des processus.
+  for pw in "$admin_password" "$jobs_password"; do
+    [[ "$pw" =~ ^[0-9a-f]{64}$ ]] \
+      || die "mot de passe inattendu dans ${POSTGRES_ADMIN_ENV} ou ${POSTGRES_JOBS_ENV} (64 hexadécimaux attendus)"
+  done
+  # Les mots de passe passent par stdin (\set), jamais en argument : ils
+  # apparaîtraient dans la liste des processus.
+  #
+  # Superutilisateur resynchronisé à chaque passage : l'image n'applique
+  # POSTGRES_PASSWORD qu'à la première initialisation du volume ; si
+  # postgres.env a été régénéré, la base garderait sinon l'ancien.
+  #
+  # CREATE sur la BASE (pas seulement sur public) : les jobs créent des
+  # schémas de staging (import OSM osm_tmp_*, IUCN), ce que CREATE SCHEMA exige.
   docker exec -i "$POSTGRES_CONTAINER" \
     psql -v ON_ERROR_STOP=1 -q -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB_NAME" <<SQL
+\\set admin_password '${admin_password}'
 \\set jobs_password '${jobs_password}'
+SELECT format('ALTER ROLE %I PASSWORD %L', '${POSTGRES_ADMIN_USER}', :'admin_password') \\gexec
 CREATE EXTENSION IF NOT EXISTS postgis;
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 SELECT format(
@@ -166,17 +180,17 @@ SELECT format(
        THEN 'ALTER ROLE %I LOGIN PASSWORD %L'
        ELSE 'CREATE ROLE %I LOGIN PASSWORD %L' END,
   '${POSTGRES_JOBS_USER}', :'jobs_password') \\gexec
-GRANT CONNECT ON DATABASE ${POSTGRES_DB_NAME} TO ${POSTGRES_JOBS_USER};
+GRANT CONNECT, CREATE ON DATABASE ${POSTGRES_DB_NAME} TO ${POSTGRES_JOBS_USER};
 GRANT USAGE, CREATE ON SCHEMA public TO ${POSTGRES_JOBS_USER};
 SQL
-  ok "extensions postgis + pgcrypto, rôle ${POSTGRES_JOBS_USER} à jour"
+  ok "extensions postgis + pgcrypto, rôles ${POSTGRES_ADMIN_USER} et ${POSTGRES_JOBS_USER} à jour"
 fi
 
 # ── Preuves ──────────────────────────────────────────────────────────────
 
 step "Vérifications"
 if (( DRY_RUN )); then
-  dry "prouver : 5432 lié à 127.0.0.1 uniquement, connexion de ${POSTGRES_JOBS_USER}, PostGIS actif"
+  dry "prouver : 5432 lié à 127.0.0.1 uniquement, connexion de ${POSTGRES_JOBS_USER}, PostGIS actif, création de schéma possible"
 else
   # Liaison : aucune écoute 5432 hors boucle locale (ni 0.0.0.0, ni [::]).
   exposed="$(ss -tlnH "( sport = :${POSTGRES_PORT} )" | awk '{print $4}' \
@@ -205,6 +219,13 @@ else
   result="$(host_psql "$(env_value "$POSTGRES_JOBS_ENV" POSTGRES_PASSWORD)" \
     "SELECT current_user || ' / ' || current_database() || ' / PostGIS ' || postgis_lib_version()")"
   ok "connexion par 127.0.0.1:${POSTGRES_PORT} : ${result}"
+
+  # Le rôle des jobs doit pouvoir créer un schéma (staging OSM / IUCN). Dans
+  # une transaction annulée : rien ne reste en base.
+  host_psql "$(env_value "$POSTGRES_JOBS_ENV" POSTGRES_PASSWORD)" \
+    "BEGIN; CREATE SCHEMA biowatch_grant_probe; ROLLBACK;" >/dev/null \
+    || die "${POSTGRES_JOBS_USER} ne peut pas créer de schéma (droit CREATE sur la base manquant)"
+  ok "${POSTGRES_JOBS_USER} peut créer un schéma (staging)"
 fi
 
 # ── Bilan ────────────────────────────────────────────────────────────────

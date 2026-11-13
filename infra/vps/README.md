@@ -377,7 +377,7 @@ Une seule base sur le VPS : **`biowatch_prod`**. La base de dev reste sur le pos
 | Démarrage | unité `biowatch-postgres.service` (attend `pg_isready`) |
 | Données | volume Docker `biowatch-postgres_pgdata` |
 | Superutilisateur | `biowatch_admin`, `/etc/biowatch/postgres.env` (root 600), administration seulement |
-| Rôle des jobs | `biowatch_jobs`, `/etc/biowatch/db-jobs.env` (root 600), crée et écrit les tables |
+| Rôle des jobs | `biowatch_jobs`, `/etc/biowatch/db-jobs.env` (root 600), crée et écrit les tables, crée ses schémas de staging (`CREATE` sur la base : import OSM, IUCN) |
 
 **Docker contourne UFW** pour les ports qu'il publie : c'est la liaison sur
 `127.0.0.1` dans `postgres/compose.yaml` qui garde le 5432 fermé. Ne jamais la retirer.
@@ -390,7 +390,8 @@ La preuve de connexion passe par le port publié, depuis l'hôte, comme l'applic
 mauvais mot de passe doit y être refusé. Un test `docker exec … psql` ne prouverait rien,
 l'image faisant confiance à `127.0.0.1` à l'intérieur du conteneur.
 
-Les mots de passe sont générés une seule fois, sur le VPS, et jamais régénérés quand on
+Les mots de passe des deux rôles sont réappliqués à la base à chaque passage (`ALTER ROLE`) : un fichier de secrets régénéré
+reste synchronisé avec la base. Les mots de passe sont générés une seule fois, sur le VPS, et jamais régénérés quand on
 rejoue le script (la base ne les reconnaîtrait plus). Rejouer le script ne coupe pas la
 base : le conteneur n'est recréé que si sa définition a changé.
 

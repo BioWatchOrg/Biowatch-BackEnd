@@ -161,7 +161,8 @@ POSTGRES_DB_NAME="biowatch_prod"
 # Superutilisateur : administration et extensions uniquement, jamais utilisé
 # par l'application.
 POSTGRES_ADMIN_USER="biowatch_admin"
-# Rôle des jobs : crée et écrit les tables métier (init_db, upsert).
+# Rôle des jobs : crée et écrit les tables métier (init_db, upsert) et ses
+# schémas de staging (CREATE sur la base : import OSM, IUCN).
 POSTGRES_JOBS_USER="biowatch_jobs"
 POSTGRES_PORT=5432
 POSTGRES_UNIT="biowatch-postgres"
