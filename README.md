@@ -39,16 +39,16 @@ créer soi-même `.env.prod` sur un laptop les contourne. La protection contre
 l'intention est réseau et PostgreSQL (DB jamais exposée, comptes, droits). Raisonnement
 complet dans `docs/architecture-decisions.md` (ADR-005).
 
-Les tokens d'outillage (Notion) restent dans `.env`, commun aux deux envs.
+Les secrets d'outillage (tokens Notion, compte GBIF) restent dans `.env`, commun aux deux envs.
 
 **Migration** (si tu avais déjà un `.env` avec `POSTGRES_*` / `LOG_LEVEL`) : ces
 variables ne sont plus lues depuis `.env`. Déplace-les dans `.env.dev` ; `.env`
-ne garde que les tokens Notion.
+ne garde que les tokens Notion et le compte GBIF.
 
 ### Setup (une fois)
 
 ```bash
-cp .env.example .env            # tokens Notion
+cp .env.example .env            # tokens Notion + compte GBIF
 cp .env.dev.example .env.dev    # config applicative dev
 # ⚠️ change POSTGRES_PASSWORD dans .env.dev AVANT le premier `up` :
 #    Postgres ne lit ces variables qu'à l'initialisation du volume.
@@ -68,6 +68,13 @@ docker compose -f infra/docker/docker-compose.yml up -d postgis
 uv run biowatch-jobs init_db
 # 3. enregistrer les h3 pour le MVP 
 uv run biowatch-jobs generate_h3_grid --aoi idf --resolution 8
+```
+Si le port 5432 est déjà pris localement (ex. un postgres natif) : ajoute
+`POSTGRES_HOST_PORT=5433` et `POSTGRES_PORT=5433` dans ton `.env`, puis lance
+avec `--env-file` explicite (la substitution `${POSTGRES_HOST_PORT}` du compose
+lit le `.env` du dossier courant, pas celui à côté du yml) :
+```bash
+docker compose -f infra/docker/docker-compose.yml --env-file .env up -d postgis
 ```
 2) see logs
 ```bash
@@ -115,7 +122,20 @@ TEST_DATABASE_URL=postgresql+psycopg://biowatch:<mot de passe de .env.dev>@127.0
     uv run biowatch-jobs --help # Pour voir les jobs disponibles 
     uv run biowatch-jobs <job> --help # Pour voir les arguments à mettre 
     uv run biowatch-jobs generate_h3_grid --aoi idf --resolution 5
+    uv run biowatch-jobs update_gbif_occurrences --aoi idf
 ````
+
+**Note sur `update_gbif_occurrences`** : Nécessite un compte GBIF (https://www.gbif.org) : ajoute `GBIF_USERNAME`
+et `GBIF_PASSWORD` dans `.env` avant de lancer ce job (voir
+`.env.example`). Ce job appelle l'API Download de GBIF (asynchrone) : il
+peut prendre plusieurs minutes selon le volume de l'AOI. Si la DB existante
+n'a pas encore le schéma `staging`, relancer `uv run biowatch-jobs init_db`
+avant.
+
+Volumétrie observée pour `idf` : ~4.34M lignes stockées, ~32 min au total
+(~18 min de préparation côté GBIF, hors contrôle de ce job, puis ~14 min
+d'insertion en base). Le flag `--debug` se place avant le nom du job :
+`uv run biowatch-jobs --debug update_gbif_occurrences --aoi idf`.
 
 ### Extraction Sentinel-2
 Indices NDVI / NDWI / NDBI / SWIR mensuels par cellule H3, calculés localement depuis les

@@ -572,9 +572,73 @@ n'aurait alors plus de sens et devrait être remplacé par un signal propre à c
 
 ---
 
+## ADR-006 — Package `species` : ingestion GBIF écrite en DB via `clients`
+
+**Statut** : actif
+
+**Contexte**
+
+L'ingestion des occurrences GBIF (téléchargement, filtre qualité, conversion H3, écriture dans
+`staging.species_occurrences_raw`) devait vivre quelque part. Deux options : tout orchestrer
+dans `apps/jobs` en ne laissant dans un package que du calcul pur (`quality_filter`,
+normalisation CSV), ou créer `packages/species` qui écrit lui-même en DB.
+
+**Décision**
+
+`packages/species` porte la logique métier biodiversité, y compris l'écriture via
+`packages/clients/db` (`job_run` + `upsert`). Il dépend de `core`, `geo` et `clients`, et se
+place au même niveau que `scoring` dans le graphe de dépendances. Contrairement à `scoring`
+(calcul pur), `species` est de l'ingestion : il a besoin de `clients`. `apps/api` ne l'importe
+jamais. Le graphe est mis à jour dans `CLAUDE.md`.
+
+**Pourquoi**
+
+- Éclater l'orchestration dans `apps/jobs` disperserait un seul pipeline (fetch → filtre →
+  H3 → upsert) sur deux modules, pour un gain d'isolation faible.
+- La logique pure reste testable séparément (`species.quality` n'a ni I/O ni DB).
+- Les futurs jobs biodiversité (agrégation `species_features_by_zone`) auront un point
+  d'entrée naturel.
+
+**Choix associés**
+
+- `staging.species_occurrences_raw` est une table de staging brute, hors liste des tables
+  métier : elle alimente `species_features_by_zone` et n'est pas exposée par l'API. PK composite
+  `(gbif_occurrence_id, aoi_id)` : un même enregistrement GBIF peut tomber dans deux AOI qui se
+  chevauchent.
+- Un seul download GBIF couvre toute la fenêtre glissante `[N-9, N]`. À chaque run, les lignes
+  de l'AOI dans la fenêtre sont supprimées puis réinsérées dans la même transaction
+  (all-or-nothing) : les corrections GBIF sont prises en compte. Les lignes antérieures à la
+  fenêtre ne sont **pas** purgées, l'historique est conservé.
+- `eventDate` au format intervalle ISO 8601 (`start/end`) : la date de début est retenue.
+
+**Limites assumées**
+
+- `download_key` n'est pas persistée : un retry après échec recrée un download GBIF (plusieurs
+  dizaines de minutes pour un gros AOI).
+- Écriture de plusieurs millions de lignes (≈ 4 M pour l'IDF) dans une seule transaction :
+  risque de volume de WAL et de durée de transaction.
+
+**Écart avec le modèle de l'ADR-004**
+
+L'ADR-004 pose comme modèle « un package de calcul pur par source, son job dans
+`apps/jobs/<source>/` ». `species` s'en écarte : l'orchestration (`job_run`, téléchargement,
+écriture en DB) vit dans le package, pas dans `apps/jobs`. Les deux placements sont viables.
+L'alternative alignée sur l'ADR-004 : ne garder dans `packages/species` que le calcul pur
+(`quality_filter`, `rolling_window`, normalisation CSV) et déplacer l'orchestration dans
+`apps/jobs/species/`. **À trancher en équipe avant merge** (modifie une règle forte du
+`CLAUDE.md`).
+
+**Remise en cause**
+
+À revoir si les retries deviennent fréquents (persister la clé dans `job_runs` et la réutiliser
+si le download est déjà `SUCCEEDED`), ou si la transaction unique pose problème en prod
+(découper par année).
+
+---
+
 ## ADR-007 — Déploiement des jobs : compte CI à commande forcée, timers générés depuis le registre
 
-**Statut** : actif (ADR-006 est réservé à la source IUCN, PR #97)
+**Statut** : actif
 
 **Contexte**
 

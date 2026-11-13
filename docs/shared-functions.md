@@ -125,6 +125,31 @@ packages (voir CLAUDE.md, "Documentation").
   `SatelliteFeaturesByZone`, `OsmFeaturesByZone`, `ProtectedAreasByZone`,
   `SpeciesFeaturesByZone`, `StressScoreByZone`, `JobRun`, `JobRunZoneError`.
 
+### `clients.gbif` (client HTTP GBIF Occurrence Download API — aucune logique métier)
+- `load_gbif_credentials() -> GbifCredentials` — lit `GBIF_USERNAME`/`GBIF_PASSWORD` depuis
+  l'env (compte GBIF requis, voir `.env.example`). `GbifCredentials.auth -> httpx.BasicAuth`
+  (propriété, reconstruite à chaque accès). `password` en `field(repr=False)` : ne fuite jamais
+  via un `repr()`/`logger.debug()` accidentel.
+- `geometry_to_gbif_wkt(geom) -> str` — WKT de l'enveloppe convexe de `geom`, anneau extérieur
+  **anti-horaire** (GBIF rejette l'anneau horaire que renvoie `convex_hull` de Shapely, erreur
+  400). Pure.
+- `build_predicate(geometry_wkt, date_min, date_max) -> dict` — prédicat GBIF (géométrie +
+  plage de dates complète en un seul prédicat, pas de boucle par année). Pure.
+- `request_download(predicate, creator, auth, client=None) -> str` — `POST
+  /occurrence/download/request`, retourne la clé du download.
+- `wait_for_download(key, auth, client=None) -> None` — poll le statut jusqu'à `SUCCEEDED`,
+  lève sur échec/`GBIF_POLL_TIMEOUT_SECONDS` dépassé (`GbifDownloadTimeoutError`).
+- `download_zip(key, auth, client=None) -> Path` — télécharge le zip fini vers un fichier
+  temporaire (écrit par chunks, jamais en mémoire) et retourne son chemin. L'appelant le
+  supprime ; supprimé automatiquement si le téléchargement échoue.
+- `iter_zip_rows(zip_path, key="") -> Iterator[dict]` — parse en streaming le fichier TSV du zip,
+  un dict par ligne. Ne supprime pas le zip.
+- `stream_download(key, auth, client=None) -> Iterator[dict]` — composition des deux ci-dessus,
+  supprime le fichier à la fin (le téléchargement ne démarre qu'au premier `next()`). Télécharge le résultat (zip
+  GBIF — **jamais gzip brut**, même si un format compressé est demandé, confirmé contre l'API
+  réelle) et le parse en streaming (fichier temporaire sur disque, un dict par ligne CSV) — le
+  fichier entier n'est jamais tenu en mémoire.
+- Exceptions : `GbifApiError`, `GbifDownloadTimeoutError` (sous-classe de `GbifApiError`).
 ### `clients.osm` (Geofabrik + osm2pgsql)
 - `snapshot_for(aoi_label, bucket) -> Snapshot` — URLs Geofabrik du snapshot au 1er janvier
   d'un bucket annuel (`"2016"` → `*-160101.osm.pbf`) et `source_version`
@@ -281,6 +306,30 @@ Exportées depuis `geo` (niveau 3) : utilisées par le job d'extraction Sentinel
   AOI du registre (pure, sans DB — testée par golden fingerprint).
 - `generate_h3_grid(aoi_label, resolution=None, engine=None) -> None` — génère et persiste la
   grille dans `zones_hex` via `job_run` + `upsert`.
+- `point_to_h3_cell(lat, lon, resolution) -> H3Cell` — inverse de `compute_h3_cells` : place un
+  point externe (ex. une occurrence GBIF) sur la même grille H3 que `zones_hex`. Pure, sans DB.
+
+---
+
+## packages/species
+
+Logique métier biodiversité — dépend de `core`, `geo`, `clients` (ingestion + écriture DB,
+pas un calcul pur comme `scoring`). Jamais importé par `apps/api`.
+
+### `species.quality`
+- `quality_filter(record, date_min, date_max) -> dict | None` — pure, sans I/O. Valide/normalise
+  un enregistrement GBIF brut (coordonnées valides, `eventDate` dans `[date_min, date_max]`) ;
+  `None` si rejeté. Agnostique de la source GBIF (Search API vs Download API) : attend déjà le
+  dict normalisé, voir `species.gbif_occurrences._normalize_csv_row`.
+
+### `species.gbif_occurrences` (job, pas une fonction pure — accède à la DB + réseau GBIF)
+- `update_gbif_occurrences(aoi_label, engine=None) -> None` — récupère les occurrences GBIF
+  d'une AOI sur une fenêtre glissante de 10 ans (un seul `clients.gbif` download par run),
+  filtre (`quality_filter`), convertit en `zone_id` (`geo.point_to_h3_cell`), stocke dans
+  `staging.species_occurrences_raw` via `job_run` + `upsert`. Remplace les lignes de la fenêtre
+  refetchée à chaque run (garde l'historique hors fenêtre).
+- `rolling_window(current_year) -> tuple[date, date]` — pure : `(date_min, date_max)` pour la
+  fenêtre de 10 ans se terminant à `current_year`.
 
 ---
 
