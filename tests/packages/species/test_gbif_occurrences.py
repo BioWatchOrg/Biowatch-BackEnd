@@ -399,7 +399,8 @@ def test_replaces_rows_within_refetched_window_scoped_to_aoi(monkeypatch):
     aoi = gbif_occurrences.load_aoi(GOLDEN_AOI)
     monkeypatch.setattr(gbif_occurrences, "load_aoi", lambda label: _force_default_res(aoi, 5))
     monkeypatch.setattr(gbif_occurrences, "biowatch_now", lambda: date(2025, 1, 1))
-    _patch_download_pipeline(monkeypatch, [])  # no new fetch needed for this test
+    # One fresh in-window record: the job refuses to replace a window with 0 rows.
+    _patch_download_pipeline(monkeypatch, [{**_GOOD_CSV_ROW, "gbifID": "fresh"}])
 
     with engine.begin() as conn:
         conn.execute(
@@ -443,7 +444,8 @@ def test_replaces_rows_within_refetched_window_scoped_to_aoi(monkeypatch):
     with engine.connect() as conn:
         remaining_ids = set(conn.scalars(select(SpeciesOccurrencesRaw.gbif_occurrence_id)).all())
 
-    assert remaining_ids == {"out-of-window", "other-aoi-old"}
+    # "in-window" was replaced by the fresh fetch; history and other AOIs untouched.
+    assert remaining_ids == {"fresh", "out-of-window", "other-aoi-old"}
 
 
 @pytest.mark.skipif(
@@ -578,7 +580,7 @@ def test_update_gbif_occurrences_new_run_when_resolution_changes(monkeypatch):
 
     aoi = gbif_occurrences.load_aoi(GOLDEN_AOI)
     monkeypatch.setattr(gbif_occurrences, "biowatch_now", lambda: date(2025, 1, 1))
-    _patch_download_pipeline(monkeypatch, [])
+    _patch_download_pipeline(monkeypatch, [_GOOD_CSV_ROW])  # 0 rows would be refused
 
     monkeypatch.setattr(gbif_occurrences, "load_aoi", lambda label: _force_default_res(aoi, 5))
     gbif_occurrences.update_gbif_occurrences(GOLDEN_AOI, engine=engine)
