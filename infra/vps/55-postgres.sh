@@ -11,10 +11,13 @@
 #   rôles       biowatch_admin (superuser, administration seulement)
 #               biowatch_jobs  (crée et écrit les tables métier, crée ses
 #                               schémas de staging : CREATE sur la base)
+#               biowatch_api   (lecture seule des tables de public, #29)
 #   secrets     générés ICI, sur le VPS, jamais dans le dépôt :
 #               /etc/biowatch/postgres.env  (superuser, root 600)
 #               /etc/biowatch/db-jobs.env   (rôle des jobs, root 600,
 #                                            EnvironmentFile= des jobs)
+#               /etc/biowatch/db-api.env    (rôle de l'API, root 600,
+#                                            EnvironmentFile= de l'API)
 #
 # Ne touche ni à SSH ni à UFW. Docker contourne UFW pour les ports qu'il
 # publie : c'est la liaison sur 127.0.0.1 qui protège le 5432, et le script le
@@ -125,6 +128,15 @@ POSTGRES_DB=${POSTGRES_DB_NAME}
 POSTGRES_HOST=127.0.0.1
 POSTGRES_PORT=${POSTGRES_PORT}"
 
+ensure_secret_file "$POSTGRES_API_ENV" "\
+# Connexion de l'API à la base de prod (#29), en LECTURE SEULE. Lu par systemd
+# (EnvironmentFile=) avant le changement d'identité : biowatch-api ne peut pas le lire.
+POSTGRES_USER=${POSTGRES_API_USER}
+POSTGRES_PASSWORD=$(openssl rand -hex 32)
+POSTGRES_DB=${POSTGRES_DB_NAME}
+POSTGRES_HOST=127.0.0.1
+POSTGRES_PORT=${POSTGRES_PORT}"
+
 # ── Conteneur et unité ───────────────────────────────────────────────────
 
 step "Conteneur PostgreSQL + PostGIS"
@@ -140,9 +152,9 @@ run systemctl enable --now "${POSTGRES_UNIT}.service"
 run docker compose -f "$COMPOSE_FILE" up -d --wait
 done_ok "${POSTGRES_UNIT}.service actif, base prête"
 
-# ── Extensions et rôle des jobs ──────────────────────────────────────────
+# ── Extensions et rôles ──────────────────────────────────────────────────
 
-step "Extensions et rôle ${POSTGRES_JOBS_USER}"
+step "Extensions et rôles"
 
 # Lit une variable d'un fichier KEY=value sans le sourcer.
 env_value() { sed -n "s/^$2=//p" "$1" | head -n1; }
@@ -151,13 +163,17 @@ if (( DRY_RUN )); then
   dry "CREATE EXTENSION postgis, pgcrypto dans ${POSTGRES_DB_NAME}"
   dry "resynchroniser le mot de passe de ${POSTGRES_ADMIN_USER} sur ${POSTGRES_ADMIN_ENV}"
   dry "créer ou mettre à jour le rôle ${POSTGRES_JOBS_USER} (LOGIN, mot de passe de ${POSTGRES_JOBS_ENV})"
-  dry "GRANT CONNECT + CREATE sur ${POSTGRES_DB_NAME} (schémas de staging), USAGE + CREATE sur le schéma public"
+  dry "GRANT CONNECT + CREATE + TEMPORARY sur ${POSTGRES_DB_NAME} (schémas de staging), USAGE + CREATE sur le schéma public"
+  dry "créer ou mettre à jour le rôle ${POSTGRES_API_USER} (LOGIN, mot de passe de ${POSTGRES_API_ENV})"
+  dry "${POSTGRES_API_USER} : CONNECT, USAGE sur public, SELECT sur ses tables (+ privilèges par défaut de ${POSTGRES_JOBS_USER})"
+  dry "REVOKE ALL ON DATABASE ${POSTGRES_DB_NAME} FROM PUBLIC (seuls les rôles prévus s'y connectent)"
 else
   admin_password="$(env_value "$POSTGRES_ADMIN_ENV" POSTGRES_PASSWORD)"
   jobs_password="$(env_value "$POSTGRES_JOBS_ENV" POSTGRES_PASSWORD)"
-  for pw in "$admin_password" "$jobs_password"; do
+  api_password="$(env_value "$POSTGRES_API_ENV" POSTGRES_PASSWORD)"
+  for pw in "$admin_password" "$jobs_password" "$api_password"; do
     [[ "$pw" =~ ^[0-9a-f]{64}$ ]] \
-      || die "mot de passe inattendu dans ${POSTGRES_ADMIN_ENV} ou ${POSTGRES_JOBS_ENV} (64 hexadécimaux attendus)"
+      || die "mot de passe inattendu dans un fichier de ${SERVICE_CONFIG_DIR} (64 hexadécimaux attendus)"
   done
   # Les mots de passe passent par stdin (\set), jamais en argument : ils
   # apparaîtraient dans la liste des processus.
@@ -172,6 +188,7 @@ else
     psql -v ON_ERROR_STOP=1 -q -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB_NAME" <<SQL
 \\set admin_password '${admin_password}'
 \\set jobs_password '${jobs_password}'
+\\set api_password '${api_password}'
 SELECT format('ALTER ROLE %I PASSWORD %L', '${POSTGRES_ADMIN_USER}', :'admin_password') \\gexec
 CREATE EXTENSION IF NOT EXISTS postgis;
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
@@ -180,10 +197,29 @@ SELECT format(
        THEN 'ALTER ROLE %I LOGIN PASSWORD %L'
        ELSE 'CREATE ROLE %I LOGIN PASSWORD %L' END,
   '${POSTGRES_JOBS_USER}', :'jobs_password') \\gexec
-GRANT CONNECT, CREATE ON DATABASE ${POSTGRES_DB_NAME} TO ${POSTGRES_JOBS_USER};
+SELECT format(
+  CASE WHEN EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${POSTGRES_API_USER}')
+       THEN 'ALTER ROLE %I LOGIN PASSWORD %L'
+       ELSE 'CREATE ROLE %I LOGIN PASSWORD %L' END,
+  '${POSTGRES_API_USER}', :'api_password') \\gexec
+-- Par défaut, PostgreSQL laisse TOUT rôle se connecter à une base et y créer
+-- des tables temporaires (droits de PUBLIC). On les retire : seuls les rôles
+-- prévus ci-dessous s'y connectent.
+REVOKE ALL ON DATABASE ${POSTGRES_DB_NAME} FROM PUBLIC;
+-- Jobs : lecture/écriture, tables métier et schémas de staging.
+GRANT CONNECT, CREATE, TEMPORARY ON DATABASE ${POSTGRES_DB_NAME} TO ${POSTGRES_JOBS_USER};
 GRANT USAGE, CREATE ON SCHEMA public TO ${POSTGRES_JOBS_USER};
+-- API : lecture seule de public. Aucun CREATE, aucun accès aux schémas de
+-- staging (pas de USAGE dessus). Les tables sont créées par les jobs
+-- (init_db) : les privilèges par défaut sont posés POUR CE RÔLE, sinon une
+-- table créée plus tard ne serait pas lisible par l'API.
+GRANT CONNECT ON DATABASE ${POSTGRES_DB_NAME} TO ${POSTGRES_API_USER};
+GRANT USAGE ON SCHEMA public TO ${POSTGRES_API_USER};
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO ${POSTGRES_API_USER};
+ALTER DEFAULT PRIVILEGES FOR ROLE ${POSTGRES_JOBS_USER} IN SCHEMA public
+  GRANT SELECT ON TABLES TO ${POSTGRES_API_USER};
 SQL
-  ok "extensions postgis + pgcrypto, rôles ${POSTGRES_ADMIN_USER} et ${POSTGRES_JOBS_USER} à jour"
+  ok "extensions postgis + pgcrypto, rôles ${POSTGRES_ADMIN_USER}, ${POSTGRES_JOBS_USER} et ${POSTGRES_API_USER} à jour"
 fi
 
 # ── Preuves ──────────────────────────────────────────────────────────────
@@ -191,6 +227,7 @@ fi
 step "Vérifications"
 if (( DRY_RUN )); then
   dry "prouver : 5432 lié à 127.0.0.1 uniquement, connexion de ${POSTGRES_JOBS_USER}, PostGIS actif, création de schéma possible"
+  dry "prouver : ${POSTGRES_API_USER} lit les tables des jobs, et se voit refuser écriture, création et staging"
 else
   # Liaison : aucune écoute 5432 hors boucle locale (ni 0.0.0.0, ni [::]).
   exposed="$(ss -tlnH "( sport = :${POSTGRES_PORT} )" | awk '{print $4}' \
@@ -207,11 +244,15 @@ else
   image="$(docker inspect -f '{{.Config.Image}}' "$POSTGRES_CONTAINER")"
   # Mot de passe transmis par l'environnement (-e sans valeur), jamais en
   # argument : il apparaîtrait dans la liste des processus.
-  host_psql() {
-    PGPASSWORD="$1" docker run --rm --network host -e PGPASSWORD "$image" \
-      psql -h 127.0.0.1 -p "$POSTGRES_PORT" -U "$POSTGRES_JOBS_USER" -d "$POSTGRES_DB_NAME" \
-      -tA -c "$2"
+  # as_role <rôle> <mot de passe> <SQL>
+  as_role() {
+    PGPASSWORD="$2" docker run --rm --network host -e PGPASSWORD "$image" \
+      psql -h 127.0.0.1 -p "$POSTGRES_PORT" -U "$1" -d "$POSTGRES_DB_NAME" \
+      -v ON_ERROR_STOP=1 -tA -c "$3"
   }
+  jobs_pw="$(env_value "$POSTGRES_JOBS_ENV" POSTGRES_PASSWORD)"
+  api_pw="$(env_value "$POSTGRES_API_ENV" POSTGRES_PASSWORD)"
+  host_psql() { as_role "$POSTGRES_JOBS_USER" "$@"; }
   # Seul un refus D'AUTHENTIFICATION prouve quelque chose : un échec pour une
   # autre cause (image absente, port injoignable) ne doit pas passer pour un
   # succès du test.
@@ -231,6 +272,40 @@ else
     "BEGIN; CREATE SCHEMA biowatch_grant_probe; ROLLBACK;" >/dev/null \
     || die "${POSTGRES_JOBS_USER} ne peut pas créer de schéma (droit CREATE sur la base manquant)"
   ok "${POSTGRES_JOBS_USER} peut créer un schéma (staging)"
+
+  # Droits de l'API (#29), prouvés sur de vrais objets créés par les jobs :
+  # une table de public créée APRÈS la pose des droits (privilèges par défaut)
+  # et une table dans un schéma de staging. Nettoyés en fin de vérification ;
+  # un reste éventuel (échec en cours de route) est supprimé au passage suivant.
+  probe_cleanup="DROP TABLE IF EXISTS public.biowatch_priv_probe;
+DROP SCHEMA IF EXISTS biowatch_staging_probe CASCADE;"
+  as_role "$POSTGRES_JOBS_USER" "$jobs_pw" "$probe_cleanup" >/dev/null
+  as_role "$POSTGRES_JOBS_USER" "$jobs_pw" "CREATE TABLE public.biowatch_priv_probe (i int);
+INSERT INTO public.biowatch_priv_probe VALUES (1);
+CREATE SCHEMA biowatch_staging_probe;
+CREATE TABLE biowatch_staging_probe.t (i int);" >/dev/null
+
+  [[ "$(as_role "$POSTGRES_API_USER" "$api_pw" "SELECT count(*) FROM public.biowatch_priv_probe")" == "1" ]] \
+    || die "${POSTGRES_API_USER} ne lit pas une table créée par ${POSTGRES_JOBS_USER} (privilèges par défaut)"
+  ok "${POSTGRES_API_USER} lit les tables créées par les jobs, même après coup"
+
+  denied() { ! as_role "$POSTGRES_API_USER" "$api_pw" "$1" >/dev/null 2>&1; }
+  denied "INSERT INTO public.biowatch_priv_probe VALUES (2)" \
+    || die "${POSTGRES_API_USER} peut écrire (INSERT) : il doit être en lecture seule"
+  denied "UPDATE public.biowatch_priv_probe SET i = 3" \
+    || die "${POSTGRES_API_USER} peut modifier (UPDATE) : il doit être en lecture seule"
+  denied "DELETE FROM public.biowatch_priv_probe" \
+    || die "${POSTGRES_API_USER} peut supprimer (DELETE) : il doit être en lecture seule"
+  denied "CREATE TABLE public.biowatch_api_probe (i int)" \
+    || die "${POSTGRES_API_USER} peut créer une table : il doit être en lecture seule"
+  denied "CREATE SCHEMA biowatch_api_probe" \
+    || die "${POSTGRES_API_USER} peut créer un schéma : il doit être en lecture seule"
+  denied "SELECT count(*) FROM biowatch_staging_probe.t" \
+    || die "${POSTGRES_API_USER} lit un schéma de staging : il ne doit voir que public"
+  ok "${POSTGRES_API_USER} refusé en écriture, création et staging (lecture seule de public)"
+
+  as_role "$POSTGRES_JOBS_USER" "$jobs_pw" "$probe_cleanup" >/dev/null
+  ok "objets de vérification supprimés"
 fi
 
 # ── Bilan ────────────────────────────────────────────────────────────────
@@ -246,6 +321,12 @@ Depuis ton poste, la preuve que le port reste fermé :
 Pour les jobs (#27), dans leur unité systemd :
 
     EnvironmentFile=${POSTGRES_JOBS_ENV}
+    After=${POSTGRES_UNIT}.service
+    Wants=${POSTGRES_UNIT}.service
+
+Pour l'API (#29), dans son unité systemd :
+
+    EnvironmentFile=${POSTGRES_API_ENV}
     After=${POSTGRES_UNIT}.service
     Wants=${POSTGRES_UNIT}.service
 
