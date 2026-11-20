@@ -20,6 +20,11 @@ SSH_PORT_LEGACY=22
 # d'accès SSH, sans qu'on ait à y penser.
 SSH_GROUP="biowatch-ssh"
 
+# Second groupe admis par AllowGroups : le seul compte de déploiement de la CI
+# (#27). Ses clés sont restreintes à une commande forcée (pas de shell, pas de
+# tunnel) : le groupe ne donne accès qu'au déploiement, jamais à une session.
+SSH_CI_GROUP="biowatch-ci"
+
 # --- Comptes -----------------------------------------------------------------
 
 # Comptes à créer. Une clé publique keys/<login>.pub DOIT exister pour
@@ -80,7 +85,34 @@ SERVICE_CONFIG_DIR="/etc/biowatch"      # secrets        root 700, lus par syste
 # Groupes qui donnent root (sudo, docker, lxd), la lecture des logs système
 # (adm) ou un accès SSH. Aucun compte de service ne doit y figurer :
 # 40-service-users.sh refuse de terminer s'il en trouve un.
-SERVICE_FORBIDDEN_GROUPS=(sudo adm docker lxd "$SSH_GROUP")
+SERVICE_FORBIDDEN_GROUPS=(sudo adm docker lxd "$SSH_GROUP" "$SSH_CI_GROUP")
+
+# --- Déploiement des jobs (#27) ---------------------------------------------
+
+# Compte utilisé par la CI pour déployer. Distinct de DEPLOY_ACCOUNT : deploy
+# garde les garanties prouvées par 40-service-users.sh (nologin, aucune clé,
+# aucun sudo). biowatch-ci n'a qu'une clé à commande forcée et deux règles
+# sudo : lancer biowatch-release en tant que deploy, et
+# biowatch-install-timers en root.
+CI_ACCOUNT="biowatch-ci"
+# Clé publique de la CI. La clé privée vit UNIQUEMENT dans les secrets GitHub.
+CI_KEY_FILE="keys/ci/${CI_ACCOUNT}.pub"
+
+RELEASES_DIR="${APP_DIR}/releases"   # une release par commit   deploy:biowatch 2750
+APP_CURRENT="${APP_DIR}/app"         # lien symbolique → releases/<sha>
+PYTHON_DIR="${APP_DIR}/python"       # interpréteurs installés par uv, lisibles par biowatch
+RELEASES_KEPT=5                      # releases conservées pour un retour arrière
+
+# uv, épinglé : une nouvelle version ne doit pas changer la construction des
+# releases sans passer par une PR.
+UV_VERSION="0.13.6"
+UV_BIN="/usr/local/bin/uv"
+
+SBIN_DIR="/usr/local/sbin"
+JOBS_ENV_FILE="${SERVICE_CONFIG_DIR}/jobs.env"         # réglages des jobs (#27)
+JOBS_DB_ENV_FILE="${SERVICE_CONFIG_DIR}/db-jobs.env"   # identifiants DB, posé par 55-postgres.sh (#23)
+JOBS_UNIT_TEMPLATE="/etc/systemd/system/biowatch-job@.service"
+SUDOERS_CI_FILE="/etc/sudoers.d/91-biowatch-ci"
 
 # --- Firewall ----------------------------------------------------------------
 

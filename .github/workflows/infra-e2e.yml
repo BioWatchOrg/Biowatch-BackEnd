@@ -1,0 +1,36 @@
+name: Infra e2e
+
+# Test de bout en bout du déploiement des jobs (#27) : rejoue sur un Ubuntu
+# 26.04 jetable 40-service-users.sh, 60-jobs-deploy.sh, des déploiements par un
+# vrai sshd, des retours arrière, des manifestes hostiles et les droits sudo.
+# Voir infra/vps/tests/e2e-deploy.sh.
+#
+# Pas un check requis : le filtre de chemins sur `on:` est donc sans risque de
+# laisser un check « pending » indéfiniment (cf. lint.yml / test.yml).
+
+on:
+  pull_request:
+    paths:
+      - "infra/**"
+      - "apps/jobs/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/infra-e2e.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # Le script crée des comptes, réécrit sshd et remplace systemctl : il ne
+      # tourne QUE dans ce conteneur, dépôt monté en lecture seule.
+      - name: Déploiement des jobs de bout en bout
+        run: |
+          docker run --rm -e BIOWATCH_E2E=1 -v "$PWD:/src:ro" ubuntu:26.04 \
+            bash /src/infra/vps/tests/e2e-deploy.sh /src

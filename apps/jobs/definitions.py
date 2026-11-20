@@ -6,11 +6,16 @@ sous-commande CLI vers une fonction de `packages/*` ou d'un pipeline de
 `job_run(...)` restent gérés dans la fonction métier appelée.
 
 Importer ce module a pour effet de peupler le registre (`register(...)`).
+
+Chaque job déclare sa fréquence de lancement (`schedule`, voir `jobs.registry`) :
+c'est elle qui génère son timer systemd en prod. `None` = lancé à la main. Ne
+planifier un job que si sa documentation fixe la fréquence.
 """
 
 from argparse import ArgumentParser, Namespace
 
 from clients import DEFAULT_IO_THREADS, init_db
+from core import load_aoi
 from geo import generate_h3_grid
 from species import update_gbif_occurrences
 
@@ -50,6 +55,8 @@ register(
         help="Génère la grille H3 d'une AOI et la persiste dans zones_hex.",
         run=_run_generate_h3_grid,
         configure=_configure_generate_h3_grid,
+        # Lancé à la main, une fois par AOI : la grille ne change que si l'AOI change.
+        schedule=None,
     )
 )
 
@@ -88,6 +95,8 @@ register(
         name="init_db",
         help="Initialise le schéma de la base clients (extensions + tables).",
         run=_run_init_db,
+        # Lancé à la main après un déploiement qui modifie le schéma.
+        schedule=None,
     )
 )
 
@@ -146,6 +155,44 @@ register(
         help="Calcule les indices Sentinel-2 mensuels d'une AOI (Planetary Computer, ADR-004).",
         run=_run_extract_sentinel,
         configure=_configure_extract_sentinel,
+        # Lancé à la main (un mois, une AOI au choix). Le run mensuel planifié
+        # est extract_sentinel_monthly, ci-dessous.
+        schedule=None,
+    )
+)
+
+
+# AOI du run mensuel planifié : choix produit, pas un défaut technique.
+SENTINEL_MONTHLY_AOI = "idf"
+
+
+def _run_extract_sentinel_monthly(args: Namespace) -> None:
+    # Un job planifié est lancé sans argument : ses paramètres sont fixés ici.
+    # Mois précédent (bucket_id=None), et la résolution de référence de l'AOI
+    # (`default_res` du registre des AOI) plutôt qu'une copie qui divergerait.
+    _run_extract_sentinel(
+        Namespace(
+            aoi=SENTINEL_MONTHLY_AOI,
+            bucket_id=None,
+            h3_res=load_aoi(SENTINEL_MONTHLY_AOI).default_res,
+            source_version=EXTRACTION_PIPELINE_VERSION,
+            io_threads=DEFAULT_IO_THREADS,
+        )
+    )
+
+
+register(
+    Job(
+        name="extract_sentinel_monthly",
+        help="Run mensuel planifié : extract_sentinel sur l'AOI idf pour le mois précédent.",
+        run=_run_extract_sentinel_monthly,
+        # ADR-004 : chaque nuit du 5 au 10. Le 5 laisse au catalogue le temps
+        # d'ingérer les dernières images du mois ; les nuits suivantes servent de
+        # retry (un mois déjà en success est sauté par l'idempotence de job_run).
+        schedule="*-*-05..10 01:30:00 Europe/Paris",
+        # Pic mesuré ~1,8 Go pour l'IDF (#99) : au-delà, le noyau tue ce job,
+        # jamais PostgreSQL ni l'API.
+        memory_max="2200M",
     )
 )
 
@@ -217,6 +264,8 @@ register(
         help="Extrait les indices Sentinel-2 mois par mois sur une plage (reprise automatique).",
         run=_run_backfill_sentinel,
         configure=_configure_backfill_sentinel,
+        # Historique 2016 → aujourd'hui (25 à 35 h) : lancé à la main, hors VPS.
+        schedule=None,
     )
 )
 
@@ -250,6 +299,7 @@ register(
         help="Importe un snapshot OSM (Geofabrik) d'une AOI dans osm_tmp_{aoi}_{bucket}_{clé}.",
         run=_run_osm_import_snapshot,
         configure=_configure_osm_import_snapshot,
+        schedule=None,
     )
 )
 
@@ -272,6 +322,9 @@ register(
         help="Job planifié (mensuel) : importe la prochaine région OSM pas encore importée.",
         run=_run_osm_import_scheduled,
         configure=_configure_osm_import_scheduled,
+        # 1 région par mois. Le 5 plutôt que le 1er : en janvier, le snapshot
+        # Geofabrik du 1er janvier doit être publié avant qu'on le demande.
+        schedule="*-*-05 03:00:00 Europe/Paris",
     )
 )
 

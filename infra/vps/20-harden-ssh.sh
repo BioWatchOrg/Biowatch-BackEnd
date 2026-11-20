@@ -130,10 +130,11 @@ PermitRootLogin no
 PubkeyAuthentication yes
 PermitEmptyPasswords no
 
-# Seuls les membres du groupe entrent. Les comptes de service de #25
-# (biowatch-api, biowatch-jobs, deploy) n'auront jamais d'accès SSH sans
-# qu'aucune règle supplémentaire soit nécessaire.
-AllowGroups ${SSH_GROUP}
+# Seuls les membres du groupe entrent, plus le compte de déploiement de la
+# CI (#27), dont la clé est restreinte à une commande forcée. Les comptes de
+# service de #25 (biowatch-api, biowatch-jobs, deploy) n'auront jamais
+# d'accès SSH sans qu'aucune règle supplémentaire soit nécessaire.
+AllowGroups ${SSH_GROUP} ${SSH_CI_GROUP}
 
 MaxAuthTries 3
 LoginGraceTime 30
