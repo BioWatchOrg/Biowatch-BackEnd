@@ -156,6 +156,24 @@ Ordre de grandeur (IDF, résolution 8, ~18 300 cellules) : 12 à 18 min et ~1,8 
 mois. Relancer un mois déjà réussi ne fait rien (idempotence) ; une tuile illisible est
 enregistrée dans `job_run_zone_errors` pour ses cellules.
 
+### Aires protégées (Natura 2000, réserves naturelles, ZNIEFF I)
+Part de chaque cellule H3 couverte par chaque type d'aire protégée, depuis les archives de
+l'INPN (voir ADR-009 dans `docs/architecture-decisions.md`). Résultat dans
+`protected_areas_by_zone`. La grille H3 de l'AOI doit exister, à la même résolution.
+```bash
+uv run biowatch-jobs update_protected_areas --aoi idf                   # les trois types
+uv run biowatch-jobs update_protected_areas --aoi idf --type reserve    # un seul
+```
+Ordre de grandeur (IDF, résolution 8) : moins d'une minute et ~300 Mo de RAM pour les trois
+types (~590 Mo téléchargés puis supprimés). Une archive inchangée est sautée après un simple
+`HEAD`. Planifié le 12 de chaque mois (`update_protected_areas_monthly`).
+
+Pour lire l'état d'un type, prendre sa `source_version` **la plus récente** (elle porte les
+lignes ouvertes et les lignes fermées), puis filtrer sur `valid_from` / `valid_to`.
+
+Si une nouvelle édition ferait disparaître plus de 20 % des zones d'un type, le run échoue
+sans rien écrire (archive tronquée ?). Si la baisse est réelle : `--max_closed_share 1`.
+
 ### Backfill Sentinel-2 (historique)
 Enchaîne le job mois par mois. Relancer la même commande reprend là où elle s'est arrêtée
 (les mois déjà réussis sont sautés). Compter 25 à 35 h pour l'IDF depuis 2016 : à lancer

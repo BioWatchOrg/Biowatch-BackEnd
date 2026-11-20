@@ -44,6 +44,7 @@ from .metrics import (
     SRID_WGS84,  # EPSG 4326 (WGS84, degrés, SRID de stockage/échange)
     MetricsError,  # erreur de calcul de métrique géométrique (surface/longueur)
     length_m,  # longueur réelle en mètres d'une géométrie
+    reproject,  # géométrie d'un SRID vers un autre (défaut : WGS84 -> Lambert-93)
 )
 
 __all__ = [
@@ -67,6 +68,7 @@ __all__ = [
     "SRID_WGS84",
     "MetricsError",
     "length_m",
+    "reproject",
     "NO_CELL",
     "CellAccumulator",
     "assign_owner_tiles",

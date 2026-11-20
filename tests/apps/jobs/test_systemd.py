@@ -132,6 +132,13 @@ def test_osm_monthly_import_is_scheduled_by_the_registry():
     )
 
 
+def test_protected_areas_monthly_update_is_scheduled_with_its_memory_cap():
+    """#37 : le 12 du mois, hors des nuits Sentinel (5 au 10) et de l'import OSM (le 5)."""
+    assert "update_protected_areas_monthly\t*-*-12 03:00:00 Europe/Paris\t450M" in (
+        timer_manifest(get_jobs()).splitlines()
+    )
+
+
 @pytest.mark.skipif(shutil.which("systemd-analyze") is None, reason="requires systemd")
 def test_every_registered_schedule_is_a_valid_systemd_calendar():
     """Même validation que `biowatch-install-timers` sur le VPS, mais avant le merge."""

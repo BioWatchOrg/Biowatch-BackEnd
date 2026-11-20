@@ -17,9 +17,10 @@ from argparse import ArgumentParser, Namespace
 from clients import DEFAULT_IO_THREADS, init_db
 from core import load_aoi
 from geo import generate_h3_grid
+from protected_areas import DEFAULT_MAX_CLOSED_SHARE, PROTECTED_AREA_TYPES
 from species import update_gbif_occurrences
 
-from jobs.pipelines import update_iucn_taxonomy
+from jobs.pipelines import update_iucn_taxonomy, update_protected_areas
 from jobs.pipelines.osm_import import osm_import_scheduled, osm_import_snapshot
 from jobs.registry import Job, register
 from jobs.sentinel import (
@@ -338,5 +339,95 @@ register(
         name="update_iucn_taxonomy",
         help="Importe la Red List IUCN (espèces de France) dans staging.iucn_taxa.",
         run=_run_update_iucn_taxonomy,
+    )
+)
+
+
+def _run_update_protected_areas(args: Namespace) -> None:
+    statuses = update_protected_areas(
+        aoi_label=args.aoi,
+        area_types=args.type,
+        resolution=args.h3_res,
+        max_closed_share=args.max_closed_share,
+    )
+    to_retry = [
+        f"{area_type} ({status})"
+        for area_type, status in statuses.items()
+        if status in ("failed", "partial")
+    ]
+    if to_retry:
+        # Code de sortie != 0 : systemd marque l'unité en échec (visible, alertable).
+        # Relancer la même commande ne refait que ces types (les autres sont en success).
+        raise SystemExit(f"update_protected_areas : à relancer pour {', '.join(to_retry)}")
+
+
+def _configure_update_protected_areas(parser: ArgumentParser) -> None:
+    parser.add_argument(
+        "--aoi",
+        required=True,
+        help="Label de l'AOI (voir packages/core/aoi/aoi_registry.json).",
+    )
+    parser.add_argument(
+        "--type",
+        action="append",
+        choices=PROTECTED_AREA_TYPES,
+        default=None,
+        help="Type d'aire protégée à traiter (répétable). Par défaut : les trois.",
+    )
+    parser.add_argument(
+        "--h3_res",
+        type=int,
+        default=None,
+        help="Résolution H3 (entier). Par défaut : le default_res de l'AOI.",
+    )
+    parser.add_argument(
+        "--max_closed_share",
+        type=float,
+        default=DEFAULT_MAX_CLOSED_SHARE,
+        help="Part maximale des zones qu'une nouvelle édition peut fermer avant que le run "
+        f"échoue sans rien écrire (défaut : {DEFAULT_MAX_CLOSED_SHARE}). 1 désactive le garde-fou.",
+    )
+
+
+register(
+    Job(
+        name="update_protected_areas",
+        help="Met à jour protected_areas_by_zone (Natura 2000, réserves, ZNIEFF I) depuis l'INPN.",
+        run=_run_update_protected_areas,
+        configure=_configure_update_protected_areas,
+        # Lancé à la main (une AOI, un type au choix). Le run mensuel planifié
+        # est update_protected_areas_monthly, ci-dessous.
+        schedule=None,
+    )
+)
+
+
+# AOI du run mensuel planifié : choix produit, pas un défaut technique.
+PROTECTED_AREAS_MONTHLY_AOI = "idf"
+
+
+def _run_update_protected_areas_monthly(args: Namespace) -> None:
+    # Un job planifié est lancé sans argument : ses paramètres sont fixés ici.
+    _run_update_protected_areas(
+        Namespace(
+            aoi=PROTECTED_AREAS_MONTHLY_AOI,
+            type=None,
+            h3_res=None,
+            max_closed_share=DEFAULT_MAX_CLOSED_SHARE,
+        )
+    )
+
+
+register(
+    Job(
+        name="update_protected_areas_monthly",
+        help="Run mensuel planifié : update_protected_areas sur l'AOI idf, les trois types.",
+        run=_run_update_protected_areas_monthly,
+        # ADR-009 : le 12 de chaque mois, hors des nuits Sentinel (5 au 10) et de
+        # l'import OSM (le 5). Une archive inchangée est sautée après un simple HEAD ;
+        # un type en échec est retenté le mois suivant.
+        schedule="*-*-12 03:00:00 Europe/Paris",
+        # Pic mesuré ~300 Mo pour l'IDF (trois types, résolution 8), marge de 50 %.
+        memory_max="450M",
     )
 )

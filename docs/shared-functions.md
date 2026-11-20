@@ -122,6 +122,11 @@ packages (voir CLAUDE.md, "Documentation").
   PostgreSQL. Les colonnes à `onupdate` ORM (ex. `updated_at`) absentes des lignes sont
   rafraîchies au conflit.
 - `JobAlreadySucceeded`, `RunContext` (dataclass), `Base` (déclarative base ORM).
+- `zone_ids_for_aoi(session, aoi_label, resolution) -> list[str]` — zones d'une AOI dans
+  `zones_hex` (triées).
+- `previous_protected_area_rows(session, area_type, aoi_label, resolution,
+  current_source_version) -> (source_version | None, rows)` — dernière édition écrite avant
+  la courante pour un type et une AOI (base des fermetures, ADR-009).
 - Modèles ORM (`clients.db.models`, source de vérité du schéma) : `ZonesHex`,
   `SatelliteFeaturesByZone`, `OsmFeaturesByZone`, `ProtectedAreasByZone`,
   `SpeciesFeaturesByZone`, `StressScoreByZone`, `JobRun`, `JobRunZoneError`, et dans le schéma
@@ -172,6 +177,18 @@ packages (voir CLAUDE.md, "Documentation").
   routes, landuse urbain, EPSG:4326). Mot de passe passé par `PGPASSWORD`, jamais en argument.
   Processus tué et `Osm2pgsqlError` au-delà de `timeout_s` (3 h par défaut).
 - Exceptions : `GeofabrikError`, `Osm2pgsqlError`.
+
+### `clients.inpn` (archives INPN : Natura 2000, espaces protégés, ZNIEFF — ADR-009)
+- `archive_last_modified(url, client=None) -> date` — date de publication d'une archive
+  (en-tête `Last-Modified`, UTC) par un simple `HEAD`. Sert de `source_version`.
+- `download_archive(url, dest_dir, client=None) -> Path` — téléchargement vérifié contre
+  `Content-Length`, écrit en `.part` puis renommé. Reprises avec attente croissante sur 429,
+  5xx et coupure réseau (le serveur limite les requêtes rapprochées), `Retry-After` respecté.
+- `read_natura2000_sites` / `read_reserve_sites` / `read_znieff1_sites(archive, work_dir, bbox)
+  -> list[InpnSite]` — sites d'une emprise Lambert-93, géométrie publiée et champs de date
+  bruts. Aucune règle métier. Les archives imbriquées sont repérées par motif, pas par nom.
+- `INPN_SOURCES` — type d'aire protégée → URL de l'archive + lecteur.
+- Exception : `InpnError` (archive introuvable, format ou projection inattendus).
 
 ### `clients.planetary_computer_client` (images Sentinel-2 L2A, ADR-004)
 Accès aux images Sentinel-2 L2A du catalogue Planetary Computer (gratuit, sans compte). Les
@@ -296,8 +313,8 @@ Exportées depuis `geo` (niveau 3) : utilisées par le job d'extraction Sentinel
 - `reproject(geom, from_srid=4326, to_srid=2154) -> BaseGeometry` — **privée au package**
   (niveau 2, pas exportée depuis `geo`) : utilisée par `area_m2`/`length_m` et par
   `raster_h3` (distances en Lambert-93, hexagones reprojetés dans le système UTM d'une image).
-  Transformations mises en cache. Importable via `from geo.metrics import reproject` à
-  l'intérieur de `packages/geo`.
+  Transformations mises en cache. **Exportée depuis `geo`** depuis #37 : le job des aires
+  protégées reprojette les hexagones en Lambert-93, le SRID des référentiels INPN.
 
 ### `geo.intersections`
 - `filter_intersecting(geoms, mask) -> list[BaseGeometry]` — ne garde que les géométries
@@ -342,6 +359,24 @@ pas un calcul pur comme `scoring`). Jamais importé par `apps/api`.
 
 ---
 
+## packages/protected_areas
+
+Calcul pur (sans base ni réseau, même règle que `sentinel`) des aires protégées par zone H3
+(ADR-009). Orchestration dans `apps/jobs/pipelines/protected_areas.py`.
+
+- `site_valid_from(area_type, attrs) -> date | None` — date de début de protection d'un site
+  à partir de ses champs INPN bruts.
+- `compute_zone_coverage(zones, sites) -> (coverage, errors)` — par zone (Lambert-93) :
+  fusion des sites qui la recouvrent, part couverte, date la plus ancienne ; erreurs par zone.
+- `carry_over_closed_rows(current, previous, closed_on, failed_zones=(), max_closed_share=0.2)
+  -> (closed_rows, n_new_closures)` — lignes fermées à écrire avec la nouvelle édition ;
+  `TooManyClosuresError` au-delà du garde-fou.
+- `to_area_rows(...)` — lignes prêtes pour `upsert` dans `protected_areas_by_zone`.
+- `build_source_version(area_type, edition)` / `edition_of(source_version)`,
+  `PROTECTED_AREA_TYPES`, `PIPELINE_VERSION`.
+
+---
+
 ## Scaffolding jobs (`apps/jobs`)
 
 Pas des fonctions à appeler, mais le pattern pour brancher un nouveau job en CLI sans toucher
@@ -354,7 +389,9 @@ Pipelines existants : `jobs.pipelines.osm_import` (`osm_import_snapshot`,
 `osm_import_scheduled`) — voir `infra/systemd/README.md` pour la planification.
 
 Les pipelines qui orchestrent plusieurs packages (API externe → copie brute → table) vivent
-dans `apps/jobs/pipelines/` : ex. `update_iucn_taxonomy()` (France uniquement pour le MVP : la table n'a pas de colonne
+dans `apps/jobs/pipelines/` : ex. `update_protected_areas(aoi_label, area_types=None,
+resolution=None, max_closed_share=0.2)` (archives INPN → `protected_areas_by_zone`, un
+`job_run` par type), `update_iucn_taxonomy()` (France uniquement pour le MVP : la table n'a pas de colonne
 pays).
 
 ---

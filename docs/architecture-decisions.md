@@ -752,3 +752,79 @@ shell, ni clé SSH, ni sudo.
 dépasse un, ou si un job a besoin d'un timeout ou d'une identité propre : ajouter alors le
 champ au `Job` et au manifeste, validé de la même façon (comme `memory_max`, ajouté pour
 l'extraction Sentinel-2), plutôt qu'une unité par job écrite à la main.
+
+---
+
+## ADR-009 — Aires protégées : archives INPN, une ligne par zone et par type, `valid_to` déduit d'une édition à l'autre
+
+**Statut** : actif
+
+**Contexte**
+
+`update_protected_areas` (#37) alimente `protected_areas_by_zone` (Natura 2000, réserves
+naturelles, ZNIEFF de type I) pour le sous-indice de protection. Le ticket était bloqué
+depuis la cyberattaque de l'INPN (juillet 2025). Depuis la reconstruction du site, les
+référentiels ne sont plus que des archives à nom fixe, écrasées à chaque mise à jour
+(https://inpn.mnhn.fr/referentiels-donnees) : ni API, ni historique des éditions, ni date de
+fin de protection. Les anciennes URL de téléchargement et le WMS ne répondent plus.
+
+**Décision**
+
+- **Source** : les trois archives `assets.patrinat.fr/files/donnees/{natura2000,ep,znieff}/…zip`
+  (Licence Ouverte pour Natura 2000 et ZNIEFF). Les réserves sont lues dans la base des
+  espaces protégés au format CNIG (`AbreviationENP` ∈ `rnn`, `rnr`, `rnc`).
+- **`source_version`** = `inpn_<type>_<Last-Modified de l'archive>_v<PIPELINE_VERSION>`. Le
+  job fait un `HEAD` par archive : inchangée, même clé, run sauté sans téléchargement.
+- **Une ligne par zone et par type** : les sites du même type qui touchent la zone sont
+  fusionnés ; `coverage_ratio` = part de la zone couverte (calcul en Lambert-93),
+  `valid_from` = date du plus ancien de ces sites. Pas de ligne quand la couverture est nulle.
+- **`valid_from`** : `DateCreaENP` (réserves) ; première désignation pour Natura 2000
+  (`spa_date_init` pour une ZPS, `sac_date_init` → `date_first_con` → `date_prop` pour une
+  SIC — jamais `spa_date` / `sac_date`, qui portent le dernier arrêté) ; `DATE_CREA` pour les
+  ZNIEFF, `1982-01-01` à défaut.
+- **`valid_to`** : une zone couverte dans l'édition précédente et absente de la nouvelle est
+  fermée à la date de la nouvelle édition. Chaque `source_version` porte un **état complet**
+  (lignes ouvertes + lignes fermées reportées) : le lecteur ne lit que la plus récente de
+  chaque type, puis filtre sur `valid_from` / `valid_to` à la date du bucket.
+- **Garde-fou** : si une nouvelle édition ferait fermer plus de 20 % des zones ouvertes d'un
+  type (à partir de 10 fermetures), le run échoue sans rien écrire (`--max_closed_share 1`
+  pour forcer une baisse réelle).
+- **Pas de `bucket_id`** : une protection est un intervalle, pas une mesure par période.
+- **Un `job_run` par type et par AOI**, scope `<aoi>:<type>` : une source en échec ne bloque
+  pas les deux autres. Timer mensuel, le 12 à 03:00 (`update_protected_areas_monthly`).
+- **Code** : lecture dans `clients.inpn` (pyogrio, ajouté pour lire shapefile et GeoPackage
+  sans geopandas), calcul pur dans `packages/protected_areas` (même règle que `sentinel`),
+  orchestration dans `apps/jobs/pipelines/protected_areas.py`.
+
+**Pourquoi**
+
+- L'INPN est l'organisme de référence pour ces trois périmètres ; les archives sont gratuites,
+  stables en format et lisibles sans compte.
+- `Last-Modified` est le seul repère d'édition commun aux trois archives (l'édition affichée
+  sur la page, 12/2024, 10/2026, 06/2025, n'est lisible ni de la même façon ni de façon fiable
+  dans les fichiers).
+- Une ligne par site et par zone multiplierait les lignes sans servir le score, qui a besoin
+  de savoir si une zone est protégée, à quel point et depuis quand.
+- Sans historique publié, constater la disparition d'une zone entre deux éditions est la
+  seule façon d'obtenir une date de fin. Un passage mensuel garde cette date proche de la
+  publication réelle, pour le coût d'un `HEAD` les mois sans nouveauté.
+
+**Limites assumées**
+
+- **Les fins ne sont connues qu'à partir du premier import.** Une zone déclassée avant reste
+  invisible. Seul Natura 2000 aurait un historique rattrapable (versions annuelles de l'Agence
+  européenne pour l'environnement, fin 2009 → fin 2024) : non fait, les déclassements sont rares.
+- `valid_to` peut être en retard de l'écart entre deux éditions.
+- La date la plus ancienne vaut pour toute la couverture fusionnée : une zone touchée par un
+  site de 1990 et un de 2020 est déclarée couverte à 100 % de sa part depuis 1990. L'écart ne
+  joue que pour les sites créés après 2016 (216 désignations Natura 2000 sur 1 750).
+- `DATE_CREA` (ZNIEFF) est une date d'enregistrement en base, pas une date scientifique :
+  43 % des zones de type I valent `1982-01-01`.
+- Hors périmètre : ZNIEFF de type II et marines, parcs nationaux, PNR, réserves biologiques,
+  périmètres de protection. Les parcs et PNR sont dans le même fichier que les réserves.
+
+**Remise en cause**
+
+À revoir si l'INPN republie une API ou un historique des éditions, si le score a besoin d'un
+autre type de protection (étendre `PROTECTED_AREA_TYPES` et le filtre du lecteur), ou si les
+dates fusionnées faussent le sous-indice (passer alors à une ligne par période de couverture).

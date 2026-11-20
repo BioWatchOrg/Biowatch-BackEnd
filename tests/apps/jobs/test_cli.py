@@ -26,6 +26,7 @@ REQUIRED_ARGS = {
     "extract_sentinel": ["--aoi", "paris", "--bucket_id", "2025-05"],
     "backfill_sentinel": ["--aoi", "paris", "--months", "2016-01"],
     "osm_import_snapshot": ["--aoi", "idf", "--bucket", "2016"],
+    "update_protected_areas": ["--aoi", "idf"],
 }
 
 
@@ -660,3 +661,80 @@ def test_backfill_sentinel_exits_non_zero_with_retry_command(monkeypatch):
     message = str(exc.value)
     assert "incomplets : 2016-02" in message and "échec : 2019-07" in message
     assert "--months 2016-02,2019-07" in message
+
+
+def test_update_protected_areas_defaults_to_every_type_and_the_aoi_resolution():
+    args = build_parser().parse_args(["update_protected_areas", "--aoi", "idf"])
+    assert args.type is None
+    assert args.h3_res is None
+    assert args.max_closed_share == 0.2
+
+
+def test_update_protected_areas_rejects_an_unknown_type():
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["update_protected_areas", "--aoi", "idf", "--type", "pnr"])
+
+
+def test_update_protected_areas_dispatches_its_options(monkeypatch):
+    import jobs.definitions as definitions
+
+    calls: list[dict] = []
+
+    def fake(**kwargs):
+        calls.append(kwargs)
+        return {"reserve": "success", "znieff_type1": "skipped"}
+
+    monkeypatch.setattr(definitions, "update_protected_areas", fake)
+    args = build_parser().parse_args(
+        [
+            "update_protected_areas",
+            "--aoi",
+            "idf",
+            "--type",
+            "reserve",
+            "--type",
+            "znieff_type1",
+            "--h3_res",
+            "7",
+            "--max_closed_share",
+            "1",
+        ]
+    )
+    args._run(args)
+
+    assert calls == [
+        {
+            "aoi_label": "idf",
+            "area_types": ["reserve", "znieff_type1"],
+            "resolution": 7,
+            "max_closed_share": 1.0,
+        }
+    ]
+
+
+def test_update_protected_areas_exits_non_zero_when_a_type_is_to_retry(monkeypatch):
+    """Code de sortie != 0 : systemd marque le run mensuel en échec (visible, alertable)."""
+    import jobs.definitions as definitions
+
+    monkeypatch.setattr(
+        definitions,
+        "update_protected_areas",
+        lambda **kw: {"natura2000": "success", "reserve": "failed", "znieff_type1": "partial"},
+    )
+    args = build_parser().parse_args(["update_protected_areas", "--aoi", "idf"])
+
+    with pytest.raises(SystemExit, match=r"reserve \(failed\), znieff_type1 \(partial\)"):
+        args._run(args)
+
+
+def test_update_protected_areas_monthly_runs_every_type_on_idf(monkeypatch):
+    import jobs.definitions as definitions
+
+    calls: list[dict] = []
+    monkeypatch.setattr(definitions, "update_protected_areas", lambda **kw: calls.append(kw) or {})
+    args = build_parser().parse_args(["update_protected_areas_monthly"])
+    args._run(args)
+
+    assert calls == [
+        {"aoi_label": "idf", "area_types": None, "resolution": None, "max_closed_share": 0.2}
+    ]

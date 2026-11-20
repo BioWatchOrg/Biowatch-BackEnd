@@ -51,11 +51,13 @@ from .db import (
     get_run_status,
     init_db,
     job_run,
+    previous_protected_area_rows,
     record_zone_error,
     record_zone_errors,
     schema_exists,
     session_scope,
     upsert,
+    zone_ids_for_aoi,
 )
 
 __all__ = [
@@ -86,6 +88,8 @@ __all__ = [
     "schema_exists",
     "create_schema",
     "drop_schema",
+    "zone_ids_for_aoi",
+    "previous_protected_area_rows",
     "setup_logging",
     "InvalidLogLevelError",
     "run_id_var",
