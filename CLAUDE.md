@@ -90,6 +90,7 @@ Layout (chaque dossier est un package Python installé en éditable) :
 - `packages/geo/` — H3, intersections, conversions GeoJSON / WKT / PostGIS
 - `packages/sentinel/` — calcul des indices Sentinel-2 par cellule (pixels → indices → moyennes H3), calcul pur ; le job qui l'orchestre vit dans `apps/jobs/sentinel/`
 - `packages/species/` — logique métier biodiversité (ingestion GBIF, agrégation par zone)
+- `packages/protected_areas/` — aires protégées par cellule (dates, couverture, fermetures d'une édition à l'autre), calcul pur ; le job qui l'orchestre vit dans `apps/jobs/pipelines/protected_areas.py` (ADR-009)
 
 Quand tu proposes du code, **respecter cette séparation**. Pas de logique scoring dans `apps/api`, pas d'accès DB direct dans `packages/scoring`, etc.
 
@@ -102,13 +103,13 @@ core (fondation, zéro dépendance interne)
   ↑
 geo, clients   (dépendent seulement de core)
   ↑
-scoring, sentinel   (dépendent de core + geo — PAS de clients, calcul pur)
+scoring, sentinel, protected_areas   (dépendent de core + geo — PAS de clients, calcul pur)
 species            (dépend de core + geo + clients : ingestion GBIF, écrit en DB — voir ADR-006)
   ↑
 ml             (dépend de core, geo, clients, scoring — n'importe pas species)
 
 apps/api   → core, geo, clients   (jamais scoring, jamais ml, jamais species)
-apps/jobs  → tout (core, geo, clients, scoring, sentinel, ml, species)
+apps/jobs  → tout (core, geo, clients, scoring, sentinel, protected_areas, ml, species)
 ```
 
 Un package de calcul propre à une source (ex. `packages/sentinel`) suit la règle de

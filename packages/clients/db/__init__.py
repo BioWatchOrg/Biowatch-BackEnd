@@ -21,6 +21,7 @@ from .models import (
     StressScoreByZone,
     ZonesHex,
 )
+from .protected_areas import previous_protected_area_rows, zone_ids_for_aoi
 from .schemas import InvalidSchemaName, create_schema, drop_schema, schema_exists
 from .session import DatabaseConfigError, DatabaseEnvMismatchError, session_scope
 from .upsert import upsert
@@ -53,4 +54,6 @@ __all__ = [
     "schema_exists",
     "create_schema",
     "drop_schema",
+    "zone_ids_for_aoi",
+    "previous_protected_area_rows",
 ]
