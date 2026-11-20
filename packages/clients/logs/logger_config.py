@@ -100,6 +100,10 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload, default=str, ensure_ascii=False)
 
 
+class InvalidLogLevelError(ValueError):
+    """`LOG_LEVEL` (ou `level`) n'est pas un niveau de logging connu."""
+
+
 def setup_logging(service: str = "biowatch", level: str | int | None = None) -> None:
     """
     Configure the root logger once, at process startup.
@@ -118,7 +122,14 @@ def setup_logging(service: str = "biowatch", level: str | int | None = None) -> 
     """
     resolved = level or os.environ.get("LOG_LEVEL", DEFAULT_LEVEL)
     if isinstance(resolved, str):
-        resolved = resolved.upper()
+        resolved = resolved.strip().upper()
+        if resolved not in logging.getLevelNamesMapping():
+            # `LOG_LEVEL` vient de `.env.<env>` : une faute de frappe est une
+            # erreur de config, pas un bug — pas de ValueError brut de `setLevel`.
+            raise InvalidLogLevelError(
+                f"LOG_LEVEL invalide : {resolved!r}. Valeurs acceptées : "
+                "DEBUG, INFO, WARNING, ERROR, CRITICAL."
+            )
 
     root = logging.getLogger()
     root.handlers.clear()

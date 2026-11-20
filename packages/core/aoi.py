@@ -36,7 +36,9 @@ class AOI:
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = CURRENT_DIR.split("packages")[0]
-with open(os.path.join(ROOT_DIR, "packages/core/aoi/aoi_registry.json"), "r") as f:
+with open(
+    os.path.join(ROOT_DIR, "packages/core/aoi/aoi_registry.json"), "r", encoding="utf-8"
+) as f:
     aoi_data = json.load(f)
 
 
@@ -100,7 +102,7 @@ def _load_polygon(geojson_path: str) -> Polygon | MultiPolygon:
     """
     Load a GeoJSON file and return its content as a Polygon or MultiPolygon.
     """
-    with open(geojson_path, "r") as f:
+    with open(geojson_path, "r", encoding="utf-8") as f:
         geojson = json.load(f)
     geom = shape(geojson["geometry"])
     if isinstance(geom, (Polygon, MultiPolygon)):

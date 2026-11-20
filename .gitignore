@@ -1,3 +1,6 @@
+# Git worktrees (subagent-driven-development isolation)
+.worktrees/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -136,6 +139,9 @@ celerybeat.pid
 
 # Environments
 .env
+.env.*
+!.env.example
+!.env.*.example
 .envrc
 .venv
 env/
@@ -225,7 +231,8 @@ data/
 *.jp2
 *.hdf
 *.nc
-.geojson
+*.geojson
+!packages/core/aoi/regions/*.geojson
 *.gpkg
 *.shp
 *.dbf
@@ -250,3 +257,9 @@ docker-data/
 *.out
 
 *.parquet
+
+# macOS
+.DS_Store
+
+# Contexte agent local, par poste — ne doit jamais être versionné
+CLAUDE.local.md

@@ -1,4 +1,20 @@
 from .aoi import AOI, AoiLabel, LoadingAOIError, UndefinedAOIError, aoi_registry, load_aoi
+from .config import (
+    DEFAULT_ENV,
+    ENV_FILE_REQUIRED,
+    ENV_VAR,
+    ENVS,
+    PROJECT_ROOT,
+    Env,
+    EnvFileNotFoundError,
+    UnknownEnvError,
+    data_root,
+    env_file,
+    expected_db_suffix,
+    load_env_file,
+    normalize_env,
+    resolve_env,
+)
 from .idempotency import compute_idempotency_key
 from .parquet import write_parquet
 from .time_bucket import (
@@ -8,12 +24,27 @@ from .time_bucket import (
     UnsupportedBucketFormat,
     UnsupportedDateType,
     biowatch_now,
-    bucket_id,
+    get_bucket_range,
+    format_bucket_id,
     related_bucket_ids,
 )
 
 __all__ = [
     "AOI",
+    "Env",
+    "ENVS",
+    "ENV_VAR",
+    "DEFAULT_ENV",
+    "ENV_FILE_REQUIRED",
+    "PROJECT_ROOT",
+    "UnknownEnvError",
+    "EnvFileNotFoundError",
+    "resolve_env",
+    "normalize_env",
+    "env_file",
+    "load_env_file",
+    "data_root",
+    "expected_db_suffix",
     "AoiLabel",
     "aoi_registry",
     "load_aoi",
@@ -27,6 +58,7 @@ __all__ = [
     "UnsupportedBucketFormat",
     "UnsupportedDateType",
     "biowatch_now",
-    "bucket_id",
+    "format_bucket_id",
     "related_bucket_ids",
+    "get_bucket_range",
 ]

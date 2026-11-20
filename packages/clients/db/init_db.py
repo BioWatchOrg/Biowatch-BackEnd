@@ -5,8 +5,9 @@ and every table declared by the ORM models:
     uv run python -m clients.db.init_db
 
 The ORM models (`clients.db.models`) are the single source of truth for the
-schema. Extensions cannot be expressed as ORM models, so they are created here
-in raw SQL before `create_all`, since PostGIS geometry columns depend on them.
+schema. Extensions and schemas cannot be expressed as ORM models, so they are
+created here in raw SQL before `create_all`: PostGIS geometry columns depend on
+the extensions, and `staging.*` tables on the `staging` schema.
 """
 
 import logging
@@ -14,11 +15,12 @@ import logging
 from sqlalchemy import Engine, text
 
 from .base import Base
-from .session import get_engine
+from .session import DatabaseConfigError, get_engine
 
 logger = logging.getLogger(__name__)
 
 EXTENSIONS = ("postgis", "pgcrypto")
+SCHEMAS = ("staging",)
 
 
 def _create_extensions(engine: Engine) -> None:
@@ -28,11 +30,19 @@ def _create_extensions(engine: Engine) -> None:
             conn.execute(text(f"CREATE EXTENSION IF NOT EXISTS {extension}"))
 
 
+def _create_schemas(engine: Engine) -> None:
+    """Create non-default Postgres schemas (e.g. `staging`) before create_all."""
+    with engine.begin() as conn:
+        for schema in SCHEMAS:
+            conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema}"))
+
+
 def init_db(engine: Engine | None = None) -> None:
-    """Create extensions and every table. Idempotent: safe to re-run."""
+    """Create extensions, schemas and every table. Idempotent: safe to re-run."""
     try:
         engine = engine or get_engine()
         _create_extensions(engine)
+        _create_schemas(engine)
         Base.metadata.create_all(engine)
         logger.info(
             "schema initialized",
@@ -41,6 +51,11 @@ def init_db(engine: Engine | None = None) -> None:
                 "context": {"n_tables": len(Base.metadata.tables)},
             },
         )
+    except DatabaseConfigError:
+        # Erreur de configuration (env, nom de base, variables) : ce n'est pas
+        # une erreur du schéma, et l'entrypoint la rapporte déjà une fois
+        # (`cli.config_error`, WARNING). Pas de second log en ERROR.
+        raise
     except Exception as e:
         logger.error(
             "error initializing schema",

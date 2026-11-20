@@ -1,0 +1,366 @@
+# Fonctions communes réutilisables
+
+Catalogue des fonctions déjà implémentées dans `packages/core`, `packages/clients` et
+`packages/geo`. **Règle** : avant d'écrire une fonction utilitaire (géospatial, temps,
+idempotence, DB, logs...), vérifier ici si elle existe déjà. Ne pas dupliquer.
+
+Ce fichier doit être mis à jour à chaque MR qui ajoute une fonction publique dans un de ces
+packages (voir CLAUDE.md, "Documentation").
+
+---
+
+## packages/core
+
+### `core.idempotency`
+- `compute_idempotency_key(job_name, scope, source_version, period=None, resolution=None, env=None) -> str`
+  Clé déterministe (SHA-256) pour l'idempotence d'un job. Même `(job, scope, period,
+  source_version[, env])` ⇒ même clé.
+
+### `core.time_bucket`
+- `biowatch_now() -> date` — date du jour en Europe/Paris.
+- `format_bucket_id(value=None, format=BucketFormat.MONTHLY) -> BucketId` — normalise une date
+  en identifiant de période (`"2024"`, `"2024-03"`, `"2024-b02"`). `value` accepte `date`,
+  `datetime`, une string ISO 8601, ou `None` (= aujourd'hui). (Anciennement nommée `bucket_id` —
+  renommée car le nom laissait penser à l'inverse : elle produit un bucket_id à partir d'une
+  date, elle n'en extrait pas les composants.)
+- `get_bucket_range(bucket) -> tuple[date, date]` — bornes `(start, end)` d'un bucket, **toutes
+  les deux incluses** (le bucket couvre `[start, end]`, pas `[start, end)`). Conversion ISO 8601
+  pour une API externe : dépend du type de filtre côté API.
+  - Filtre par simple inclusion de date (`WHERE created_at <= end`) : mettre l'heure de fin à
+    `23:59:59`, pas `00:00:00`, sinon la dernière journée du bucket est exclue.
+  - Agrégation par intervalle calendaire (ex. Sentinel Hub `aggregationInterval="P1M"`) :
+    `23:59:59` est **faux** — l'intervalle a besoin d'un mois calendaire complet pour rentrer
+    dans `[from, to]`, et s'arrêter à `23:59:59` le laisse une seconde trop court, ce qui fait
+    silencieusement renvoyer zéro intervalle sur **chaque** requête (bug réel rencontré en prod
+    sur l'ancien job Sentinel Hub, aujourd'hui supprimé). Utiliser la borne **exclusive** à la place :
+    début du jour suivant `end`.
+- `related_bucket_ids(bucket) -> list[BucketId]` — tous les buckets (année, bimestre, mois)
+  qui couvrent la même période que `bucket`. Utile pour retrouver des features à une
+  granularité différente.
+- `BucketFormat` (enum : `MONTHLY`, `BIMONTHLY`, `YEARLY`).
+- Exceptions : `UnsupportedBucketFormat`, `UnsupportedDateType`, `InvalidDateString`.
+
+### `core.aoi`
+- `aoi_registry(label) -> bool` — vérifie qu'un label AOI existe dans
+  `packages/core/aoi/aoi_registry.json`.
+- `load_aoi(aoi_label) -> AOI` — charge une AOI (géométrie, bbox, `version`, `default_res`)
+  depuis le registre. Source de vérité pour la résolution H3 par défaut d'une zone d'étude.
+- `AOI` (dataclass : `label`, `name`, `geom`, `bbox`, `version`, `default_res`).
+- Exceptions : `UndefinedAOIError`, `LoadingAOIError`, `GeoJsonValueError`.
+
+### `core.config`
+- `resolve_env(cli_env=None) -> Env` — environnement effectif : flag `--env` >
+  `BIOWATCH_ENV` > `dev`. Normalise casse/espaces, lève `UnknownEnvError` sinon.
+- `normalize_env(value) -> str` — la règle de normalisation (`" PROD "` → `"prod"`), partagée
+  par `resolve_env` et le `type=` argparse du CLI. Ne pas la réécrire.
+- `load_env_file(env) -> str | None` — charge `<PROJECT_ROOT>/.env.<env>` (sans écraser les
+  variables déjà posées ; jamais cherché dans le cwd). À appeler à l'entrypoint, avant
+  `setup_logging`. `env_file(env)` donne le nom.
+  **Garde-fou prod** : lève `EnvFileNotFoundError` si `.env.prod` est absent (prod est dans
+  `ENV_FILE_REQUIRED`), avant toute lecture de `DATABASE_URL` / `POSTGRES_*`, et aussi si le
+  fichier est présent mais illisible (tous envs). En dev, retourne `None` si le fichier manque.
+  Fige `BIOWATCH_ENV` à l'env chargé une fois le fichier lu (écrase une valeur venue du
+  fichier) ; en cas d'échec, `BIOWATCH_ENV` n'est pas modifié.
+- `PROJECT_ROOT: Path` — racine du dépôt, ancre de tout chemin relatif au projet
+  (`.env.<env>`, `data/`). Ne pas recalculer une racine ailleurs.
+- `expected_db_suffix(env) -> str` — suffixe obligatoire du nom de la base (`_dev`,
+  `_prod`). `clients.db` refuse une base qui ne le porte pas (`DatabaseEnvMismatchError`).
+- `data_root(env) -> Path` — racine des artefacts des jobs (`<PROJECT_ROOT>/data/<env>`,
+  racine surchargeable par `BIOWATCH_DATA_ROOT` ; une valeur relative est ancrée sur
+  `PROJECT_ROOT`, pas sur le cwd). Ne jamais écrire d'artefact ailleurs.
+- `Env` (`Literal["dev", "prod"]`), `ENVS`, `ENV_FILE_REQUIRED`, `PROJECT_ROOT`, exceptions
+  `UnknownEnvError`, `EnvFileNotFoundError`.
+
+### `core.parquet`
+- `write_parquet(df: pd.DataFrame, file_path: str) -> None` — écrit un DataFrame en Parquet.
+  Utilisé pour les artefacts de reproductibilité des jobs (ex. `h3_grid.py`).
+
+---
+
+## packages/clients
+
+### `clients.db` (session, transactions, idempotence)
+- `session_scope(engine=None) -> Session` (context manager) — session transactionnelle :
+  commit en sortie propre, rollback sur exception. Façon standard de parler à la DB en
+  **lecture ou écriture hors job**.
+- `job_run(job_name, scope, idempotency_key, bucket_id=None, engine=None) -> (RunContext, Session)`
+  (context manager) — enveloppe un job avec traçabilité (`job_runs`), idempotence et session
+  gérée. Lève `JobAlreadySucceeded` si déjà exécuté avec succès (à catcher pour skip). Marque
+  `partial` si des erreurs par zone ont été enregistrées. **Tout job métier doit passer par
+  là** (voir CLAUDE.md, "Accès base de données"). Affecter `run.output_ref` dans le bloc pour
+  tracer ce que le run a produit (ex. nom de schéma) : persisté avec le statut final.
+- `record_zone_error(run_id, zone_id, error_message, engine=None) -> None` — enregistre un
+  échec pour une zone précise (reprise ciblée), idempotent sur `(run_id, zone_id)`.
+- `record_zone_errors(run_id, zone_ids, error_message, engine=None) -> None` — même contrat
+  que `record_zone_error` pour **beaucoup de zones à la fois** (ex. toutes les cellules d'une
+  tuile illisible) : une transaction et quelques requêtes au lieu d'une par zone, un seul log.
+- `get_failed_zones(idempotency_key, engine=None) -> list[str]` — zones en échec du dernier
+  run pour une clé d'idempotence donnée ; à appeler **avant** de rentrer dans `job_run` pour
+  un retry ciblé.
+- `get_run_status(idempotency_key, engine=None) -> str | None` — statut du run pour une clé
+  (`None` si aucun run), **sans** créer de ligne `job_runs`. Pour un scheduler qui choisit quoi
+  lancer.
+- `schema_exists(name)` / `create_schema(name)` / `drop_schema(name)` (`clients.db.schemas`) —
+  gestion des schémas PostgreSQL temporaires (ex. `osm_tmp_*`). Nom validé (minuscules,
+  `[a-z0-9_]`, ni `public` ni `pg_*`) avant toute DDL, sinon `InvalidSchemaName`.
+  `create_schema` échoue si le schéma existe ; `drop_schema` est `CASCADE` et no-op s'il
+  n'existe pas.
+- `get_engine(echo=False) -> Engine` / `get_sessionmaker(engine=None) -> sessionmaker` —
+  construction de l'engine SQLAlchemy depuis les variables d'env (`DATABASE_URL` ou
+  `POSTGRES_*`), mise en cache (`lru_cache`). Lève `DatabaseConfigError` (variable
+  manquante, URL illisible) ou sa sous-classe `DatabaseEnvMismatchError` (nom de base sans
+  le suffixe `_<env>` — contrôlé sur le nom réellement ouvert, `?dbname=` compris). Ces
+  erreurs ne contiennent jamais d'URL ni de mot de passe ; le CLI les logge en WARNING
+  (`cli.config_error`) et sort sans traceback.
+- `init_db(engine=None) -> None` — crée les extensions PostgreSQL (`postgis`, `pgcrypto`), les
+  schémas (`staging`) et toutes les tables ORM. Idempotent, à lancer une fois par environnement. Une
+  `DatabaseConfigError` remonte telle quelle (déjà rapportée par l'entrypoint), sans
+  `db.init_db.error`.
+- `upsert(session, model, rows, update_columns=None) -> None` — `INSERT ... ON CONFLICT DO
+  UPDATE` en masse sur la PK du modèle. **Seule façon d'écrire/mettre à jour** dans une table
+  métier (jamais d'`INSERT` manuel). Chunké automatiquement sous la limite de bind params
+  PostgreSQL. Les colonnes à `onupdate` ORM (ex. `updated_at`) absentes des lignes sont
+  rafraîchies au conflit.
+- `JobAlreadySucceeded`, `RunContext` (dataclass), `Base` (déclarative base ORM).
+- Modèles ORM (`clients.db.models`, source de vérité du schéma) : `ZonesHex`,
+  `SatelliteFeaturesByZone`, `OsmFeaturesByZone`, `ProtectedAreasByZone`,
+  `SpeciesFeaturesByZone`, `StressScoreByZone`, `JobRun`, `JobRunZoneError`, et dans le schéma
+  `staging` (données intermédiaires, non exposées) : `IucnTaxa` (`staging.iucn_taxa`).
+
+### `clients.iucn`
+- `IucnClient(token=None)` — client de l'API IUCN Red List v4 (jeton `IUCN_API_TOKEN` lu dans
+  l'env si non fourni ; context manager). `red_list_version() -> str` (ex. `"2026-1"`),
+  `iter_country_assessments(country, scope_code=1)` — dernières évaluations d'un pays, toutes
+  pages parcourues ; lève `IucnApiError` si la liste reçue ne fait pas le total annoncé par
+  l'API (pas d'import tronqué silencieux), ou si la réponse n'est pas le JSON attendu.
+
+### `clients.gbif` (client HTTP GBIF Occurrence Download API — aucune logique métier)
+- `load_gbif_credentials() -> GbifCredentials` — lit `GBIF_USERNAME`/`GBIF_PASSWORD` depuis
+  l'env (compte GBIF requis, voir `.env.example`). `GbifCredentials.auth -> httpx.BasicAuth`
+  (propriété, reconstruite à chaque accès). `password` en `field(repr=False)` : ne fuite jamais
+  via un `repr()`/`logger.debug()` accidentel.
+- `geometry_to_gbif_wkt(geom) -> str` — WKT de l'enveloppe convexe de `geom`, anneau extérieur
+  **anti-horaire** (GBIF rejette l'anneau horaire que renvoie `convex_hull` de Shapely, erreur
+  400). Pure.
+- `build_predicate(geometry_wkt, date_min, date_max) -> dict` — prédicat GBIF (géométrie +
+  plage de dates complète en un seul prédicat, pas de boucle par année). Pure.
+- `request_download(predicate, creator, auth, client=None) -> str` — `POST
+  /occurrence/download/request`, retourne la clé du download.
+- `wait_for_download(key, auth, client=None) -> None` — poll le statut jusqu'à `SUCCEEDED`,
+  lève sur échec/`GBIF_POLL_TIMEOUT_SECONDS` dépassé (`GbifDownloadTimeoutError`).
+- `download_zip(key, auth, client=None) -> Path` — télécharge le zip fini vers un fichier
+  temporaire (écrit par chunks, jamais en mémoire) et retourne son chemin. L'appelant le
+  supprime ; supprimé automatiquement si le téléchargement échoue.
+- `iter_zip_rows(zip_path, key="") -> Iterator[dict]` — parse en streaming le fichier TSV du zip,
+  un dict par ligne. Ne supprime pas le zip.
+- `stream_download(key, auth, client=None) -> Iterator[dict]` — composition des deux ci-dessus,
+  supprime le fichier à la fin (le téléchargement ne démarre qu'au premier `next()`). Télécharge le résultat (zip
+  GBIF — **jamais gzip brut**, même si un format compressé est demandé, confirmé contre l'API
+  réelle) et le parse en streaming (fichier temporaire sur disque, un dict par ligne CSV) — le
+  fichier entier n'est jamais tenu en mémoire.
+- Exceptions : `GbifApiError`, `GbifDownloadTimeoutError` (sous-classe de `GbifApiError`).
+### `clients.osm` (Geofabrik + osm2pgsql)
+- `snapshot_for(aoi_label, bucket) -> Snapshot` — URLs Geofabrik du snapshot au 1er janvier
+  d'un bucket annuel (`"2016"` → `*-160101.osm.pbf`) et `source_version`
+  (`geofabrik_2016-01-01`). Pure. Une AOI peut couvrir plusieurs extraits (Geofabrik découpe
+  encore selon les régions d'avant 2016) : mapping dans `GEOFABRIK_REGIONS`.
+- `snapshot_from_urls(aoi_label, bucket, urls) -> Snapshot` — idem à partir d'URLs explicites.
+- `download(url, dest_dir) -> Path` — téléchargement vérifié (md5 Geofabrik si publié, sinon
+  taille), écrit en `.part` puis renommé.
+- `run_osm2pgsql(pbf_paths, schema, engine=None, timeout_s=DEFAULT_TIMEOUT_S)` — import
+  slim/drop dans `schema` (qui doit exister) avec le style `clients/osm/style.lua` (bâti,
+  routes, landuse urbain, EPSG:4326). Mot de passe passé par `PGPASSWORD`, jamais en argument.
+  Processus tué et `Osm2pgsqlError` au-delà de `timeout_s` (3 h par défaut).
+- Exceptions : `GeofabrikError`, `Osm2pgsqlError`.
+
+### `clients.planetary_computer_client` (images Sentinel-2 L2A, ADR-004)
+Accès aux images Sentinel-2 L2A du catalogue Planetary Computer (gratuit, sans compte). Les
+images sont des COG : on ne télécharge que les blocs de pixels lus.
+- `search_scenes(bbox, start, end, max_cloud_cover=70, client=None) -> list[Scene]` — scènes
+  qui touchent `bbox` (WGS84) entre `start` et `end` inclus. Écarte dès la recherche les
+  scènes à plus de `MAX_SCENE_CLOUD_COVER` (70 %) de nuages. Retry réseau (429/5xx) intégré.
+- `deduplicate_scenes(scenes) -> list[Scene]` — une scène par acquisition (tuile + date), la
+  plus récemment traitée : Planetary Computer publie certaines acquisitions en double.
+- `group_by_tile(scenes) -> dict[tuile, list[Scene]]` / `tile_footprints(groups) ->
+  dict[tuile, géométrie WGS84]` — l'emprise par tuile est l'entrée de
+  `geo.raster_h3.assign_owner_tiles`.
+- `open_tile(scenes, region, chunk_px=1024) -> TileStack` — prépare la lecture d'une
+  tuile (une seule tuile, scènes dédoublonnées) sans rien télécharger. `TileStack` expose la
+  grille (`epsg`, `transform`, `shape`, entrée de `geo.raster_h3.cells_to_label_grid`), la
+  baseline de chaque date (`baselines`, pour l'offset de réflectance) et `windows()`.
+- `read_block(stack, window, io_threads=16) -> dict[rôle, ndarray (date, y, x)]` —
+  télécharge un bloc : DN bruts `green`/`red`/`nir`/`swir` (uint16, 0 = nodata) et `scl`
+  (uint8). Les URL sont signées à la lecture, jamais à l'avance.
+- `Scene` (dataclass : `scene_id`, `tile`, `acquired_at`, `baseline`, `epsg`,
+  `cloud_cover`, `footprint`), `PlanetaryComputerError` (recherche ou lecture en échec,
+  métadonnées inattendues).
+- Test réseau réel, ignoré par défaut : `BIOWATCH_NETWORK_TESTS=1 uv run pytest
+  tests/packages/clients/planetary_computer_client/test_network.py`.
+
+### `clients.logs`
+- `setup_logging(service="biowatch", level=None) -> None` — configure le logger racine en
+  JSON structuré (un seul appel, à l'entrypoint du process — jamais dans un `__init__.py`).
+  Idempotent.
+  Lève `InvalidLogLevelError` (sous-classe de `ValueError`) si `LOG_LEVEL` / `level` n'est pas
+  un niveau connu ; le CLI l'affiche comme erreur de config, sans traceback.
+- `run_id_var`, `request_id_var` (`ContextVar[str | None]`) — id de corrélation ambiant,
+  injecté automatiquement dans chaque log émis pendant un job (`run_id_var`, posé par
+  `job_run`) ou une requête API (`request_id_var`). Pas besoin de le passer à la main dans
+  `extra`.
+- Convention d'appel partout dans le repo : `logger.error/info(msg, extra={"event": "...",
+  "context": {...}})`.
+
+---
+
+## packages/geo
+
+Boîte à outils géospatiale pure (aucun accès DB). Voir aussi la page Notion "packages/geo —
+Vocabulaire géospatial (H3, WKT, GeoJSON)" (base Documentation Technique) pour les
+définitions des notions (cell, Polygon, bbox, WKT, GeoJSON).
+
+**Convention d'API (spécifique à `packages/geo`)** : l'API publique reste minimale —
+uniquement les fonctions ayant un besoin d'usage identifié ailleurs dans le repo. Une
+fonction ne passe à un niveau de visibilité plus large que lorsqu'un besoin concret apparaît,
+jamais par anticipation. Trois niveaux :
+
+1. **Privé au fichier** (`_nom`, ex. `_intersects`/`_intersection`) — détail
+   d'implémentation, utilisé uniquement dans son propre module.
+2. **Privé au package, public au fichier** (nom sans `_`, ex. `area_m2` dans
+   `metrics.py`) — utilisé par d'autres modules de `packages/geo` (ici `intersections.py`),
+   mais **pas exporté depuis `packages/geo/__init__.py`** : pas encore de besoin identifié en
+   dehors du package.
+3. **Public au package** (exporté dans `packages/geo/__init__.py`) — utilisable par le reste
+   du repo (jobs, scoring, API...), soit parce qu'un appelant existe déjà (`generate_h3_grid`
+   dans `apps/jobs`), soit parce que c'est un livrable explicite du DoD de la tâche Notion
+   (ex. `length_m`, anticipé pour le futur job OSM même sans appelant aujourd'hui).
+
+**Cette règle est propre à `packages/geo`** — elle ne s'applique pas (par défaut) aux autres
+packages communs (`core`, `clients`), qui n'ont pas cette contrainte documentée pour
+l'instant.
+
+### `geo.h3`
+- `cell_to_polygon(cell: H3Cell) -> Polygon`
+- `cell_to_centroid(cell: H3Cell) -> Point`
+- `cell_to_bbox(cell: H3Cell) -> Polygon`
+- `cell_to_wkt(cell: H3Cell) -> str` / `cell_to_geojson(cell: H3Cell) -> dict`
+- `polygon_to_cells(geom: Polygon | MultiPolygon, resolution, contain="overlap") -> list[H3Cell]`
+  — cellules H3 couvrant une géométrie arbitraire (ex. un polygone OSM ou une aire protégée) —
+  c'est la fonction à utiliser pour savoir dans quelles zones écrire une ligne `*_by_zone`.
+  Containment par défaut **`overlap`** (pas `center`, contrairement à `compute_h3_cells`) :
+  une géométrie plus petite qu'une cellule ne contient le centre d'aucune cellule, donc
+  `center` la rattacherait silencieusement à zéro zone. `contain` reste surchargeable
+  (`"center"`, `"full"`, `"bbox_overlap"`) via l'API expérimentale de h3
+  (`h3shape_to_cells_experimental`, sans garantie de stabilité inter-versions côté h3).
+  N'accepte que `Polygon`/`MultiPolygon` — passer une `LineString` (ex. une route OSM) lève
+  `H3ConversionError`.
+- Exception : `H3ConversionError`.
+
+### `geo.io` (sérialisation générique, toute géométrie)
+- `GeoJSON` (type alias), `GeometryIOError` : seuls exports publics de ce fichier (utilisés
+  comme type/exception des fonctions publiques `cell_to_wkt`/`cell_to_geojson` de `geo.h3`).
+- `to_wkt(geom) -> str` / `to_geojson(geom) -> dict` — **pas exportées depuis `geo`** (niveau
+  2) : utilisées en interne par `h3.cell_to_wkt`/`cell_to_geojson`, aucun appelant hors du
+  package aujourd'hui. Importables via `from geo.io import to_wkt, to_geojson`.
+- `from_wkt(wkt) -> BaseGeometry` / `from_geojson(geojson) -> BaseGeometry` — **pas
+  exportées depuis `geo`** (niveau 2) : aucun appelant, même interne à `packages/geo`,
+  aujourd'hui. À remonter en public le jour où un besoin réel apparaît (ex. l'API doit
+  parser du GeoJSON/WKT entrant).
+
+### `geo.raster_h3` (raster -> cellules H3, toute source raster)
+Exportées depuis `geo` (niveau 3) : utilisées par le job d'extraction Sentinel-2 (ADR-004).
+- `cells_to_label_grid(cells, epsg, transform, shape) -> ndarray[int32]` — pour chaque pixel
+  d'une grille (CRS `epsg`, géotransformation affine, `(hauteur, largeur)`), l'index de sa
+  cellule dans `cells`, ou `NO_CELL` (-1). Règle : le **centre** du pixel est dans l'hexagone
+  (rasterisation des hexagones, bien plus rapide qu'un appel h3 par pixel).
+- `assign_owner_tiles(cells, footprints) -> dict[H3Cell, str]` — une seule image
+  propriétaire par cellule quand des images se chevauchent (celle dont le bord est le plus
+  loin du centre de la cellule ; distances en Lambert-93). Évite de compter deux fois une
+  cellule située dans une zone de recouvrement.
+- `CellAccumulator(cells, value_names)` — moyennes par cellule calculées bloc de pixels par
+  bloc : `add(labels, values, n_obs)` cumule des sommes et des comptes, `result()` renvoie
+  un `DataFrame` indexé par `zone_id` (moyennes, `n_valid_px`, `n_total_px`, `mean_n_obs`).
+  Identique à un calcul sur l'image entière, sans jamais la tenir en mémoire.
+
+### `geo.metrics`
+- `length_m(geom, srid=4326) -> float` — longueur réelle en mètres (reprojette
+  automatiquement si `srid != 2154`). Exportée depuis `geo` malgré l'absence d'appelant
+  aujourd'hui : livrable explicite du DoD Notion, anticipé pour le futur job OSM
+  (`road_density_major`/`road_density_all`).
+- Constantes : `SRID_WGS84 = 4326`, `SRID_LAMBERT93 = 2154`.
+- Exception : `MetricsError`.
+- `area_m2(geom, srid=4326) -> float` — surface réelle en mètres carrés. **Pas exportée
+  depuis `geo`** (niveau 2 ci-dessus) : utilisée en interne par
+  `intersections.coverage_ratio`, importable directement via `from geo.metrics import
+  area_m2` par les autres modules de `packages/geo`, mais aucun appelant hors du package
+  aujourd'hui.
+- `reproject(geom, from_srid=4326, to_srid=2154) -> BaseGeometry` — **privée au package**
+  (niveau 2, pas exportée depuis `geo`) : utilisée par `area_m2`/`length_m` et par
+  `raster_h3` (distances en Lambert-93, hexagones reprojetés dans le système UTM d'une image).
+  Transformations mises en cache. Importable via `from geo.metrics import reproject` à
+  l'intérieur de `packages/geo`.
+
+### `geo.intersections`
+- `filter_intersecting(geoms, mask) -> list[BaseGeometry]` — ne garde que les géométries
+  d'une liste qui touchent `mask` (ex. filtrer les routes OSM qui traversent une cell).
+- `coverage_ratio(geom, mask, srid=4326) -> float` — fraction de `geom` couverte par `mask` ;
+  base de calcul pour un champ comme `protected_areas_by_zone.coverage_ratio`.
+- Exception : `IntersectionError`.
+- API volontairement minimale : `_intersects`/`_intersection` (test de contact, géométrie de
+  chevauchement) existent en interne mais restent privées tant qu'aucun besoin concret ne
+  justifie de les exposer — à réévaluer au cas par cas plutôt que d'élargir l'API par
+  anticipation.
+
+### `geo.h3_grid` (job, pas une fonction pure — accède à la DB)
+- `compute_h3_cells(aoi_label, resolution) -> list[H3Cell]` — coverage H3 déterministe d'une
+  AOI du registre (pure, sans DB — testée par golden fingerprint).
+- `generate_h3_grid(aoi_label, resolution=None, engine=None) -> None` — génère et persiste la
+  grille dans `zones_hex` via `job_run` + `upsert`.
+- `point_to_h3_cell(lat, lon, resolution) -> H3Cell` — inverse de `compute_h3_cells` : place un
+  point externe (ex. une occurrence GBIF) sur la même grille H3 que `zones_hex`. Pure, sans DB.
+
+---
+
+## packages/species
+
+Logique métier biodiversité — dépend de `core`, `geo`, `clients` (ingestion + écriture DB,
+pas un calcul pur comme `scoring`). Jamais importé par `apps/api`.
+
+### `species.quality`
+- `quality_filter(record, date_min, date_max) -> dict | None` — pure, sans I/O. Valide/normalise
+  un enregistrement GBIF brut (coordonnées valides, `eventDate` dans `[date_min, date_max]`) ;
+  `None` si rejeté. Agnostique de la source GBIF (Search API vs Download API) : attend déjà le
+  dict normalisé, voir `species.gbif_occurrences._normalize_csv_row`.
+
+### `species.gbif_occurrences` (job, pas une fonction pure — accède à la DB + réseau GBIF)
+- `update_gbif_occurrences(aoi_label, engine=None) -> None` — récupère les occurrences GBIF
+  d'une AOI sur une fenêtre glissante de 10 ans (un seul `clients.gbif` download par run),
+  filtre (`quality_filter`), convertit en `zone_id` (`geo.point_to_h3_cell`), stocke dans
+  `staging.species_occurrences_raw` via `job_run` + `upsert`. Remplace les lignes de la fenêtre
+  refetchée à chaque run (garde l'historique hors fenêtre).
+- `rolling_window(current_year) -> tuple[date, date]` — pure : `(date_min, date_max)` pour la
+  fenêtre de 10 ans se terminant à `current_year`.
+
+---
+
+## Scaffolding jobs (`apps/jobs`)
+
+Pas des fonctions à appeler, mais le pattern pour brancher un nouveau job en CLI sans toucher
+au reste : `apps/jobs/registry.py` (`Job` dataclass, `register(job)`) +
+`apps/jobs/definitions.py` (un `Job(...)` par job métier, mappe une sous-commande CLI vers une
+fonction de `packages/*` ou d'un pipeline de `apps/jobs/pipelines/`). Ajouter un job = ajouter
+une entrée dans `definitions.py`.
+
+Pipelines existants : `jobs.pipelines.osm_import` (`osm_import_snapshot`,
+`osm_import_scheduled`) — voir `infra/systemd/README.md` pour la planification.
+
+Les pipelines qui orchestrent plusieurs packages (API externe → copie brute → table) vivent
+dans `apps/jobs/pipelines/` : ex. `update_iucn_taxonomy()` (France uniquement pour le MVP : la table n'a pas de colonne
+pays).
+
+---
+
+## Pas encore de fonctions communes
+
+`packages/scoring`, `packages/ml`, `apps/api` sont encore des packages stubs (seul un
+`__init__.py` vide) au moment de la rédaction de ce fichier — rien à réutiliser depuis eux
+pour l'instant.

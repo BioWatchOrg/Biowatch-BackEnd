@@ -21,7 +21,8 @@ instead of relying on this prompt.
 3. If the diff touches `packages/clients/db` or a job under `apps/jobs`, also check
    `docs/database-usage.md` (if it exists) and verify the `job_run(...)` / `upsert(...)` /
    `session_scope()` pattern described in `CLAUDE.md` is respected.
-4. Get the PR diff and description with `gh pr diff` and `gh pr view`.
+4. Get the PR diff and description with `gh pr diff <PR_NUMBER>` and
+   `gh pr view <PR_NUMBER>` (the number is given at the top of this prompt).
 5. If the PR description references a linked issue (`Closes #N`, `Fixes #N`, …), run
    `gh issue view N` and read its **Acceptance Criteria**. This repo's issues are mirrored from
    Notion and carry the real acceptance criteria for the ticket — treat them as the actual scope
@@ -37,6 +38,11 @@ Focus on what actually matters in this diff, not a generic pass:
 - **Conventions** — respects the module separation and patterns from `CLAUDE.md` relevant to the
   touched files (e.g. no scoring logic in `apps/api`, no direct DB access outside
   `packages/clients`, no business logic in `apps/api` beyond exposing precomputed results).
+- **Module dependency direction** — per `CLAUDE.md` → "Règle de dépendance entre modules", check
+  new imports against the fixed graph (`core` ← `geo`/`clients` ← `scoring` ← `ml`; `apps/api` →
+  `core`/`geo`/`clients` only; `apps/jobs` → anything). Flag any import that goes against this
+  direction (e.g. `packages/clients` importing `packages/scoring`) or any `packages/*` module
+  importing from `apps/*`.
 - **Reuse of common foundations (job/pipeline PRs)** — a job must use `packages/core` for
   temporal bucketing and idempotency key generation, and `packages/geo` for H3/spatial logic,
   instead of reimplementing this logic locally. Flag any such reimplementation.
@@ -92,3 +98,16 @@ findings.
 Post the full review (general review + DoD compliance + the two verdicts) as a single top-level
 PR comment via `gh pr comment`. Do not use inline comments, and do not just answer in your final
 message — the comment is the deliverable.
+
+Post it with a single Bash call in this exact form (heredoc inside the command substitution, not
+a separate file-write step — you only have `gh`/`cat`/`grep`/`glob` tools, no `Write`/`Edit`):
+
+```
+gh pr comment <PR_NUMBER> --body "$(cat <<'REVIEW_EOF'
+<the full review markdown>
+REVIEW_EOF
+)"
+```
+
+If this call fails or is denied, retry it — do not silently give up and end the turn without a
+posted comment.

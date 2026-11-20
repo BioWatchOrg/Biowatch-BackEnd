@@ -1,6 +1,4 @@
 import logging
-import os
-from typing import TypeAlias
 
 import h3
 import pandas as pd
@@ -11,18 +9,18 @@ from core import (
     UndefinedAOIError,
     aoi_registry,
     compute_idempotency_key,
+    data_root,
     load_aoi,
+    resolve_env,
     write_parquet,
 )
 from geoalchemy2.shape import from_shape
 from shapely.geometry import Point, Polygon, box
 from sqlalchemy import Engine
 
+from .h3 import H3Cell, H3ConversionError, cell_to_centroid, cell_to_polygon
+
 logger = logging.getLogger(__name__)
-
-GRID_STORE_ROOT = "docs/grids"
-
-H3Cell: TypeAlias = str  # H3 cell id (hex string)
 
 
 class H3GridGenerationError(Exception):
@@ -63,28 +61,45 @@ def compute_h3_cells(aoi_label: AoiLabel, resolution: int) -> list[H3Cell]:
         )
         raise H3GridGenerationError(
             f"Error generating H3 grid for AOI '{aoi_label}' at resolution {resolution}: {e}"
-        )
+        ) from e
+
+
+def point_to_h3_cell(lat: float, lon: float, resolution: int) -> H3Cell:
+    """
+    Pure, deterministic point → H3 cell conversion at the given resolution.
+
+    Inverse of `compute_h3_cells`: used to place an external point (e.g. a
+    GBIF occurrence) into the same H3 grid already persisted in `zones_hex`.
+    """
+    return h3.latlng_to_cell(lat, lon, resolution)
 
 
 def _cell_to_geometries(cell: H3Cell) -> tuple[Polygon, Point, Polygon]:
-    """H3 cell → (polygone, centroïde, bbox) shapely."""
+    """H3 cell → (polygone, centroïde, bbox) shapely, via packages/geo/h3.py.
+
+    La bbox est dérivée de `polygon.bounds` plutôt que via `cell_to_bbox(cell)`, qui
+    recalculerait le polygone une seconde fois (h3.cell_to_boundary) — coûteux sur une
+    grille de plusieurs milliers de cellules.
+    """
     try:
-        boundary = h3.cell_to_boundary(cell)
-        # h3 retourne (lat, lng) ; shapely veut (x=lng, y=lat).
-        polygon = Polygon([(lng, lat) for lat, lng in boundary])
-
-        lat, lng = h3.cell_to_latlng(cell)
-        centroid = Point(lng, lat)
-
+        polygon = cell_to_polygon(cell)
+        centroid = cell_to_centroid(cell)
         bbox = box(*polygon.bounds)
-
         return polygon, centroid, bbox
+    except H3ConversionError as e:
+        raise H3GridGenerationError(f"Error converting H3 cell '{cell}' to geometries: {e}") from e
     except Exception as e:
+        # Catches box(*polygon.bounds) failing on a degenerate polygon (e.g. GEOSException
+        # on NaN bounds) — cell_to_polygon/cell_to_centroid already log+wrap their own
+        # errors as H3ConversionError above, so this branch only logs once, for this step.
         logger.error(
-            "error converting H3 cell to geometries",
-            extra={"event": "h3_grid.cell_error", "context": {"cell": cell, "error": str(e)}},
+            "error deriving bbox from H3 cell polygon",
+            extra={
+                "event": "h3_grid.cell_to_geometries_error",
+                "context": {"cell": cell, "error": str(e)},
+            },
         )
-        raise H3GridGenerationError(f"Error converting H3 cell '{cell}' to geometries: {e}")
+        raise H3GridGenerationError(f"Error converting H3 cell '{cell}' to geometries: {e}") from e
 
 
 def generate_h3_grid(
@@ -93,8 +108,8 @@ def generate_h3_grid(
     """
     Generate the H3 grid for an AOI + resolution and persist it into `zones_hex`.
 
-    Idempotent: guarded by `job_run` (same aoi + resolution + aoi version ⇒
-    skip if already succeeded) and written via `upsert` (no duplicates on re-run).
+    Idempotent: guarded by `job_run` (same aoi + resolution + aoi version + env
+    ⇒ skip if already succeeded) and written via `upsert` (no duplicates on re-run).
 
     The AOI is resolved up front so the run is keyed on its declared `version`
     (registry source of truth) rather than a hardcoded constant: bump the AOI
@@ -108,11 +123,18 @@ def generate_h3_grid(
     if resolution is None:
         resolution = aoi.default_res
 
+    # L'env fait partie de l'identité du run : la clé (et la ligne `job_runs`)
+    # dit explicitement dans quel environnement le travail a été fait. Un run
+    # de dev ne vaut jamais pour prod, même si une base venait à être partagée
+    # (copie de prod en dev, restauration). Défense en profondeur, en plus du
+    # suffixe `_<env>` imposé au nom de la base.
+    env = resolve_env()
     idempotency_key = compute_idempotency_key(
         job_name="generate_h3_grid",
         scope=aoi_label,
         resolution=resolution,
         source_version=aoi.version,
+        env=env,
     )
     try:
         with job_run(
@@ -162,14 +184,15 @@ def generate_h3_grid(
             )
             # Artefact grille (liste des cellules) pour reproductibilité / debug.
             # Partitionné par version d'AOI : deux versions ne s'écrasent pas.
-            out_dir = os.path.join(
-                GRID_STORE_ROOT,
-                f"aoi={aoi_label}",
-                f"version={aoi.version}",
-                f"res={resolution}",
+            out_dir = (
+                data_root(env)
+                / "grids"
+                / f"aoi={aoi_label}"
+                / f"version={aoi.version}"
+                / f"res={resolution}"
             )
-            os.makedirs(out_dir, exist_ok=True)
-            write_parquet(pd.DataFrame({"h3_index": cells}), os.path.join(out_dir, "grid.parquet"))
+            out_dir.mkdir(parents=True, exist_ok=True)
+            write_parquet(pd.DataFrame({"h3_index": cells}), str(out_dir / "grid.parquet"))
 
     except JobAlreadySucceeded:
         logger.info(

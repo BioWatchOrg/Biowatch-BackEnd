@@ -156,6 +156,57 @@ class SpeciesFeaturesByZone(Base):
     )
 
 
+class IucnTaxa(Base):
+    """IUCN Red List reference: threat category per species (staging schema).
+
+    Intermediate data, not exposed by the API: it feeds
+    `compute_species_features_by_zone` (join on `scientific_name` with GBIF).
+    One row per IUCN taxon **per Red List version**, like the other feature
+    tables: importing a new version adds rows and never rewrites the previous
+    one, so consumers filter on the `source_version` they target. MVP scope:
+    species present in France only (global assessments).
+    """
+
+    __tablename__ = "iucn_taxa"
+    __table_args__ = {"schema": "staging"}
+
+    iucn_taxon_id: Mapped[int] = mapped_column(Integer, primary_key=True)  # IUCN SIS id
+    source_version: Mapped[str] = mapped_column(String, primary_key=True, index=True)  # "2026-1"
+    scientific_name: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    category: Mapped[str] = mapped_column(String, nullable=False, index=True)  # CR, EN, VU...
+    assessment_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    year_published: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class SpeciesOccurrencesRaw(Base):
+    """Raw GBIF occurrences for an AOI's rolling 10-year window (staging area).
+
+    PK is composite (gbif_occurrence_id, aoi_id), not gbif_occurrence_id alone:
+    a single GBIF record can legitimately fall inside two overlapping AOIs, and
+    a plain single-column PK would silently drop it from the second one on
+    `ON CONFLICT DO NOTHING`. Overlap between registered AOIs is expected to be
+    rare, hence a composite PK rather than a dedicated link table.
+    """
+
+    __tablename__ = "species_occurrences_raw"
+    __table_args__ = {"schema": "staging"}
+
+    gbif_occurrence_id: Mapped[str] = mapped_column(String, primary_key=True)
+    aoi_id: Mapped[str] = mapped_column(String, primary_key=True)
+    event_date: Mapped[datetime.date] = mapped_column(Date, nullable=False)
+    gbif_taxon_key: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    scientific_name: Mapped[str] = mapped_column(String, nullable=False)
+    decimal_latitude: Mapped[float] = mapped_column(Float, nullable=False)
+    decimal_longitude: Mapped[float] = mapped_column(Float, nullable=False)
+    zone_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    ingested_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 class StressScoreByZone(Base):
     """Main business result: ecological stress score per zone × bucket × method."""
 

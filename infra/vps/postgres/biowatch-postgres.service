@@ -1,0 +1,20 @@
+# PostgreSQL + PostGIS de production dans Docker (#23).
+# Les unités qui utilisent la base l'attendent par son nom :
+#   After=biowatch-postgres.service  (+ Requires= ou Wants=)
+[Unit]
+Description=BioWatch - PostgreSQL + PostGIS (Docker)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# --wait : rend la main seulement quand le healthcheck (pg_isready) passe,
+# donc les unités qui attendent celle-ci trouvent une base qui répond.
+ExecStart=/usr/bin/docker compose -f /etc/biowatch/postgres/compose.yaml up -d --wait
+ExecStop=/usr/bin/docker compose -f /etc/biowatch/postgres/compose.yaml stop
+TimeoutStartSec=5min
+
+[Install]
+WantedBy=multi-user.target

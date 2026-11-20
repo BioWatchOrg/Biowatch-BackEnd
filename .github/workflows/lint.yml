@@ -5,13 +5,6 @@ on:
     branches-ignore:
       - 'main'
     types: [opened, synchronize, reopened]
-    paths:
-      - "apps/**"
-      - "packages/**"
-      - "tests/**"
-      - "pyproject.toml"
-      - "uv.lock"
-      - ".github/workflows/lint.yml"
 
 permissions:
   contents: read
@@ -22,17 +15,39 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The job must always run and report a status - "lint" is a required check,
+      # and GitHub leaves required checks stuck pending forever if the triggering
+      # workflow never runs (e.g. a path filter on `on:` skips it entirely). So the
+      # trigger has no path filter; relevance is decided here instead, and every
+      # step below is skipped (not the job) when it doesn't apply.
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            relevant:
+              - "apps/**"
+              - "packages/**"
+              - "tests/**"
+              - "pyproject.toml"
+              - "uv.lock"
+              - ".github/workflows/lint.yml"
+
       - uses: astral-sh/setup-uv@v3
+        if: steps.filter.outputs.relevant == 'true'
         with:
           enable-cache: true
 
       - run: uv sync --frozen
+        if: steps.filter.outputs.relevant == 'true'
 
       - name: ruff check
+        if: steps.filter.outputs.relevant == 'true'
         run: uv run ruff check .
 
       - name: ruff format --check
+        if: steps.filter.outputs.relevant == 'true'
         run: uv run ruff format --check .
 
       - name: mypy
+        if: steps.filter.outputs.relevant == 'true'
         run: uv run mypy .

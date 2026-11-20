@@ -1,0 +1,689 @@
+# Configuration VPS — SSH, firewall, comptes de service, Nginx et déploiement des jobs
+
+Scripts couvrant les issues **#22** (accès SSH sécurisés), **#28** (firewall UFW),
+**#25** (comptes de service et isolation), **#26** (Nginx) et **#27** (déploiement
+des jobs et timers systemd).
+
+Cible : Ubuntu 26.04 LTS, `sshd` démarré par **activation socket**.
+
+## La règle qui prime sur toutes les autres
+
+**Une session SSH déjà ouverte survit au redémarrage de `sshd`.** Ton terminal
+courant continuera de fonctionner même si la nouvelle configuration est
+totalement cassée. « Ça marche toujours chez moi » ne prouve donc rien.
+
+La seule preuve valable est une **nouvelle connexion depuis un second
+terminal**. Les scripts qui retirent des accès refusent de démarrer sans
+cette preuve, et arment une restauration automatique en cas d'oubli.
+
+## Ordre d'exécution
+
+| Script | Issue | Effet | Risque |
+|---|---|---|---|
+| `00-diagnose.sh` | — | État des lieux | aucun, lecture seule |
+| `10-users-and-keys.sh` | #22 | Comptes, clés, sudo, ouvre 50022 **en plus** du 22 | aucun, purement additif |
+| `20-harden-ssh.sh` | #22 | Coupe mot de passe, root, port 22 | ⚠️ porte de non-retour |
+| `30-firewall.sh` | #28 | UFW deny incoming | ⚠️ |
+| `40-service-users.sh` | #25 | Comptes `biowatch-api`, `biowatch-jobs`, `deploy` et leurs répertoires | aucun, ne touche ni SSH ni réseau |
+| `50-nginx.sh` | #26 | Nginx HTTPS, socle + un fichier par service, placeholder du frontend. Boucle locale tant que non exposé | aucun pour l'accès : ne touche ni SSH ni UFW |
+| `55-postgres.sh` | #23 | Docker + PostgreSQL/PostGIS de prod (`biowatch_prod`) sur 127.0.0.1, rôle des jobs, secrets générés sur le VPS | aucun pour l'accès : ne touche ni SSH ni UFW |
+| `60-jobs-deploy.sh` | #27 | Compte CI `biowatch-ci`, uv, scripts de déploiement, unité `biowatch-job@` | aucun, ne touche ni SSH ni réseau |
+
+Chaque script accepte `--dry-run`. **Toujours l'utiliser en première passe.**
+
+Entre `10` et `20`, ouvrir un second terminal et vérifier la connexion par clé
+sur le nouveau port. `20` refusera de s'exécuter sinon.
+
+## Étape zéro
+
+Avant tout, chaque membre génère sa paire de clés et fournit sa clé publique :
+voir [`keys/README.md`](keys/README.md). Sans au moins une clé déposée,
+`10-users-and-keys.sh` s'arrête avant d'avoir touché quoi que ce soit.
+
+## Déroulé
+
+Sur le VPS, les scripts sont copiés dans `/opt/biowatch-infra/vps/`
+(`root:biowatch-ssh`, 750). `/opt/biowatch` est réservé au code déployé (#25).
+
+```bash
+# sur le VPS, dans /opt/biowatch-infra/vps/
+./00-diagnose.sh
+
+./10-users-and-keys.sh --dry-run
+./10-users-and-keys.sh
+```
+
+Depuis un **second terminal**, sur ton poste :
+
+```bash
+ssh -p 50022 -i ~/.ssh/biowatch_ed25519 simonr@<IP_DU_VPS>
+```
+
+Puis, **depuis cette nouvelle session** :
+
+```bash
+./20-harden-ssh.sh --dry-run
+./20-harden-ssh.sh
+```
+
+Le script arme une restauration automatique. Vérifier une nouvelle connexion,
+puis seulement ensuite la désarmer :
+
+```bash
+sudo systemctl stop biowatch-ssh-rollback.timer
+```
+
+Même schéma pour le firewall :
+
+```bash
+./30-firewall.sh --dry-run
+./30-firewall.sh
+# vérifier depuis l'extérieur, puis :
+sudo systemctl stop biowatch-ufw-rollback.timer
+```
+
+## Fail2ban : écarté délibérément
+
+Le critère « fail2ban installé et actif » a été **retiré de la DoD de #22**.
+Envisagé ensuite pour #26, il n'y figure pas non plus : il est réexaminé avec
+#80.
+
+Fail2ban répond au brute-force d'authentification. Cette menace n'existe pas
+ici : l'accès est exclusivement par clé ed25519, `AllowGroups` rejette tout
+compte hors du groupe, le port n'est plus le 22, et UFW n'expose que trois
+ports. La jail `sshd` ne bannirait quasiment jamais rien.
+
+Elle introduirait en revanche un risque réel : avec `MaxAuthTries 3`, un membre
+dont le client propose plusieurs clés (absence de `IdentitiesOnly yes`) épuise
+ses tentatives et se fait bannir alors qu'il est légitime.
+
+**#26 ne change pas ce constat.** Nginx n'y sert qu'une page statique et des
+503 : rien à deviner, rien à forcer. **Il deviendra caduc avec #80**, quand
+l'API exposera derrière Nginx une surface authentifiable et scannable. fail2ban
+y retrouve son utilité, avec des jails `nginx-*`, pas la jail `sshd`.
+
+## Si l'accès est perdu
+
+Ne rien faire pendant 10 minutes. Le filet restaure la configuration
+précédente et redémarre `sshd` tout seul. Reconnecte-toi ensuite sur
+l'ancien port, relis `/var/log/biowatch-vps-setup.log`, corrige, recommence.
+
+### Limite du filet
+
+La restauration ne défait que ce qui est passé par les sauvegardes de fichiers.
+Elle **ne supprime pas les comptes déjà créés**. Si `10-users-and-keys.sh`
+échoue après avoir créé des comptes — par exemple à l'étape sudoers — le
+message d'erreur annonce un retour en arrière, mais les comptes créés
+subsistent avec leur clé et un accès SSH fonctionnel.
+
+Ce n'est pas une faille : ces comptes sont ceux qu'on voulait créer, et rejouer
+le script termine le travail. Mais ne lis pas « état restauré » comme « rien
+n'a changé » — vérifie avec `./00-diagnose.sh`.
+
+Les sauvegardes sont dans `/root/biowatch-vps-backups/<horodatage>/`, en
+arborescence miroir. Restauration manuelle :
+
+```bash
+sudo cp -a /root/biowatch-vps-backups/<ts>/etc/ssh/. /etc/ssh/
+sudo rm -f /etc/ssh/sshd_config.d/00-biowatch-hardening.conf
+sudo systemctl daemon-reload && sudo systemctl restart ssh.socket
+```
+
+En dernier recours, la console de secours de l'hébergeur (KVM / VNC) reste le
+seul chemin qui ne dépend pas de SSH.
+
+## Trois pièges traités par ces scripts
+
+**Activation socket.** `sshd` est démarré par `ssh.socket` : la directive `Port`
+de `sshd_config` est **ignorée**. Le port se règle par un drop-in sur le
+socket. Beaucoup d'instructions trouvées en ligne échouent silencieusement
+sur ce point.
+
+**Ordre des drop-ins.** `sshd` retient la **première** valeur rencontrée, en
+lisant `/etc/ssh/sshd_config.d/*.conf` par ordre alphabétique. Le
+`50-cloud-init.conf` de l'image impose `PasswordAuthentication yes` : un
+fichier de durcissement nommé `99-*` serait lu après, donc ignoré. D'où le
+préfixe `00-`. **Ne pas renommer ce fichier.**
+
+**Comptes sans mot de passe et `sudo`.** Le groupe `sudo` exige un mot de passe
+que des comptes clé-seule n'ont pas. Sans le drop-in `NOPASSWD`, les membres
+seraient incapables d'administrer quoi que ce soit.
+
+## Ajouter les membres restants
+
+Déposer la clé dans `keys/`, déplacer le login de `MEMBERS_PENDING` vers
+`MEMBERS` dans `config.sh`, puis rejouer `10-users-and-keys.sh`. Idempotent :
+les comptes en place ne sont pas modifiés, aucun accès n'est retiré.
+
+**#22 ne peut pas être fermée** tant que `MEMBERS_PENDING` n'est pas vide : le
+critère « connexion SSH testée pour chaque utilisateur » ne serait pas atteint.
+
+## Comptes de service (#25)
+
+```bash
+./40-service-users.sh --dry-run
+./40-service-users.sh
+```
+
+| Compte | Rôle | Écrit dans | Lit |
+|---|---|---|---|
+| `deploy` | Dépose le code | `/opt/biowatch`, `/var/lib/biowatch/deploy` | — |
+| `biowatch-api` | Exécute l'API | `/var/lib/biowatch/api`, `/var/log/biowatch/api` | `/opt/biowatch` |
+| `biowatch-jobs` | Exécute les jobs | `/var/lib/biowatch/jobs`, `/var/log/biowatch/jobs` | `/opt/biowatch` |
+
+Aucun de ces comptes n'a de shell (`nologin`), de mot de passe, de clé SSH, de
+sudo, ni n'appartient à `biowatch-ssh`, `sudo`, `adm`, `docker` ou `lxd`.
+**Ne jamais les ajouter au groupe `docker`** : il équivaut à root.
+
+`/opt/biowatch` est en `2750 deploy:biowatch` : le bit setgid fait hériter du
+groupe `biowatch` tout ce que `deploy` y crée, lisible par l'API et les jobs,
+jamais inscriptible. Un service compromis ne peut pas réécrire le code.
+
+Déployer se fait depuis une session membre : `sudo -u deploy <commande>`.
+
+Le script ne se contente pas de créer : il **prouve** l'isolation en tentant
+réellement chaque accès sous chaque identité (lister, créer un fichier), et
+échoue si un seul résultat diffère de l'attendu. Pas de `test -r` : sur
+Ubuntu 26.04, rust-coreutils l'évalue sans les groupes secondaires et le
+verdict serait faux.
+
+### Secrets
+
+`/etc/biowatch/` est en `700 root`. Les secrets y sont lus par systemd
+(`EnvironmentFile=`), qui s'exécute en root **avant** de changer d'identité :
+chaque service reçoit ses variables sans pouvoir lire son fichier, ni celui
+d'un autre.
+
+### Modèle d'unité systemd
+
+Le critère « services exécutés avec le bon user » se ferme quand les unités de
+l'API et des jobs existent et déclarent leur compte :
+
+```ini
+[Service]
+User=biowatch-api
+Group=biowatch-api
+EnvironmentFile=/etc/biowatch/api.env
+WorkingDirectory=/opt/biowatch/app
+# Le venv est construit par deploy : pas de « uv run », qui tenterait
+# d'écrire dans /opt/biowatch.
+ExecStart=/opt/biowatch/app/.venv/bin/python -m ...
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/biowatch/api /var/log/biowatch/api
+```
+
+Les jobs écrivent leurs artefacts sous `BIOWATCH_DATA_ROOT/<env>` : dans
+`/etc/biowatch/jobs.env`, poser `BIOWATCH_DATA_ROOT=/var/lib/biowatch/jobs`
+(le défaut `data/` tomberait dans `/opt/biowatch/app`, en lecture seule).
+
+### Environnement prod : deux fichiers, deux propriétaires
+
+`biowatch-job@.service` lit les deux, dans cet ordre (le dernier gagne) :
+
+| Fichier | Posé par | Contenu |
+|---|---|---|
+| `/etc/biowatch/jobs.env` | `60-jobs-deploy.sh` (#27) | `BIOWATCH_ENV=prod`, `BIOWATCH_DATA_ROOT=/var/lib/biowatch/jobs`, `LOG_LEVEL`, jetons des sources (`IUCN_API_TOKEN`, à renseigner à la main) |
+| `/etc/biowatch/db-jobs.env` | `55-postgres.sh` (#23) | `POSTGRES_*` du rôle `biowatch_jobs`, base `biowatch_prod` (le nom DOIT finir par `_prod`, sinon refus de connexion) |
+
+Les deux sont `root 600` : ne jamais mettre de `POSTGRES_*` dans `jobs.env`, ils
+seraient écrasés par ceux de #23. Le modèle posé laisse les jetons vides : un job
+qui en a besoin s'arrête sur « jeton absent » tant qu'ils ne sont pas renseignés.
+
+Le code exige en plus la présence de **`/opt/biowatch/app/.env.prod`** pour
+démarrer en prod (`core.config.ENV_FILE_REQUIRED`). C'est un **marqueur**, posé
+par `deploy` à côté du code, pas un fichier de secrets. Les secrets restent
+dans `/etc/biowatch/`, lus par systemd, et gagnent sur le fichier
+(`override=False`). Son absence sur un poste de dev est ce qui fait échouer un
+`--env prod` lancé par erreur — ne jamais le créer ailleurs que sur le VPS.
+
+Depuis #27, il est posé automatiquement dans chaque release par
+`biowatch-release` : plus rien à créer à la main.
+
+Contrôle sur la machine : `systemctl show -p User <unité>` et
+`ps -o user,cmd -C python`.
+
+## Nginx (#26)
+
+```bash
+./50-nginx.sh --dry-run
+./50-nginx.sh
+```
+
+Nginx est le **seul point d'entrée HTTP(S)** du VPS. Le frontend comme l'API
+passent par lui ; aucun process applicatif n'écoute hors de `127.0.0.1`.
+Le port 80 ne sert jamais de contenu : il redirige vers HTTPS et répond au
+challenge Let's Encrypt.
+
+**État actuel : rien d'exposé.** Domaine et certificat ne sont pas encore
+tranchés. Nginx écoute donc **uniquement sur la boucle locale**
+(`NGINX_LISTEN_V4/V6` dans `config.sh`), avec le certificat auto-signé
+d'Ubuntu. UFW autorise 80 et 443, mais rien n'y écoute côté public : une
+connexion depuis l'extérieur est refusée. La chaîne HTTPS complète se teste
+par tunnel SSH :
+
+```bash
+ssh -N -L 8443:127.0.0.1:443 biowatch
+curl -k https://localhost:8443/          # -k : certificat auto-signé
+```
+
+Exposer est ce qui reste pour fermer #26 : voir « Exposer » plus bas.
+
+**Installation sans exposition.** Le paquet nginx démarre son site par
+défaut sur `0.0.0.0:80` dès l'`apt install`, et UFW autorise 80 : il serait
+joignable le temps que le script le remplace. `50-nginx.sh` pose donc un
+`/usr/sbin/policy-rc.d` (`exit 101`, mécanisme Debian) pendant
+l'installation, puis le retire, y compris en cas d'échec. Si le script est
+tué brutalement (`kill -9`, coupure), vérifier que ce fichier a disparu : il
+bloque le démarrage de **tout** service installé ou mis à jour par apt.
+
+### Organisation
+
+Les fichiers versionnés sont dans [`nginx/`](nginx/). `50-nginx.sh` les
+installe en remplaçant les marqueurs `__XXX__` par les valeurs de `config.sh`.
+**Ne jamais éditer la configuration directement sur le serveur** : la
+prochaine exécution du script l'écraserait.
+
+| Dépôt | Serveur | Rôle | Qui le modifie |
+|---|---|---|---|
+| `nginx/biowatch.conf` | `/etc/nginx/sites-available/biowatch.conf` | Socle : 80 → HTTPS, 443 (TLS, en-têtes de sécurité, `include` des services) | #26 seulement |
+| `nginx/biowatch.d/frontend.conf` | `/etc/nginx/biowatch.d/frontend.conf` | Sert le frontend (SPA) | rarement : le déploiement ne le touche pas |
+| `nginx/biowatch.d/api.conf` | `/etc/nginx/biowatch.d/api.conf` | `/v1/*` et `/health`, réservés (503) | #80 |
+| `nginx/placeholder/index.html` | `/var/www/biowatch/frontend/index.html` | Prouve la chaîne avant tout déploiement | posé une fois, sur répertoire vide |
+
+Le site `default` du paquet est désactivé : il se déclare lui aussi
+`default_server` sur le port 80.
+
+**Piège `add_header`.** Les en-têtes de sécurité du socle ne sont hérités
+par une `location` que si elle ne déclare **aucun** `add_header`. Un seul
+suffit à les effacer tous, sans erreur. Pour le cache, utiliser `expires`,
+qui n'est pas un `add_header`.
+
+### Brancher l'API (#80)
+
+1. Le process API écoute **uniquement** en `127.0.0.1:<port>` (ou socket
+   unix). `50-nginx.sh` échoue s'il trouve un port en écoute hors boucle
+   locale autre que SSH, 80 et 443.
+2. Remplacer le contenu de `nginx/biowatch.d/api.conf` dans le dépôt, puis
+   rejouer `./50-nginx.sh` :
+
+   ```nginx
+   location /v1/ {
+       proxy_pass http://127.0.0.1:<port>;
+       proxy_set_header Host              $host;
+       proxy_set_header X-Real-IP         $remote_addr;
+       proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+       proxy_set_header X-Forwarded-Proto $scheme;
+   }
+
+   location = /health {
+       proxy_pass http://127.0.0.1:<port>;
+   }
+   ```
+
+   Sans barre finale après le port, `proxy_pass` transmet le chemin complet
+   (`/v1/zones` reste `/v1/zones`).
+3. Les vérifications de `50-nginx.sh` attendent alors 200 au lieu de 503 sur
+   `/health` : mettre à jour `verify()` dans le même PR.
+
+### Déployer le frontend (Biowatch-Frontend#76)
+
+Le déploiement **ne touche pas à Nginx** : il remplace le contenu de
+`/var/www/biowatch/frontend/`, rien d'autre.
+
+| Répertoire | Propriétaire | Mode | Effet |
+|---|---|---|---|
+| `/var/www/biowatch/frontend` | `deploy:www-data` | `2750` | `deploy` écrit, nginx (`www-data`) lit, personne d'autre |
+
+Le bit setgid fait hériter du groupe `www-data` tout ce que `deploy` dépose :
+nginx peut le lire sans `chgrp`. Les fichiers doivent rester lisibles par le
+groupe (umask `022` par défaut, ou `rsync --chmod=D2750,F640`).
+
+```bash
+# depuis une session membre, build Vite dans ./dist
+sudo -u deploy rsync -r --delete --chmod=D2750,F640 dist/ /var/www/biowatch/frontend/
+```
+
+Le frontend appelle l'API en chemin relatif (`/v1/...`), jamais en
+`localhost:<port>` : Nginx reste le seul point d'entrée, y compris en
+same-VPS.
+
+> **À trancher dans #76.** `deploy` écrit aussi dans `/opt/biowatch` (code
+> backend, #25). Une clé CI du frontend qui agirait comme `deploy` pourrait
+> donc réécrire le backend. #76 demande un rôle limité au répertoire du
+> frontend : créer un compte dédié et changer le propriétaire de
+> `FRONTEND_DIR` dans `config.sh`.
+
+### Exposer (reste à faire pour fermer #26)
+
+**À trancher par l'équipe** : le domaine, et l'adresse email du compte
+Let's Encrypt (avertissements d'expiration, de préférence une adresse
+d'équipe).
+
+Prérequis : un enregistrement DNS `A` (et `AAAA` si le VPS a de l'IPv6) qui
+pointe vers le VPS.
+
+Le challenge HTTP-01 de Let's Encrypt passe par le port 80 public : il faut
+exposer **avant** d'avoir le vrai certificat. `50-nginx.sh` refuse
+d'exposer avec le certificat auto-signé, d'où l'ordre suivant.
+
+1. `config.sh` : `NGINX_SERVER_NAME` = le domaine.
+2. Première émission, nginx arrêté :
+   `certbot certonly --standalone -d <domaine>`. Certbot écoute lui-même
+   sur le port 80 public le temps du challenge, puis le libère. Jamais le
+   plugin `--nginx` : il réécrirait les fichiers gérés par le dépôt.
+3. `config.sh` : `NGINX_TLS_CERT` / `NGINX_TLS_KEY` vers
+   `/etc/letsencrypt/live/<domaine>/fullchain.pem` et `privkey.pem`, puis
+   `NGINX_LISTEN_V4="0.0.0.0"` et `NGINX_LISTEN_V6="[::]"`. Rejouer
+   `./50-nginx.sh`.
+4. Dans le socle : `Strict-Transport-Security`, et un `default_server` 443
+   en `ssl_reject_handshake on` pour ne pas servir le site sur l'IP nue.
+5. Renouvellement : basculer le certificat en webroot, nginx étant
+   désormais exposé sur 80 (`certbot certonly --webroot -w /var/www/letsencrypt
+   -d <domaine> --deploy-hook "systemctl reload nginx"`). Le `certbot.timer`
+   du paquet renouvelle ensuite seul. Tester avec `certbot renew --dry-run`.
+
+Les fichiers de `biowatch.d/` n'ont rien à changer : c'est l'intérêt du
+découpage.
+
+## PostgreSQL + PostGIS (#23)
+
+```bash
+./55-postgres.sh --dry-run
+./55-postgres.sh
+```
+
+Une seule base sur le VPS : **`biowatch_prod`**. La base de dev reste sur le poste
+(`infra/docker`), et le nom de la base de prod DOIT finir par `_prod` (garde-fous dev/prod).
+
+| Élément | Où |
+|---|---|
+| Conteneur | `biowatch-postgis`, image `postgis/postgis:16-3.4-alpine` (identique au local) |
+| Écoute | `127.0.0.1:5432` **uniquement** |
+| Démarrage | unité `biowatch-postgres.service` (attend `pg_isready`) |
+| Données | volume Docker `biowatch-postgres_pgdata` |
+| Superutilisateur | `biowatch_admin`, `/etc/biowatch/postgres.env` (root 600), administration seulement |
+| Rôle des jobs | `biowatch_jobs`, `/etc/biowatch/db-jobs.env` (root 600), crée et écrit les tables, crée ses schémas de staging (`CREATE` sur la base : import OSM, IUCN) |
+| Rôle de l'API (#29) | `biowatch_api`, `/etc/biowatch/db-api.env` (root 600), **lecture seule** des tables de `public`, y compris celles créées plus tard par les jobs (privilèges par défaut). Aucun accès aux schémas de staging |
+
+**Docker contourne UFW** pour les ports qu'il publie : c'est la liaison sur
+`127.0.0.1` dans `postgres/compose.yaml` qui garde le 5432 fermé. Ne jamais la retirer.
+Le script le prouve, et depuis un poste : `nc -zv -w5 <IP_DU_VPS> 5432` doit échouer.
+
+Le groupe `docker` équivaut à root : le script **vérifie** qu'il est vide et prévient sinon,
+mais ne retire personne lui-même (action destructive, à décider au cas par cas).
+
+La preuve de connexion passe par le port publié, depuis l'hôte, comme l'application : un
+mauvais mot de passe doit y être refusé. Un test `docker exec … psql` ne prouverait rien,
+l'image faisant confiance à `127.0.0.1` à l'intérieur du conteneur.
+
+Les mots de passe des deux rôles sont réappliqués à la base à chaque passage (`ALTER ROLE`) : un fichier de secrets régénéré
+reste synchronisé avec la base. Les mots de passe sont générés une seule fois, sur le VPS, et jamais régénérés quand on
+rejoue le script (la base ne les reconnaîtrait plus). Rejouer le script ne coupe pas la
+base : le conteneur n'est recréé que si sa définition a changé.
+
+Pour les jobs (#27) : `EnvironmentFile=/etc/biowatch/db-jobs.env` et
+`After=`/`Wants=biowatch-postgres.service`. Tables, une fois le code déployé par #27 :
+`sudo systemctl start biowatch-job@init_db`.
+Administration : `sudo docker exec -it biowatch-postgis psql -U biowatch_admin -d biowatch_prod`.
+Pour l'API : `EnvironmentFile=/etc/biowatch/db-api.env`, mêmes `After=`/`Wants=`.
+Les droits par défaut de PostgreSQL (tout rôle peut se connecter et créer des tables
+temporaires) sont retirés : seuls ces trois rôles accèdent à `biowatch_prod`. Le script
+prouve les droits à chaque passage : l'API lit une table créée par les jobs, et se voit
+refuser écriture, création et lecture d'un schéma de staging. Sauvegardes : #30.
+
+## Déploiement des jobs (#27)
+
+Une seule CI déploie **tous** les jobs : `.github/workflows/deploy-jobs.yml`,
+sur chaque push sur `main`, après avoir rejoué ruff, mypy et pytest sur le
+commit exact qui part. Les timers sont dérivés du registre des jobs : ajouter
+un job ne touche ni le workflow ni le VPS.
+
+### Chaîne de déploiement
+
+```
+GitHub Actions ── git archive | ssh biowatch-ci@vps "deploy <sha>"
+                                  │  (clé à commande forcée)
+                                  ▼
+            biowatch-ci-deploy   (biowatch-ci)  liste fermée : deploy | rollback | status
+              ├─ sudo -u deploy biowatch-release stage <sha>     extrait, uv sync, marqueur .env.prod
+              ├─ sudo -u deploy biowatch-release manifest <sha>  python -m jobs.systemd (release construite)
+              │     └─ | sudo biowatch-install-timers   (root)   valide, écrit timers + plafonds mémoire
+              ├─ sudo -u deploy biowatch-release activate <sha>  app → releases/<sha>, atomique
+              └─ sudo -u deploy biowatch-release prune           garde les 5 dernières releases
+```
+
+| Qui | Peut | Ne peut pas |
+|---|---|---|
+| CI (clé GitHub) | lancer `biowatch-ci-deploy` avec 3 verbes | shell, tunnel, scp, autre commande |
+| `biowatch-ci` | `biowatch-release` en `deploy`, `biowatch-install-timers` en root | lire le code, les secrets, l'état des jobs |
+| `biowatch-install-timers` | écrire des **timers** à partir d'un nom + une fréquence validés | écrire un service, changer `User=` |
+| `deploy` | écrire `/opt/biowatch` | sudo, SSH (garanties de #25 inchangées) |
+
+`60-jobs-deploy.sh` ajoute `deploy` au groupe `biowatch`. Sans cela, le setgid
+de `/opt/biowatch` ne tient pas : le noyau efface le bit dès qu'un propriétaire
+hors du groupe fait un `chmod`, ce que font tar et uv, et ce qui est créé
+ensuite devient illisible pour les jobs. Aucun droit en plus : seul
+`/opt/biowatch`, qui appartient déjà à `deploy`, utilise ce groupe.
+`biowatch-release` repose groupe et setgid après chaque construction et refuse
+d'activer une release dont un fichier sortirait du groupe.
+
+Pourquoi un compte `biowatch-ci` en plus de `deploy` : donner une clé SSH, un
+shell et du sudo à `deploy` aurait cassé les invariants que
+`40-service-users.sh` prouve à chaque passage. Voir ADR-008.
+
+L'identité et le bac à sable des jobs vivent dans **une seule unité**,
+`biowatch-job@.service` (`infra/systemd/`), installée par `60-jobs-deploy.sh`
+et jamais par la CI. Une instance par job : `biowatch-job@<job>.service`.
+
+### Mise en place (une fois)
+
+0. Prérequis : la base prod est en place (`55-postgres.sh`, #23), ce qui pose
+   `/etc/biowatch/db-jobs.env` et l'unité `biowatch-postgres.service` que les jobs
+   attendent au démarrage.
+1. Générer la clé de la CI : [`keys/ci/README.md`](keys/ci/README.md).
+2. Sur le VPS : `./60-jobs-deploy.sh --dry-run` puis `./60-jobs-deploy.sh`.
+3. Si le script signale `biowatch-ci absent de AllowGroups` : rejouer
+   `./20-harden-ssh.sh` (même procédure qu'au premier passage, filet armé).
+4. Vérifier `/etc/biowatch/jobs.env` (posé depuis le modèle, sans secret).
+5. GitHub → Settings → Environments → `production` :
+   - **Required reviewers : obligatoire** (au moins un membre). Tout code mergé sur
+     `main` s'exécute sur le VPS (`uv sync`, jobs avec accès à la base) ; la clé CI
+     limite ce que la CI peut lancer, pas ce que fait le code déployé. Sur le plan
+     GitHub Free, la protection de branche n'est pas active : cette approbation est
+     le seul verrou humain avant la prod. Disponible car le dépôt est public.
+   - **Deployment branches : `main` uniquement.**
+   - Secrets :
+
+   | Secret | Valeur |
+   |---|---|
+   | `VPS_HOST` | IP ou nom du VPS |
+   | `VPS_SSH_PORT` | `50022` |
+   | `VPS_KNOWN_HOSTS` | sortie de `ssh-keyscan -p 50022 <VPS>`, **vérifiée** contre `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` sur le VPS |
+   | `VPS_DEPLOY_KEY` | clé **privée** de la CI |
+
+6. Actions → `Deploy jobs` → Run workflow (branche `main`, champ vide).
+7. Initialiser le schéma une fois le code déployé : `sudo systemctl start biowatch-job@init_db`.
+
+Aucun secret applicatif ne passe par GitHub : la CI n'a que la clé de déploiement.
+
+### Planifier un job
+
+Dans `apps/jobs/definitions.py`, renseigner `schedule` avec une expression
+`OnCalendar` systemd, **avec le fuseau** (sinon c'est celui du VPS, en UTC). Un job
+planifié est lancé **sans argument** : s'il en a besoin, exposer une variante
+dédiée qui les fixe (ex. `extract_sentinel_monthly`).
+
+```python
+register(Job(name="extract_sentinel_monthly", ...,
+             schedule="*-*-05..10 01:30:00 Europe/Paris",
+             memory_max="2200M"))
+```
+
+- `schedule=None` (défaut) : pas de timer, lancement à la main.
+- `memory_max` (optionnel, job planifié uniquement) : plafond mémoire du run,
+  d'après un pic **mesuré**. Au-delà, le noyau tue ce job, jamais PostgreSQL ni
+  l'API. Posé en surcharge `biowatch-job@<job>.service.d/biowatch-limits.conf`.
+- Limites communes à tous les jobs (dans `biowatch-job@.service`) : `CPUQuota=150%`,
+  `Nice=10`, priorité disque basse, 6 h maximum par run.
+
+Vérifier une expression : `systemd-analyze calendar "<expr>"` (aussi fait par les
+tests en CI et par `biowatch-install-timers`). Retirer `schedule` supprime le timer
+au déploiement suivant.
+
+### Exploiter
+
+```bash
+systemctl list-timers 'biowatch-job@*'          # prochains déclenchements
+sudo systemctl start biowatch-job@<job>          # lancer un job sans argument
+journalctl -u 'biowatch-job@*' -e                # logs JSON de tous les jobs
+journalctl -u biowatch-job@<job> --since today   # logs d'un job
+journalctl -t biowatch-deploy                    # historique des déploiements
+sudo -u biowatch-ci /usr/local/sbin/biowatch-ci-deploy status
+```
+
+Job avec arguments (même identité, mêmes secrets, même bac à sable) :
+
+```bash
+sudo systemd-run --wait --collect --unit=biowatch-job-manual \
+  -p User=biowatch-jobs -p EnvironmentFile=/etc/biowatch/jobs.env \
+  -p EnvironmentFile=/etc/biowatch/db-jobs.env \
+  -p WorkingDirectory=/opt/biowatch/app \
+  /opt/biowatch/app/.venv/bin/biowatch-jobs --env prod generate_h3_grid --aoi idf
+```
+
+### Tester sans VPS
+
+`infra/vps/tests/e2e-deploy.sh` rejoue toute la chaîne dans un Ubuntu 26.04
+jetable : `40-` et `60-`, vrais déploiements par SSH, retours arrière,
+manifeste refusé (rien n'est activé), manifestes hostiles, droits sudo.
+`systemctl` y est simulé (pas de systemd dans un conteneur) : le déclenchement
+réel des timers ne se vérifie que sur le VPS. Lancé en CI (`Infra e2e`) quand
+`infra/` ou `apps/jobs/` change ; en local :
+
+```bash
+docker run --rm -e BIOWATCH_E2E=1 -v "$PWD:/src:ro" ubuntu:26.04 \
+  bash /src/infra/vps/tests/e2e-deploy.sh /src
+```
+
+Le script refuse de tourner hors d'un conteneur : il crée des comptes et
+réécrit sshd.
+
+### Retour arrière
+
+Les 5 dernières releases restent sur le VPS (`/opt/biowatch/releases/<sha>`).
+Revenir en arrière ne reconstruit rien : on rebascule le lien et on resynchronise
+les timers de la release visée.
+
+- **Depuis GitHub** : Actions → `Deploy jobs` → Run workflow **sur `main`** (ignoré
+  depuis une autre branche), `rollback_to` =
+  `previous` ou un SHA complet.
+- **Depuis le VPS** :
+  `sudo -u biowatch-ci /usr/local/sbin/biowatch-ci-deploy rollback [<sha>]`
+
+Un `revert` sur `main` reste la voie normale : le retour arrière sert à rétablir
+la prod **avant** que ce revert soit mergé. Tant que `main` n'est pas corrigé, le
+prochain push redéploie la version fautive.
+
+Les timers et plafonds mémoire de la release visée sont installés **avant** de
+basculer le code. Un déploiement en échec n'active donc rien : construction ou
+manifeste refusés, la prod reste entièrement sur la release précédente, code et
+timers. Seul cas intermédiaire, très improbable : timers installés puis échec de
+la bascule du lien (`ln`/`mv` en local) ; relancer le workflow suffit.
+
+**Risque accepté : purge d'une release encore utilisée.** Seules les 5 dernières
+releases sont gardées. Un job démarré sur une release qui serait purgée pendant
+son exécution perdrait ses fichiers. Il faudrait 5 déploiements sur `main` pendant
+un même run, or un run est borné à 6 h (`TimeoutStartSec`) et `main` ne reçoit
+qu'après la QA hebdomadaire. Les longs backfills ne tournent jamais sur le VPS
+(voir « Backfill Sentinel-2 » du README racine). À revoir si les déploiements
+deviennent fréquents.
+
+## Job Sentinel-2 mensuel (#36, ADR-004)
+
+Planifié par le registre, comme tout job (voir « Déploiement des jobs ») :
+`extract_sentinel_monthly` traite le mois précédent sur l'AOI `idf` (résolution 8),
+**chaque nuit du 5 au 10 à 01:30, heure de Paris**. Les nuits suivant un succès ne font
+rien (idempotence de `job_run`) ; un mois `failed` ou `partial` est retenté la nuit
+suivante — c'est le « retry via job nocturne » du `CLAUDE.md`, sans code dédié.
+
+Garde-fous pour ne pas pénaliser PostgreSQL et l'API : `memory_max="2200M"` déclaré sur le
+job (c'est lui que le noyau tue, jamais la base ; pic mesuré ~1,8 Go pour l'IDF), plus les
+limites communes à tous les jobs de `biowatch-job@.service` (`CPUQuota=150%`, `Nice=10`,
+E/S en priorité basse).
+
+Prérequis : grille H3 `idf` résolution 8 en base (`generate_h3_grid --aoi idf --resolution 8`).
+
+```bash
+systemctl list-timers biowatch-job@extract_sentinel_monthly.timer
+sudo systemctl start biowatch-job@extract_sentinel_monthly   # premier run à la main
+journalctl -u biowatch-job@extract_sentinel_monthly -f      # logs JSON du run
+```
+
+L'historique (2016 → aujourd'hui, 25 à 35 h) ne se lance **pas** sur le VPS : voir la
+section « Backfill Sentinel-2 » du README racine (exécution hors VPS, tunnel SSH).
+
+## Import OSM mensuel (#35)
+
+Planifié par le registre : `osm_import_scheduled`, **le 5 de chaque mois à 03:00, heure de
+Paris** (le 5 plutôt que le 1er : en janvier, le snapshot Geofabrik du 1er janvier doit être
+publié avant qu'on le demande).
+
+Chaque déclenchement importe **une** région, dans l'ordre du registre
+(`packages/core/aoi/aoi_registry.json`) : d'abord les régions jamais tentées pour l'année en
+cours, puis seulement celles dont le dernier essai a échoué. Une région qui échoue en boucle
+ne bloque donc pas les autres ; chaque échec émet l'event `osm_import.region_failed`. Quand
+toutes les régions sont importées, le job ne fait rien jusqu'à l'année suivante.
+
+Résultat : schéma `osm_tmp_{aoi}_{année}_{clé}` (8 premiers caractères de
+l'`idempotency_key`) + ligne `job_runs` en `success`. C'est le signal de fin d'import consommé
+par #38. Son `output_ref` est un JSON court,
+`{"schema": "osm_tmp_idf_2026_ab12cd34", "source_version": "geofabrik_2026-01-01_style-v1"}` :
+#38 y lit le schéma (sans reconstruire son nom) et la version de l'import.
+
+osm2pgsql est coupé à 3 h (`DEFAULT_TIMEOUT_S`), avant le `TimeoutStartSec=6h` commun : un
+import bloqué finit en `failed` avec une erreur claire au lieu d'être tué par systemd.
+
+Prérequis :
+
+- `osm2pgsql` >= 1.9 : `sudo apt install osm2pgsql` (2.2 sur Ubuntu 26.04) ;
+  `60-jobs-deploy.sh` prévient s'il manque.
+- `OSM_DATA_DIR=/var/lib/biowatch/jobs/osm` dans `/etc/biowatch/jobs.env` (déjà dans le
+  modèle) : le code déployé est en lecture seule, le dossier est créé au premier import.
+
+```bash
+systemctl list-timers biowatch-job@osm_import_scheduled.timer
+sudo systemctl start biowatch-job@osm_import_scheduled   # lancer tout de suite
+journalctl -u biowatch-job@osm_import_scheduled -e       # logs JSON du dernier run
+```
+
+Import manuel d'une année passée (bootstrap historique, snapshots Geofabrik depuis 2014),
+avec le même compte, les mêmes fichiers d'environnement et le même bac à sable que les jobs
+planifiés :
+
+```bash
+sudo systemd-run --wait --collect --unit=biowatch-osm-import-manual \
+  -p User=biowatch-jobs -p Group=biowatch-jobs \
+  -p EnvironmentFile=/etc/biowatch/jobs.env -p EnvironmentFile=/etc/biowatch/db-jobs.env \
+  -p WorkingDirectory=/opt/biowatch/app \
+  -p ProtectSystem=strict -p ReadWritePaths=/var/lib/biowatch/jobs \
+  /opt/biowatch/app/.venv/bin/biowatch-jobs --env prod osm_import_snapshot --aoi idf --bucket 2016
+```
+
+Le job est idempotent : relancer un import déjà réussi ne fait rien. Un schéma laissé par un
+import qui a planté est supprimé puis réimporté au retry.
+
+## Portée
+
+Ces scripts traitent #22, #28, #25, #26 (hors exposition) et #27. `AllowGroups` (posé
+par `20-harden-ssh.sh`) n'admet que `biowatch-ssh` et `biowatch-ci`, dont la clé est
+restreinte à une commande forcée : il interdit d'avance toute connexion SSH aux comptes
+de service ; `40-service-users.sh` le vérifie et prévient s'il est absent.
+
+Les ports 80 et 443 sont ouverts dans UFW par anticipation. Tant que nginx
+n'écoute que sur la boucle locale, aucun processus n'y répond côté public :
+un port ouvert sans rien derrière n'offre aucune surface d'attaque.
+`50-nginx.sh` le vérifie à chaque exécution.

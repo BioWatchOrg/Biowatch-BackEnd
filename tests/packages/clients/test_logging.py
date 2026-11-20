@@ -155,3 +155,23 @@ def _restore_root_logger():
     root.handlers.clear()
     root.handlers.extend(saved)
     root.setLevel(saved_level)
+
+
+def test_setup_logging_rejects_an_unknown_level(monkeypatch):
+    """Une faute de frappe dans LOG_LEVEL est une erreur de config nommée, pas un ValueError brut."""
+    from clients import InvalidLogLevelError
+
+    monkeypatch.setenv("LOG_LEVEL", "verbose")
+    with pytest.raises(InvalidLogLevelError, match="VERBOSE"):
+        setup_logging(service="biowatch-jobs")
+
+
+def test_setup_logging_tolerates_whitespace_around_the_level(monkeypatch):
+    monkeypatch.setenv("LOG_LEVEL", " debug ")
+    root = logging.getLogger()
+    saved_level = root.level
+    try:
+        setup_logging(service="biowatch-jobs")
+        assert root.level == logging.DEBUG
+    finally:
+        root.setLevel(saved_level)
